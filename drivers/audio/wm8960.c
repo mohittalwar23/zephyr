@@ -3,16 +3,14 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
-#include <string.h>
-
-#include <zephyr/audio/codec.h>
 #include <zephyr/device.h>
-#include <zephyr/devicetree/clocks.h>
-#include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/audio/codec.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/devicetree/clocks.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(wolfson_wm8960, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
@@ -497,6 +495,7 @@ static int wm8960_reg_update(const struct device *dev, uint16_t reg, uint16_t ma
 {
 	uint16_t reg_val = 0;
 	uint16_t new_value = 0;
+	int ret;
 
 	reg_val = wm8960_reg_read(dev, reg);
 	LOG_DBG("read %#x = %x", reg, reg_val);
@@ -507,7 +506,9 @@ static int wm8960_reg_update(const struct device *dev, uint16_t reg, uint16_t ma
 	}
 
 	LOG_DBG("write %#x = %x", reg, new_value);
-	return wm8960_reg_write(dev, reg, new_value);
+	ret = wm8960_reg_write(dev, reg, new_value);
+
+	return ret;
 }
 
 static int wm8960_soft_reset(const struct device *dev)
@@ -611,7 +612,7 @@ static int wm8960_pll_config_precise(const struct device *dev, uint32_t mclk_fre
 	}
 
 	/* 5. update sysclddiv */
-	if (sysclkdiv != 0) {
+	if (sysclkdiv) {
 		ret = wm8960_reg_update(
 			dev,
 			WM8960_CLOCK1,
@@ -826,6 +827,7 @@ static int wm8960_configure_pll(const struct device *dev, struct audio_codec_cfg
 static int wm8960_configure_audio_interface(const struct device *dev, struct audio_codec_cfg *cfg)
 {
 	uint16_t iface1_val = 0;
+	int ret;
 
 	/* Configure audio format based on dai_type */
 	switch (cfg->dai_type) {
@@ -868,7 +870,12 @@ static int wm8960_configure_audio_interface(const struct device *dev, struct aud
 	}
 
 	/* Write audio interface configuration */
-	return wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	ret = wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
 }
 
 static int wm8960_route_input(const struct device *dev, audio_channel_t channel, uint32_t input)
@@ -876,25 +883,16 @@ static int wm8960_route_input(const struct device *dev, audio_channel_t channel,
 	int ret = 0;
 	struct wm8960_data *data = dev->data;
 
-	uint8_t i_inpath;
-	uint8_t i_inbmix;
-
-	uint16_t m_power1;
-	uint16_t m_power3;
-
-	uint16_t v_power1;
-	uint16_t v_power3;
-	uint16_t v_inpath;
-	uint16_t v_inbmix;
-	uint16_t v_p1_enable;
-	uint16_t v_p1_enable_mic;
-	uint16_t v_p3_enable_mic;
-
-	const uint16_t micgain = (0x2 << 4);
-
 	if (data->route == AUDIO_ROUTE_PLAYBACK && input != WM8960_IN_MUTE) {
 		return -ENOTSUP;
 	}
+
+	uint8_t i_inpath, i_inbmix;
+	uint16_t m_power1, m_power3;
+	uint16_t v_power1, v_power3, v_inpath, v_inbmix;
+	uint16_t v_p1_enable, v_p1_enable_mic, v_p3_enable_mic;
+
+	const uint16_t micgain = (0x2 << 4);
 
 	switch (channel) {
 	case AUDIO_CHANNEL_FRONT_LEFT:
@@ -925,14 +923,6 @@ static int wm8960_route_input(const struct device *dev, audio_channel_t channel,
 		return -EINVAL;
 	}
 
-	const uint16_t mic_inpath[] = {
-		[WM8960_IN_MIC_SE_1] = WM8960_LINPATH_LMN1,
-		[WM8960_IN_MIC_SE_2] = WM8960_LINPATH_LMP2,
-		[WM8960_IN_MIC_SE_3] = WM8960_LINPATH_LMP3,
-		[WM8960_IN_MIC_DE_12] = WM8960_LINPATH_LMN1 | WM8960_LINPATH_LMP2,
-		[WM8960_IN_MIC_DE_13] = WM8960_LINPATH_LMN1 | WM8960_LINPATH_LMP3
-	};
-
 	switch (input) {
 	/* Mute */
 	case WM8960_IN_MUTE:
@@ -943,16 +933,60 @@ static int wm8960_route_input(const struct device *dev, audio_channel_t channel,
 		v_inbmix = 0;
 		break;
 
-	/* Microphones */
+	/* Single-ended microphone on xINPUT1 */
 	case WM8960_IN_MIC_SE_1:
+		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
+		v_power3 = v_p3_enable_mic;
+
+		v_inpath = WM8960_LINPATH_LMN1 | WM8960_LINPATH_LMIC2B | micgain;
+		v_inbmix = 0;
+		break;
+
+	/* Single-ended microphone on xINPUT2 */
 	case WM8960_IN_MIC_SE_2:
+		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
+		v_power3 = v_p3_enable_mic;
+
+		v_inpath = WM8960_LINPATH_LMP2 | WM8960_LINPATH_LMIC2B | micgain;
+		v_inbmix = 0;
+		break;
+
+	/* Single-ended microphone on xINPUT3 */
 	case WM8960_IN_MIC_SE_3:
+		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
+		v_power3 = v_p3_enable_mic;
+
+		v_inpath = WM8960_LINPATH_LMP3 | WM8960_LINPATH_LMIC2B | micgain;
+		v_inbmix = 0;
+		break;
+
+	/* Double-ended microphone between xINPUT1 and xINPUT2 */
 	case WM8960_IN_MIC_DE_12:
+		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
+		v_power3 = v_p3_enable_mic;
+
+		v_inpath =
+			WM8960_LINPATH_LMN1 | WM8960_LINPATH_LMP2 | WM8960_LINPATH_LMIC2B | micgain;
+		v_inbmix = 0;
+		break;
+
+	/* Double-ended microphone between xINPUT1 and xINPUT3 */
 	case WM8960_IN_MIC_DE_13:
 		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
 		v_power3 = v_p3_enable_mic;
 
-		v_inpath = mic_inpath[input] | WM8960_LINPATH_LMIC2B | micgain;
+		v_inpath =
+			WM8960_LINPATH_LMN1 | WM8960_LINPATH_LMP3 | WM8960_LINPATH_LMIC2B | micgain;
+		v_inbmix = 0;
+		break;
+
+	/* Double-ended microphone between xINPUT2 and xINPUT3 */
+	case WM8960_IN_MIC_DE_23:
+		v_power1 = WM8960_POWER1_MICB | v_p1_enable | v_p1_enable_mic;
+		v_power3 = v_p3_enable_mic;
+
+		v_inpath =
+			WM8960_LINPATH_LMP2 | WM8960_LINPATH_LMP3 | WM8960_LINPATH_LMIC2B | micgain;
 		v_inbmix = 0;
 		break;
 
@@ -1021,21 +1055,6 @@ static int wm8960_route_output(const struct device *dev, audio_channel_t channel
 	int ret = 0;
 	struct wm8960_data *data = dev->data;
 
-	uint8_t i_outmix;
-	uint8_t i_bypass;
-	uint16_t v_power2;
-	uint16_t v_power3;
-	uint16_t v_outmix;
-	uint16_t v_bypass;
-	uint16_t v_classd1;
-	uint16_t v_p2_enable;
-	uint16_t v_p2_enable_dac;
-	uint16_t v_p3_enable;
-	uint16_t v_classd1_enable;
-	uint16_t m_p2;
-	uint16_t m_p3;
-	uint16_t m_classd1;
-
 	/* Forbid routing outputs when configured only for capture */
 	if (data->route == AUDIO_ROUTE_CAPTURE && output != WM8960_OUT_MUTE) {
 		return -ENOTSUP;
@@ -1053,6 +1072,11 @@ static int wm8960_route_output(const struct device *dev, audio_channel_t channel
 	) {
 		return -ENOTSUP;
 	}
+
+	uint8_t i_outmix, i_bypass;
+	uint16_t v_power2, v_power3, v_outmix, v_bypass, v_classd1;
+	uint16_t v_p2_enable, v_p2_enable_dac, v_p3_enable, v_classd1_enable;
+	uint16_t m_p2, m_p3, m_classd1;
 
 	switch (channel) {
 	/* Left, speaker (Class D) output */
@@ -1172,6 +1196,9 @@ static int wm8960_route_output(const struct device *dev, audio_channel_t channel
 		return -EINVAL;
 	}
 
+	const uint16_t m_outmix = WM8960_LOUTMIX_LD2LO | WM8960_LOUTMIX_LI2LO;
+	const uint16_t m_bypass = WM8960_BYPASS1_LB2LO;
+
 	/* Power up/down codec blocks */
 	ret = wm8960_reg_update(dev, WM8960_POWER2, m_p2, v_power2);
 	if (ret < 0) {
@@ -1187,21 +1214,11 @@ static int wm8960_route_output(const struct device *dev, audio_channel_t channel
 	}
 
 	/* Route output path */
-	ret = wm8960_reg_update(
-		dev,
-		i_outmix,
-		WM8960_LOUTMIX_LD2LO | WM8960_LOUTMIX_LI2LO,
-		v_outmix
-	);
+	ret = wm8960_reg_update(dev, i_outmix, m_outmix, v_outmix);
 	if (ret < 0) {
 		return ret;
 	}
-	ret = wm8960_reg_update(
-		dev,
-		i_bypass,
-		WM8960_BYPASS1_LB2LO,
-		v_bypass
-	);
+	ret = wm8960_reg_update(dev, i_bypass, m_bypass, v_bypass);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1299,7 +1316,7 @@ static int wm8960_power_up(const struct device *dev, struct audio_codec_cfg *cfg
 	return 0;
 }
 
-static int close_clock_setting(uint32_t ratio, const int ranges[], int ranges_len)
+static int close_clock_setting(uint32_t ratio, int ranges[], int ranges_len)
 {
 	int size = ranges_len;
 	int closest = ranges[0];
@@ -1331,17 +1348,54 @@ static int wm8960_audio_fmt_config(const struct device *dev, struct audio_codec_
 	uint32_t bclk =
 		dai_cfg->i2s.frame_clk_freq * dai_cfg->i2s.channels * dai_cfg->i2s.word_size;
 	uint32_t ratio = (data->sysclk_out_freq * WM8960_RATIO_TENTHS) / bclk;
-	const int ranges_bclk[] = {10, 15, 20, 30, 40, 55, 60, 80, 110, 120, 160, 220, 240, 320};
-	const int ranges_dac_adc[] = {10, 15, 20, 30, 40, 55, 60};
+	int ranges_bclk[] = {10, 15, 20, 30, 40, 55, 60, 80, 110, 120, 160, 220, 240, 320};
+	int ranges_dac_adc[] = {10, 15, 20, 30, 40, 55, 60};
 	int size = ARRAY_SIZE(ranges_bclk);
 	int closest = close_clock_setting(ratio, ranges_bclk, size);
 
-	val = 0x0d;
-	for (uint8_t i = 0; i < ARRAY_SIZE(ranges_bclk); i++) {
-		if (ranges_bclk[i] == closest) {
-			val = i;
-			break;
-		}
+	switch (closest) {
+	case 10:
+		val = 0x00;
+		break;
+	case 15:
+		val = 0x01;
+		break;
+	case 20:
+		val = 0x02;
+		break;
+	case 30:
+		val = 0x03;
+		break;
+	case 40:
+		val = 0x04;
+		break;
+	case 55:
+		val = 0x05;
+		break;
+	case 60:
+		val = 0x06;
+		break;
+	case 80:
+		val = 0x07;
+		break;
+	case 110:
+		val = 0x08;
+		break;
+	case 120:
+		val = 0x09;
+		break;
+	case 160:
+		val = 0x0a;
+		break;
+	case 220:
+		val = 0x0b;
+		break;
+	case 240:
+		val = 0x0c;
+		break;
+	default:
+		val = 0x0d;
+		break;
 	}
 
 	LOG_DBG("WM8960_CLOCK2_BCLKDIV = %u", val);
@@ -1358,16 +1412,29 @@ static int wm8960_audio_fmt_config(const struct device *dev, struct audio_codec_
 	ratio = (data->sysclk_out_freq * WM8960_RATIO_TENTHS) / fs256;
 
 	closest = close_clock_setting(ratio, ranges_dac_adc, size);
-
-	val = 0xFF;
-	for (uint8_t i = 0; i < ARRAY_SIZE(ranges_dac_adc); i++) {
-		if (ranges_dac_adc[i] == closest) {
-			val = i;
-			break;
-		}
-	}
-
-	if (val == 0xFF) {
+	switch (closest) {
+	case 10:
+		val = 0x00;
+		break;
+	case 15:
+		val = 0x01;
+		break;
+	case 20:
+		val = 0x02;
+		break;
+	case 30:
+		val = 0x03;
+		break;
+	case 40:
+		val = 0x04;
+		break;
+	case 55:
+		val = 0x05;
+		break;
+	case 60:
+		val = 0x06;
+		break;
+	default:
 		LOG_ERR("sysclk_out_freq can not be used as mclk");
 		return -EINVAL;
 	}
@@ -1659,7 +1726,7 @@ static int wm8960_update_mclk(const struct device *dev,
 	const struct wm8960_config *config = dev->config;
 	struct wm8960_data *data = dev->data;
 
-#if IS_ENABLED(CONFIG_AUDIO_CODEC_WM8960_EMUL)
+#ifdef CONFIG_AUDIO_CODEC_WM8960_EMUL
 	cfg->mclk_freq = config->mclk_freq;
 	data->mclk_in_freq = config->mclk_freq;
 	LOG_DBG("fix mclk_freq to %d", cfg->mclk_freq);
@@ -2083,7 +2150,7 @@ static int wm8960_init(const struct device *dev)
 }
 
 /* Device instantiation macro */
-#if IS_ENABLED(CONFIG_AUDIO_CODEC_WM8960_EMUL)
+#ifdef CONFIG_AUDIO_CODEC_WM8960_EMUL
 #define WM8960_INIT(inst) \
 	static struct wm8960_data wm8960_data_##inst; \
 	static const struct wm8960_config wm8960_config_##inst = { \
