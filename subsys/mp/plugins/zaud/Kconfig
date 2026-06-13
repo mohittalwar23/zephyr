@@ -1,0 +1,33 @@
+#
+# Copyright 2025-2026 NXP
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config MP_PLUGIN_ZAUD
+	bool "Audio (zaud) plugin"
+	depends on AUDIO_DMIC && I2S && AUDIO_CODEC
+	help
+	  Enable the libMP audio plugin elements: DMIC source, gain transform
+	  and I2S codec sink. These bridge Zephyr audio drivers (DMIC, I2S,
+	  codec) to a libMP pipeline.
+
+if MP_PLUGIN_ZAUD
+
+config MP_PLUGIN_ZAUD_MAX_FRAME_SIZE
+	int "Maximum audio frame size (bytes)"
+	default 4096
+	help
+	  Upper bound, in bytes, of a single audio frame. Used to size the
+	  statically allocated DMA buffers and the libMP transport buffers.
+
+config MP_PLUGIN_ZAUD_NUM_BLOCKS
+	int "Number of audio buffers per element"
+	default 16
+	range 8 128
+	help
+	  Number of buffers each audio element pre-allocates for capture /
+	  playback. The I2S sink primes half of these before starting playback;
+	  fewer than 8 (prebuffer < 4) underruns the native_sim I2S backend.
+
+endif # MP_PLUGIN_ZAUD
