@@ -850,12 +850,36 @@ static int ns_i2s_trigger(const struct device *dev, enum i2s_dir dir, enum i2s_t
 	return ns_i2s_trigger_single(dev, data, stream, dir, cmd);
 }
 
+static int ns_i2s_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(dir);
+
+	if (caps == NULL) {
+		return -EINVAL;
+	}
+
+	*caps = (struct audio_caps){
+		.min_total_channels = 2,
+		.max_total_channels = 2,
+		.supported_sample_rates = AUDIO_SAMPLE_RATE_16000,
+		.supported_bit_widths = AUDIO_BIT_WIDTH_16,
+		.min_num_buffers = 2,
+		.min_frame_interval = 1000,
+		.max_frame_interval = 1000000,
+		.interleaved = true,
+	};
+
+	return 0;
+}
+
 static DEVICE_API(i2s, ns_i2s_driver_api) = {
 	.configure = ns_i2s_configure,
 	.config_get = ns_i2s_config_get,
 	.trigger = ns_i2s_trigger,
 	.read = ns_i2s_read,
 	.write = ns_i2s_write,
+	.get_caps = ns_i2s_get_caps,
 };
 
 static int ns_i2s_init(const struct device *dev)
