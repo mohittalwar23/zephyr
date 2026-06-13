@@ -140,6 +140,28 @@ static int dummy_codec_init(const struct device *dev)
 	return 0;
 }
 
+static int dummy_codec_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	ARG_UNUSED(dev);
+
+	if (caps == NULL) {
+		return -EINVAL;
+	}
+
+	*caps = (struct audio_caps){
+		.min_total_channels = 2,
+		.max_total_channels = 2,
+		.supported_sample_rates = AUDIO_SAMPLE_RATE_16000,
+		.supported_bit_widths = AUDIO_BIT_WIDTH_16,
+		.min_num_buffers = 2,
+		.min_frame_interval = 1000,
+		.max_frame_interval = 1000000,
+		.interleaved = true,
+	};
+
+	return 0;
+}
+
 static DEVICE_API(audio_codec, dummy_codec_api) = {
 	.configure = dummy_codec_configure,
 	.set_property = dummy_codec_set_property,
@@ -147,6 +169,7 @@ static DEVICE_API(audio_codec, dummy_codec_api) = {
 	.stop = dummy_codec_stop,
 	.write = dummy_codec_write,
 	.register_done_callback = dummy_codec_register_done_callback,
+	.get_caps = dummy_codec_get_caps,
 };
 
 /* clang-format off */

@@ -552,10 +552,33 @@ static int ns_dmic_read(const struct device *dev, uint8_t stream, void **buffer,
 	return 0;
 }
 
+static int ns_dmic_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	ARG_UNUSED(dev);
+
+	if (caps == NULL) {
+		return -EINVAL;
+	}
+
+	*caps = (struct audio_caps){
+		.min_total_channels = 2,
+		.max_total_channels = 2,
+		.supported_sample_rates = AUDIO_SAMPLE_RATE_16000,
+		.supported_bit_widths = AUDIO_BIT_WIDTH_16,
+		.min_num_buffers = 2,
+		.min_frame_interval = 1000,
+		.max_frame_interval = 1000000,
+		.interleaved = true,
+	};
+
+	return 0;
+}
+
 static DEVICE_API(dmic, ns_dmic_ops) = {
 	.configure = ns_dmic_configure,
 	.trigger = ns_dmic_trigger,
 	.read = ns_dmic_read,
+	.get_caps = ns_dmic_get_caps,
 };
 
 static int ns_dmic_init(const struct device *dev)
