@@ -1,0 +1,20 @@
+# Copyright 2025-2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+source "Kconfig.zephyr"
+
+config AUDIO_PIPELINE_NUM_FRAMES
+	int "Number of audio frames to process before stopping"
+	default 100
+	help
+	  The pipeline captures and plays back this many audio frames, then
+	  reports end-of-stream and stops. Keeps the sample deterministic and
+	  bounded (useful for native_sim file-in / file-out validation).
+
+config AUDIO_PIPELINE_GAIN_PERCENT
+	int "Gain applied by the gain transform (percent, 100 = unity)"
+	default 90
+	range 0 1000
+	help
+	  Gain percentage applied to the audio stream. 0 mutes, 100 is unity
+	  (pass-through), values above 100 amplify (and may clip).

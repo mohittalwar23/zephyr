@@ -1,0 +1,75 @@
+sample:
+  name: libMP audio pipeline
+common:
+  tags:
+    - audio
+    - samples
+  platform_allow:
+    - native_sim/native/64
+  integration_platforms:
+    - native_sim/native/64
+tests:
+  # Lifecycle: pipeline starts, flows frames, reports EOS and stops cleanly.
+  # Cheap log-only check; no host-side file verification.
+  sample.mp.audio.pipeline.lifecycle:
+    harness: console
+    harness_config:
+      type: multi_line
+      ordered: true
+      regex:
+        - "DMIC capture started"
+        - "EOS received from element"
+        - "Pipeline stopped"
+
+  # Gain sweep: each scenario fixes CONFIG_AUDIO_PIPELINE_GAIN_PERCENT and the
+  # pytest harness asserts the captured output matches the exact Q16.16 math.
+  sample.mp.audio.pipeline.gain.unity:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=100
+
+  sample.mp.audio.pipeline.gain.half:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=50
+
+  sample.mp.audio.pipeline.gain.attenuate:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=90
+
+  sample.mp.audio.pipeline.gain.mute:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=0
+
+  sample.mp.audio.pipeline.gain.amplify:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=200
+
+  sample.mp.audio.pipeline.gain.clip:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_GAIN_PERCENT=1000
+
+  # Missing input file -> DMIC yields silence -> output must be all zeros.
+  sample.mp.audio.pipeline.silence:
+    harness: pytest
+    harness_config:
+      pytest_args:
+        - "--audio-mode=silence"
+
+  # Short stream (fewer frames than the sink prebuffer threshold) must still be
+  # flushed on stop: output frame count must equal the requested frame count.
+  sample.mp.audio.pipeline.shortstream:
+    harness: pytest
+    extra_configs:
+      - CONFIG_AUDIO_PIPELINE_NUM_FRAMES=3
+
+  # Same pipeline under AddressSanitizer + UndefinedBehaviorSanitizer.
+  sample.mp.audio.pipeline.sanitizers:
+    harness: pytest
+    extra_configs:
+      - CONFIG_ASAN=y
+      - CONFIG_UBSAN=y

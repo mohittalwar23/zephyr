@@ -1,0 +1,35 @@
+/*
+ * Copyright 2025-2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * Devicetree contract for the audio pipeline sample. The zaud elements bind
+ * their devices through these aliases / node label:
+ *   - dmic-dev    : DMIC source device
+ *   - i2s-node0   : I2S device driven by the codec sink
+ *   - audio_codec : codec node label configured by the sink
+ *
+ * native_sim already provides file-backed audio nodes, so this overlay only
+ * enables them and (re)asserts the aliases the sample relies on.
+ */
+
+/ {
+	aliases {
+		dmic-dev = &dmic0;
+		i2s-node0 = &i2s_rxtx;
+	};
+};
+
+&dmic0 {
+	status = "okay";
+};
+
+&i2s_rxtx {
+	status = "okay";
+};
+
+&audio_codec {
+	status = "okay";
+};
