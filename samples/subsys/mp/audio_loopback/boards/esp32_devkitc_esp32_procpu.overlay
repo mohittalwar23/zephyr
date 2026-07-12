@@ -1,0 +1,62 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * ESP32 DevKitC: Adafruit 3492 PDM microphone (via the ESP32 DMIC adapter over
+ * I2S0 in PDM mode) -> gain -> MAX98357A I2S amplifier on I2S1.
+ *
+ * Wiring:
+ *   mic  CLK->GPIO18, DATA->GPIO19, SEL->GND, 3V->3V3, GND->GND
+ *   amp  BCLK->GPIO26, LRC->GPIO25, DIN->GPIO22, VIN->5V, GND->GND
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp32-pinctrl.h>
+
+/ {
+	aliases {
+		i2s-codec-tx = &i2s1;
+	};
+
+	dmic_dev: dmic {
+		compatible = "espressif,esp32-dmic";
+		i2s = <&i2s0>;
+		status = "okay";
+	};
+
+	audio_codec: audio-codec {
+		compatible = "zephyr,dummy-codec";
+		status = "okay";
+	};
+};
+
+&pinctrl {
+	/* PDM RX: CLK on the WS line (GPIO18), DATA on the SD line (GPIO19). */
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_I_WS_GPIO18>,
+				 <I2S0_I_SD_GPIO19>;
+		};
+	};
+
+	/* TX to the MAX98357A amplifier. */
+	i2s1_default: i2s1_default {
+		group1 {
+			pinmux = <I2S1_O_BCK_GPIO26>,
+				 <I2S1_O_WS_GPIO25>,
+				 <I2S1_O_SD_GPIO22>;
+		};
+	};
+};
+
+&i2s0 {
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+};
+
+&i2s1 {
+	status = "okay";
+	pinctrl-0 = <&i2s1_default>;
+	pinctrl-names = "default";
+};

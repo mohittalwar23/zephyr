@@ -1,0 +1,14 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+config AUDIO_DMIC_ESP32
+	bool "ESP32 DMIC adapter (PDM over I2S)"
+	default y
+	depends on DT_HAS_ESPRESSIF_ESP32_DMIC_ENABLED
+	select I2S
+	select I2S_ESP32_PDM_RX
+	help
+	  Enable the ESP32 DMIC adapter. It exposes the Zephyr DMIC API on top of
+	  an ESP32 I2S peripheral configured for PDM RX, so DMIC clients can
+	  capture a PDM MEMS microphone. Selects the PDM RX mode of the ESP32 I2S
+	  driver.

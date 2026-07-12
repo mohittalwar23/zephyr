@@ -1,0 +1,20 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  ESP32 DMIC adapter. Exposes the Zephyr DMIC API on top of an ESP32 I2S
+  peripheral configured for PDM RX (CONFIG_I2S_ESP32_PDM_RX). Used to capture a
+  PDM MEMS microphone through the I2S controller, which performs the PDM to PCM
+  conversion in hardware.
+
+compatible: "espressif,esp32-dmic"
+
+include: base.yaml
+
+properties:
+  i2s:
+    type: phandle
+    required: true
+    description: |
+      Phandle to the ESP32 I2S device that captures the PDM microphone. That
+      I2S node must be enabled and built with CONFIG_I2S_ESP32_PDM_RX.

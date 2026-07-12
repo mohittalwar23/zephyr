@@ -1640,12 +1640,34 @@ static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t siz
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
 }
 
+static int i2s_esp32_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(dir);
+
+	memset(caps, 0, sizeof(struct audio_caps));
+
+	caps->min_total_channels = 2; /* Stereo minimum for I2S format */
+	caps->max_total_channels = 2;
+	caps->supported_sample_rates =
+		AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 | AUDIO_SAMPLE_RATE_32000 |
+		AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
+	caps->min_num_buffers = CONFIG_I2S_ESP32_RX_BLOCK_COUNT;
+	caps->min_frame_interval = 1000;   /* 1ms minimum */
+	caps->max_frame_interval = 100000; /* 100ms maximum */
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(i2s, i2s_esp32_driver_api) = {
 	.configure = i2s_esp32_configure,
 	.config_get = i2s_esp32_config_get,
 	.trigger = i2s_esp32_trigger,
 	.read = i2s_esp32_read,
-	.write = i2s_esp32_write
+	.write = i2s_esp32_write,
+	.get_caps = i2s_esp32_get_caps,
 };
 
 #if SOC_GDMA_SUPPORTED
