@@ -37,4 +37,14 @@ config I2S_ESP32_ALLOWED_EMPTY_TX_QUEUE_DEFERRAL_TIME_MS
 	help
 	  Allowed deferral time for processing an empty tx queue in milliseconds
 
+config I2S_ESP32_PDM_RX
+	bool "ESP32 I2S PDM RX (digital microphone) capture"
+	help
+	  Configure the I2S RX channel in PDM (Pulse Density Modulation) mode
+	  instead of standard/TDM mode. The ESP32 I2S peripheral performs the
+	  PDM to PCM conversion in hardware, so i2s_read() returns ready PCM
+	  samples from a PDM MEMS microphone (for example the Adafruit 3492).
+	  Only the classic ESP32 supports PDM RX. This is a bring-up option for
+	  reading a single PDM microphone on the RX channel.
+
 endif

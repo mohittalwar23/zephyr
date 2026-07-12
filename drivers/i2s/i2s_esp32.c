@@ -1282,9 +1282,49 @@ static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
 			rx_is_target = true;
 		}
 
+#ifdef CONFIG_I2S_ESP32_PDM_RX
+		/*
+		 * PDM RX mode: capture a PDM MEMS microphone. The ESP32 does the
+		 * PDM to PCM conversion in hardware, so i2s_read() still returns
+		 * PCM. A single microphone with its SEL pin tied to GND presents
+		 * on the LEFT slot.
+		 *
+		 * The PDM interface clock is not a normal I2S bit clock: it must
+		 * be frame_clk_freq * I2S_LL_PDM_BCK_FACTOR (64), doubled for the
+		 * 16x downsample ratio. Recompute the clock for PDM instead of
+		 * using the standard I2S clock computed above.
+		 */
+		i2s_pdm_dsr_t pdm_dsr = I2S_PDM_DSR_8S;
+		uint32_t pdm_bck_factor =
+			(pdm_dsr == I2S_PDM_DSR_16S) ? (2 * I2S_LL_PDM_BCK_FACTOR)
+						     : I2S_LL_PDM_BCK_FACTOR;
+
+		i2s_hal_clock_info.bclk = i2s_cfg->frame_clk_freq * pdm_bck_factor;
+		i2s_hal_clock_info.mclk = i2s_cfg->frame_clk_freq * 256;
+		if (i2s_hal_clock_info.mclk < i2s_hal_clock_info.bclk) {
+			i2s_hal_clock_info.mclk = i2s_hal_clock_info.bclk;
+		}
+		i2s_hal_clock_info.bclk_div = i2s_hal_clock_info.mclk / i2s_hal_clock_info.bclk;
+		i2s_hal_clock_info.sclk = i2s_esp32_get_source_clk_freq(I2S_ESP32_CLK_SRC);
+		i2s_hal_clock_info.mclk_div = i2s_hal_clock_info.sclk / i2s_hal_clock_info.mclk;
+
+		/*
+		 * Present the single mono microphone as stereo frames so the
+		 * downstream I2S sample rate accounting (and a stereo I2S sink)
+		 * stays consistent. The mic (SEL=GND) drives the LEFT slot.
+		 */
+		slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+		slot_cfg.pdm_rx.slot_mask = I2S_PDM_SLOT_BOTH;
+		slot_cfg.pdm_rx.data_fmt = I2S_PDM_DATA_FMT_PCM;
+		i2s_hal_pdm_set_rx_slot(hal, rx_is_target, &slot_cfg);
+		i2s_hal_set_rx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC, NULL);
+		i2s_ll_rx_set_pdm_dsr(hal->dev, pdm_dsr);
+		i2s_hal_pdm_enable_rx_channel(hal, true);
+#else
 		i2s_hal_std_set_rx_slot(hal, rx_is_target, &slot_cfg);
 		i2s_hal_set_rx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC, NULL);
 		i2s_ll_rx_enable_std(hal->dev);
+#endif /* CONFIG_I2S_ESP32_PDM_RX */
 
 		stream = &dev_cfg->rx;
 		memcpy(&stream->data->i2s_cfg, i2s_cfg, sizeof(struct i2s_config));
