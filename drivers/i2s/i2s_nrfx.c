@@ -7,6 +7,7 @@
 #define DT_DRV_COMPAT nordic_nrf_i2s
 
 #include <stdlib.h>
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -813,8 +814,45 @@ static void init_clock_manager(const struct device *dev)
 	__ASSERT_NO_MSG(drv_data->clk_mgr != NULL);
 }
 
+static int i2s_nrfx_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
+{
+	ARG_UNUSED(dev);
+
+	if (dir != I2S_DIR_TX && dir != I2S_DIR_RX && dir != I2S_DIR_BOTH) {
+		return -EINVAL;
+	}
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	/*
+	 * The frame clock is derived from the MCK divider and the ratio, so the
+	 * reachable rates depend on the clock source the board selects rather
+	 * than on a fixed list. Report the common rates; configure() computes
+	 * the divider and fails if the request cannot be met exactly.
+	 */
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_22050 | AUDIO_SAMPLE_RATE_32000 |
+				       AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_8 | AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24;
+#if defined(I2S_CONFIG_SWIDTH_SWIDTH_32Bit)
+	caps->supported_bit_widths |= AUDIO_BIT_WIDTH_32;
+#endif
+	/*
+	 * The peripheral ping-pongs two buffers of its own; the pipeline needs
+	 * several more in hand to keep the producer fed while those are in use.
+	 */
+	caps->min_num_buffers = 8U;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(i2s, i2s_nrf_drv_api) = {
 	.configure = i2s_nrfx_configure,
+	.get_caps = i2s_nrfx_get_caps,
 	.config_get = i2s_nrfx_config_get,
 	.read = i2s_nrfx_read,
 	.write = i2s_nrfx_write,
