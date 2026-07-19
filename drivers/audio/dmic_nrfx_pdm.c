@@ -125,9 +125,19 @@ static void event_handler(const struct device *dev, const nrfx_pdm_evt_t *evt)
 
 		ret = k_mem_slab_alloc(drv_data->mem_slab, &mem_slab_buffer, K_NO_WAIT);
 		if (ret < 0) {
-			LOG_ERR("Failed to allocate buffer: %d", ret);
-			stop = true;
-		} else {
+			/*
+			 * Nothing free: reuse the oldest captured block so a
+			 * consumer that falls behind costs a frame rather than
+			 * the whole stream.
+			 */
+			ret = k_msgq_get(&drv_data->rx_queue, &mem_slab_buffer, K_NO_WAIT);
+			if (ret < 0) {
+				LOG_ERR("No buffer to capture into: %d", ret);
+				stop = true;
+			}
+		}
+
+		if (!stop) {
 			ret = dmm_buffer_in_prepare(drv_cfg->mem_reg, mem_slab_buffer,
 						    drv_data->block_size, &buffer);
 			if (ret < 0) {
