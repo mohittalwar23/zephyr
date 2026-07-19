@@ -6,6 +6,7 @@
 
 #define DT_DRV_COMPAT nordic_nrf_pdm
 
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/audio/dmic.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -500,8 +501,39 @@ static void init_clock_manager(const struct device *dev)
 #endif
 }
 
+static int dmic_nrfx_pdm_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	ARG_UNUSED(dev);
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	/*
+	 * The peripheral derives its sample rate from the PDM clock and the
+	 * decimation ratio, and the usable clock range is narrowed further by
+	 * the limits the caller passes in dmic_cfg. Report the rate the
+	 * hardware is specified for rather than every rate a prescaler search
+	 * might land on; configure() still validates what is actually asked
+	 * for.
+	 */
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_16000;
+	/* configure() rejects anything other than 16-bit samples. */
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_16;
+	/*
+	 * The peripheral ping-pongs two buffers of its own; the pipeline needs
+	 * several more in hand to keep the consumer fed while those are in use.
+	 */
+	caps->min_num_buffers = 8U;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(dmic, dmic_ops) = {
 	.configure = dmic_nrfx_pdm_configure,
+	.get_caps = dmic_nrfx_pdm_get_caps,
 	.trigger = dmic_nrfx_pdm_trigger,
 	.read = dmic_nrfx_pdm_read,
 };
