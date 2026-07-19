@@ -84,7 +84,33 @@ static const clock_ip_name_t sai_clocks[] = {
 	kCLOCK_AUDIO_Sai3,
 };
 #endif
+
 #endif /* CONFIG_DAI_NXP_SAI */
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sai_clocks[] = {
+	kCLOCK_Sai1,
+	kCLOCK_Sai2,
+	kCLOCK_Sai3,
+};
+
+/* the MCLK1 gates live in AUDIOMIX next to the IPG gates and feed the
+ * SAI bit clock / master clock output, so manage them together
+ */
+static const clock_ip_name_t sai_mclk_clocks[] = {
+	kCLOCK_Sai1_Mclk1,
+	kCLOCK_Sai2_Mclk1,
+	kCLOCK_Sai3_Mclk1,
+};
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sdma_clocks[] = {
+	kCLOCK_Sdma1,
+	kCLOCK_Sdma2,
+	kCLOCK_Sdma3,
+};
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
 
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QX6_ADSP) || defined(CONFIG_SOC_MIMX8QM6_ADSP)
@@ -168,6 +194,27 @@ static int mcux_ccm_on(const struct device *dev,
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_EnableClock(sai_clocks[instance]);
+		CLOCK_EnableClock(sai_mclk_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_EnableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_EnableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
+
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 	case IMX_CCM_ESAI0_CLK:
@@ -238,6 +285,27 @@ static int mcux_ccm_off(const struct device *dev,
 		return 0;
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_DisableClock(sai_mclk_clocks[instance]);
+		CLOCK_DisableClock(sai_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_DisableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_DisableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
 
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
@@ -608,6 +676,21 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 
 	} break;
 #endif
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+		*rate = CLOCK_GetClockRootFreq(kCLOCK_Sai1ClkRoot);
+		break;
+	case IMX_CCM_SAI2_CLK:
+		*rate = CLOCK_GetClockRootFreq(kCLOCK_Sai2ClkRoot);
+		break;
+	case IMX_CCM_SAI3_CLK:
+		*rate = CLOCK_GetClockRootFreq(kCLOCK_Sai3ClkRoot);
+		break;
+	case IMX_CCM_PDM_CLK:
+		*rate = CLOCK_GetClockRootFreq(kCLOCK_PdmClkRoot);
+		break;
+#endif /* CONFIG_SOC_MIMX8ML8 */
 	}
 
 	return 0;
