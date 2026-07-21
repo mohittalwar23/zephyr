@@ -478,6 +478,17 @@ static bool dma_nxp_sdma_bd_needs_reprogram(struct sdma_channel_data *chan_data,
 {
 	uint32_t mem_addr;
 
+	/*
+	 * Once a caller has been seen queueing its own blocks it keeps doing so,
+	 * and the decision must not be revisited per call: buffers come from a
+	 * pool, so a recycled block can legitimately carry the same address the
+	 * descriptor already holds. Treating that as "nothing moved" would skip
+	 * both the reprogram and the restart, stalling the channel for good.
+	 */
+	if (chan_data->queue_mode) {
+		return true;
+	}
+
 	/* the memory side is the only one a caller can move between transfers */
 	mem_addr = chan_data->direction == PERIPHERAL_TO_MEMORY ? dst : src;
 
@@ -511,10 +522,17 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	 */
 	if (dma_nxp_sdma_bd_needs_reprogram(chan_data, src, dst)) {
 		sdma_buffer_descriptor_t *bd = &chan_data->bd_pool[chan_data->bd_write_idx];
-		bool is_last = chan_data->bd_write_idx == (chan_data->bd_count - 1);
+		bool is_wrap = chan_data->bd_write_idx == (chan_data->bd_count - 1);
 
+		/*
+		 * Never mark a queued descriptor as last: that flag halts the
+		 * channel when it is reached, which for a caller streaming
+		 * continuously would stop the transfer every time the ring wraps,
+		 * however much work is still queued behind it. Only the wrap flag
+		 * belongs here, to send the engine back to the first descriptor.
+		 */
 		SDMA_ConfigBufferDescriptor(bd, src, dst, chan_data->bus_width, size,
-					    is_last, true, is_last,
+					    false, true, is_wrap,
 					    chan_data->transfer_cfg.type);
 
 		chan_data->bd_mem_addr[chan_data->bd_write_idx] =
