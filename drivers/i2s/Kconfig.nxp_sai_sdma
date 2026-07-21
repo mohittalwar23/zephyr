@@ -1,0 +1,43 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+config I2S_NXP_SAI_SDMA
+	bool "NXP SAI I2S driver using SDMA transfers"
+	default y
+	depends on DT_HAS_NXP_SAI_SDMA_ENABLED
+	depends on CLOCK_CONTROL
+	depends on DMA
+	select PINCTRL
+	help
+	  Enable the I2S driver for NXP SAI instances whose transfers are
+	  carried by an SDMA engine (i.MX8M family Cortex-M cores). The SDMA
+	  channels are obtained through the DMA API, so the SDMA instance
+	  stays shareable with other peripherals.
+
+if I2S_NXP_SAI_SDMA
+
+config I2S_NXP_SAI_SDMA_QUEUE_DEPTH
+	int "Block queue depth per direction"
+	default 8
+	help
+	  Number of memory blocks each direction can hold in flight, and so how
+	  much audio the driver buffers: a depth of 8 at 10 ms per block is
+	  80 ms before a block reaches the wire. Lower it for latency, raise it
+	  for tolerance of a late producer.
+
+	  Two lower bounds apply. It must not exceed the buffer descriptors the
+	  SDMA driver allocates per channel (DMA_NXP_SDMA_BD_COUNT), or blocks
+	  are handed to descriptors still in use. It must also be at least the
+	  number of blocks any sink queues before starting the stream, since
+	  such a sink cannot start until they all fit.
+
+config I2S_NXP_SAI_SDMA_SILENCE_SIZE
+	int "Silence buffer size in bytes"
+	default 256
+	help
+	  Bytes transferred by a descriptor the caller has not yet filled. It
+	  only has to bridge the gap until the next block is queued, so it is
+	  much shorter than a block; the cost of that is an uneven drain, as a
+	  silence descriptor completes several times per real block.
+
+endif # I2S_NXP_SAI_SDMA

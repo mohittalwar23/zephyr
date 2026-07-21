@@ -1,0 +1,50 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  NXP SAI configured as an I2S controller, with transfers carried by an SDMA
+  engine (i.MX8M family Cortex-M cores, e.g. i.MX8MP SAI3 + SDMA3 in AUDIOMIX).
+
+  The SDMA channels are taken from the standard dmas/dma-names properties, so
+  the SDMA instance stays owned by its own nxp,sdma controller node and remains
+  shareable with the other peripherals wired to it.
+
+compatible: "nxp,sai-sdma"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+    description: SAI interrupt, used to report FIFO underrun and overrun.
+
+  clocks:
+    required: true
+    description: |
+      SAI bus/root clock. Its rate is used as the MCLK frequency for bit clock
+      divider setup.
+
+  dmas:
+    required: true
+    description: |
+      TX and RX DMA specifiers. The channel cell carries the SDMA request line
+      the direction is wired to and the mux cell the SDMA peripheral type.
+
+  dma-names:
+    required: true
+    description: Must be "tx" and "rx".
+
+  mclk-output:
+    type: boolean
+    description: Drive the master clock as an output pin.
+
+  rx-sync-mode:
+    type: boolean
+    description: |
+      The receiver has no clocks of its own and samples on the transmitter's
+      bit and frame clock. Set this on boards that wire a single clock pair to
+      the codec, where the codec runs its ADC from the DAC frame clock. Capture
+      then produces no data until the transmitter is running.
