@@ -7,3 +7,25 @@ config DMA_NXP_SDMA
 	depends on DT_HAS_NXP_SDMA_ENABLED
 	help
 		Enable driver for NXP's SDMA IP.
+
+if DMA_NXP_SDMA
+
+config DMA_NXP_SDMA_BD_COUNT
+	int "Buffer descriptors per channel"
+	default 8 if I2S_NXP_SAI_SDMA
+	default 2
+	range 2 64
+	help
+		Number of buffer descriptors allocated for each SDMA channel.
+		A channel can therefore have this many transfers in flight.
+		Streaming a fixed ring needs only the two descriptors the
+		default provides; callers that queue a separate block per
+		transfer, such as the I2S API, need at least as many
+		descriptors as their queue is deep or transfers will be
+		dropped when the ring wraps onto a descriptor still in use.
+
+		The descriptors are allocated statically for every channel the
+		SoC has, so raising this costs
+		8 * <channels> * <this value> bytes.
+
+endif # DMA_NXP_SDMA

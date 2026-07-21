@@ -15,8 +15,15 @@
 
 LOG_MODULE_REGISTER(nxp_sdma);
 
-#define DMA_NXP_SDMA_BD_COUNT 2
+#define DMA_NXP_SDMA_BD_COUNT CONFIG_DMA_NXP_SDMA_BD_COUNT
 #define DMA_NXP_SDMA_CHAN_DEFAULT_PRIO 4
+
+/*
+ * Fallback peripheral FIFO watermark, in bytes. Used when the caller leaves the
+ * relevant burst length unset, which is what every user of this driver did
+ * before the burst length was honoured.
+ */
+#define DMA_NXP_SDMA_DEFAULT_WATERMARK 64
 
 #define DT_DRV_COMPAT nxp_sdma
 
@@ -43,6 +50,25 @@ struct sdma_channel_data {
 	struct dma_config *dma_cfg;
 	uint32_t event_source; /* DMA REQ number that trigger this channel */
 	struct dma_status stat;
+	uint32_t bd_write_idx; /* next BD to reprogram on reload() */
+	sdma_transfer_size_t bus_width; /* remembered from config() for reload() */
+	/*
+	 * Memory-side address each BD was last programmed with, kept in the
+	 * caller's address space. SDMA_ConfigBufferDescriptor() may store a
+	 * translated address in the descriptor itself (TCM aliases), so the
+	 * descriptor cannot be compared against what the caller passes us.
+	 */
+	uint32_t bd_mem_addr[DMA_NXP_SDMA_BD_COUNT];
+	uint32_t bd_size[DMA_NXP_SDMA_BD_COUNT]; /* bytes each BD was given */
+	/*
+	 * Set the first time reload() is handed an address the channel was not
+	 * already pointing at, i.e. the caller queues a distinct block per
+	 * transfer rather than cycling a ring set up once at config() time.
+	 * Derived rather than configured so that ring users are unaffected.
+	 */
+	bool queue_mode;
+	uint32_t bd_pending; /* queued descriptors not yet completed */
+	bool started; /* channel is between start() and stop() */
 
 	void *arg; /* argument passed to user-defined DMA callback */
 	dma_callback_t cb; /* user-defined callback for DMA transfer completion */
@@ -175,8 +201,11 @@ void sdma_set_transfer_type(struct dma_config *config, sdma_transfer_type_t *typ
 int sdma_set_peripheral_type(struct dma_config *config, sdma_peripheral_t *type)
 {
 	switch (config->dma_slot) {
+	case kSDMA_PeripheralNormal:
 	case kSDMA_PeripheralNormal_SP:
 	case kSDMA_PeripheralMultiFifoPDM:
+	case kSDMA_PeripheralMultiFifoSaiRX:
+	case kSDMA_PeripheralMultiFifoSaiTX:
 		*type = config->dma_slot;
 		break;
 	default:
@@ -196,7 +225,16 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 
 	dev_cfg = chan_data->dev->config;
 
-	xfer_size = chan_data->capacity / chan_data->bd_count;
+	/*
+	 * Ring users hand over equally sized blocks once, so the size of the one
+	 * that just completed can be derived. Queued blocks are whatever size
+	 * the caller asked for, so it has to be remembered per descriptor.
+	 */
+	if (chan_data->queue_mode) {
+		xfer_size = chan_data->bd_size[bdIndex];
+	} else {
+		xfer_size = chan_data->capacity / chan_data->bd_count;
+	}
 
 	switch (chan_data->direction) {
 	case MEMORY_TO_PERIPHERAL:
@@ -209,10 +247,28 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 		break;
 	}
 
-	/* prepare next BD for transfer */
-	bd = &chan_data->bd_pool[bdIndex];
-	bd->count = xfer_size;
-	bd->status |= (uint8_t)kSDMA_BDStatusDone;
+	if (chan_data->queue_mode) {
+		/*
+		 * The block that just completed belongs to the caller and is not
+		 * ours to replay: re-arming this descriptor would transmit a
+		 * buffer that has already been consumed, or receive into one the
+		 * caller has taken back. Restart only if reload() has since
+		 * queued a further block, and let the channel go idle otherwise
+		 * so the peripheral reports a genuine underrun.
+		 */
+		if (chan_data->bd_pending > 0) {
+			chan_data->bd_pending--;
+		}
+
+		if (chan_data->bd_pending == 0) {
+			return;
+		}
+	} else {
+		/* prepare next BD for transfer */
+		bd = &chan_data->bd_pool[bdIndex];
+		bd->count = xfer_size;
+		bd->status |= (uint8_t)kSDMA_BDStatusDone;
+	}
 
 	SDMA_StartChannelSoftware(dev_cfg->base, chan_data->index);
 }
@@ -247,6 +303,10 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 	/* initialize bd pool */
 	chan_data->bd_pool = &dev_data->bd_pool[channel][0];
 	chan_data->bd_count = config->block_count;
+	chan_data->bd_write_idx = 0;
+	chan_data->bus_width = config->source_data_size;
+	chan_data->queue_mode = false;
+	chan_data->bd_pending = 0;
 
 	memset(chan_data->bd_pool, 0, sizeof(sdma_buffer_descriptor_t) * chan_data->bd_count);
 	SDMA_InstallBDMemory(&chan_data->handle, chan_data->bd_pool, chan_data->bd_count);
@@ -268,6 +328,10 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 			config->source_data_size, block_cfg->block_size,
 			is_last, true, is_wrap, chan_data->transfer_cfg.type);
 
+		chan_data->bd_mem_addr[i] = chan_data->direction == PERIPHERAL_TO_MEMORY
+						    ? block_cfg->dest_address
+						    : block_cfg->source_address;
+
 		chan_data->capacity += block_cfg->block_size;
 		block_cfg = block_cfg->next_block;
 		crt_bd++;
@@ -281,6 +345,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	struct dma_block_config *block_cfg;
+	uint32_t watermark;
 	int ret;
 
 	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL) {
@@ -322,12 +387,25 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 
 	block_cfg = config->head_block;
 
+	/*
+	 * The watermark is the peripheral's FIFO trigger level, so take it from
+	 * the burst length the caller gave for whichever side the peripheral is
+	 * on. A watermark that disagrees with the peripheral's own FIFO setting
+	 * makes it request service at the wrong depth, so this cannot stay
+	 * fixed once the driver serves more than one peripheral.
+	 */
+	watermark = chan_data->direction == PERIPHERAL_TO_MEMORY ? config->source_burst_length
+								 : config->dest_burst_length;
+	if (watermark == 0) {
+		watermark = DMA_NXP_SDMA_DEFAULT_WATERMARK;
+	}
+
 	/* prepare first block for transfer ...*/
 	SDMA_PrepareTransfer(&chan_data->transfer_cfg,
 			     block_cfg->source_address,
 			     block_cfg->dest_address,
 			     config->source_data_size, config->dest_data_size,
-			     /* watermark = */64,
+			     watermark,
 			     block_cfg->block_size, chan_data->event_source,
 			     chan_data->peripheral, chan_data->transfer_cfg.type);
 
@@ -355,6 +433,7 @@ static int dma_nxp_sdma_start(const struct device *dev, uint32_t channel)
 	chan_data = &dev_data->chan[channel];
 
 	SDMA_SetChannelPriority(dev_cfg->base, channel, DMA_NXP_SDMA_CHAN_DEFAULT_PRIO);
+	chan_data->started = true;
 	SDMA_StartChannelSoftware(dev_cfg->base, channel);
 
 	return 0;
@@ -372,6 +451,7 @@ static int dma_nxp_sdma_stop(const struct device *dev, uint32_t channel)
 
 	chan_data = &dev_data->chan[channel];
 
+	chan_data->started = false;
 	SDMA_StopTransfer(&chan_data->handle);
 	return 0;
 }
@@ -393,9 +473,21 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 	return 0;
 }
 
+static bool dma_nxp_sdma_bd_needs_reprogram(struct sdma_channel_data *chan_data,
+					    uint32_t src, uint32_t dst)
+{
+	uint32_t mem_addr;
+
+	/* the memory side is the only one a caller can move between transfers */
+	mem_addr = chan_data->direction == PERIPHERAL_TO_MEMORY ? dst : src;
+
+	return mem_addr != chan_data->bd_mem_addr[chan_data->bd_write_idx];
+}
+
 static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint32_t src,
 			       uint32_t dst, size_t size)
 {
+	const struct sdma_dev_cfg *dev_cfg = dev->config;
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	unsigned int key;
@@ -407,6 +499,44 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	}
 
 	key = irq_lock();
+
+	/*
+	 * Callers that stream a fixed ring (the buffers were handed over once at
+	 * config() time) pass back the same addresses every time and only need
+	 * the produced/consumed counters advanced. Callers that queue a fresh
+	 * block per transfer, such as the I2S API, hand in a new address here,
+	 * so the descriptor has to be rewritten to point at it. Detect the
+	 * latter by comparing against the descriptor we would reuse: if nothing
+	 * moved, this is a no-op and ring users keep their old behaviour.
+	 */
+	if (dma_nxp_sdma_bd_needs_reprogram(chan_data, src, dst)) {
+		sdma_buffer_descriptor_t *bd = &chan_data->bd_pool[chan_data->bd_write_idx];
+		bool is_last = chan_data->bd_write_idx == (chan_data->bd_count - 1);
+
+		SDMA_ConfigBufferDescriptor(bd, src, dst, chan_data->bus_width, size,
+					    is_last, true, is_last,
+					    chan_data->transfer_cfg.type);
+
+		chan_data->bd_mem_addr[chan_data->bd_write_idx] =
+			chan_data->direction == PERIPHERAL_TO_MEMORY ? dst : src;
+		chan_data->bd_size[chan_data->bd_write_idx] = size;
+		chan_data->bd_write_idx = (chan_data->bd_write_idx + 1) % chan_data->bd_count;
+
+		chan_data->queue_mode = true;
+		chan_data->bd_pending++;
+
+		/*
+		 * The completion callback runs before the client is told a block
+		 * is done, so the client queues the next one from underneath it,
+		 * by which point the callback has already decided not to restart
+		 * the channel. Kick it from here instead: this is the only point
+		 * at which a newly queued descriptor is known to exist.
+		 */
+		if (chan_data->started) {
+			SDMA_StartChannelSoftware(dev_cfg->base, chan_data->index);
+		}
+	}
+
 	if (chan_data->direction == MEMORY_TO_PERIPHERAL) {
 		dma_nxp_sdma_produce(chan_data, size);
 	} else {
