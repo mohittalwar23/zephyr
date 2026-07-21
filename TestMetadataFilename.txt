@@ -1,0 +1,6 @@
+Sample and test metadata must be stored in a file named tests.yaml.
+
+ New file 'tests/subsys/mp/build_all/testcase.yaml' uses the legacy metadata filename 'testcase.yaml'. Sample and test metadata must be stored in a file named 'tests.yaml'. Rename it to 'tests/subsys/mp/build_all/tests.yaml'.
+ New file 'tests/subsys/mp/core/pipeline/testcase.yaml' uses the legacy metadata filename 'testcase.yaml'. Sample and test metadata must be stored in a file named 'tests.yaml'. Rename it to 'tests/subsys/mp/core/pipeline/tests.yaml'.
+ New file 'tests/subsys/mp/core/unit/testcase.yaml' uses the legacy metadata filename 'testcase.yaml'. Sample and test metadata must be stored in a file named 'tests.yaml'. Rename it to 'tests/subsys/mp/core/unit/tests.yaml'.
+ New file 'tests/subsys/mp/plugins/zaud/testcase.yaml' uses the legacy metadata filename 'testcase.yaml'. Sample and test metadata must be stored in a file named 'tests.yaml'. Rename it to 'tests/subsys/mp/plugins/zaud/tests.yaml'.

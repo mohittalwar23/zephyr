@@ -67,7 +67,14 @@ struct sdma_channel_data {
 	 * Derived rather than configured so that ring users are unaffected.
 	 */
 	bool queue_mode;
-	uint32_t bd_pending; /* queued descriptors not yet completed */
+	/*
+	 * Queued descriptors not yet completed. Updated from thread context in
+	 * reload() and from interrupt context on completion; reload() runs with
+	 * interrupts locked, which is what keeps the two apart. That is enough
+	 * here because the engine's completions arrive on the core doing the
+	 * locking, and would not be on an SMP target.
+	 */
+	uint32_t bd_pending;
 	bool started; /* channel is between start() and stop() */
 
 	void *arg; /* argument passed to user-defined DMA callback */
@@ -520,6 +527,16 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	 * latter by comparing against the descriptor we would reuse: if nothing
 	 * moved, this is a no-op and ring users keep their old behaviour.
 	 */
+	if (chan_data->queue_mode && chan_data->bd_pending >= chan_data->bd_count) {
+		/*
+		 * Every descriptor is still owned by the engine. Reprogramming
+		 * one now would move a transfer that is in progress, so refuse
+		 * rather than corrupt it and let the caller retry.
+		 */
+		irq_unlock(key);
+		return -EBUSY;
+	}
+
 	if (dma_nxp_sdma_bd_needs_reprogram(chan_data, src, dst)) {
 		sdma_buffer_descriptor_t *bd = &chan_data->bd_pool[chan_data->bd_write_idx];
 		bool is_wrap = chan_data->bd_write_idx == (chan_data->bd_count - 1);
