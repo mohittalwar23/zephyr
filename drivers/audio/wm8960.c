@@ -433,6 +433,7 @@ struct wm8960_config {
 
 struct wm8960_data {
 	bool initialized;
+	bool configured;
 	bool muted;
 	bool input_muted;
 	bool use_pll;
@@ -1247,6 +1248,7 @@ static int wm8960_power_up(const struct device *dev, struct audio_codec_cfg *cfg
 {
 	int ret;
 	const struct wm8960_config *config = dev->config;
+	struct wm8960_data *data = dev->data;
 
 	/* Power up sequence:
 	 * 1. Enable VMID and VREF
@@ -1268,7 +1270,7 @@ static int wm8960_power_up(const struct device *dev, struct audio_codec_cfg *cfg
 	/* Step 2: route (this includes power up and mixer configs) */
 	uint16_t i_left, i_right, o_hp_l, o_hp_r;
 
-	switch (cfg->dai_route) {
+	switch (data->route) {
 	case AUDIO_ROUTE_BYPASS:
 		i_left = WM8960_IN_MUTE;
 		i_right = WM8960_IN_MUTE;
@@ -1968,7 +1970,22 @@ static int wm8960_configure(const struct device *dev,
 		return -ENODEV;
 	}
 
-	data->route = cfg->dai_route;
+	/*
+	 * One codec can be shared by a capture and a playback element, each
+	 * of which configures it for its own direction. Since configure()
+	 * soft-resets the device, taking the new route verbatim would tear
+	 * down the direction set up by the other element. Promote to
+	 * PLAYBACK_CAPTURE instead so both survive.
+	 */
+	if (data->configured && data->route != cfg->dai_route &&
+	    (data->route == AUDIO_ROUTE_PLAYBACK || data->route == AUDIO_ROUTE_CAPTURE) &&
+	    (cfg->dai_route == AUDIO_ROUTE_PLAYBACK || cfg->dai_route == AUDIO_ROUTE_CAPTURE)) {
+		LOG_INF("codec already routed for %s, promoting to playback+capture",
+			data->route == AUDIO_ROUTE_CAPTURE ? "capture" : "playback");
+		data->route = AUDIO_ROUTE_PLAYBACK_CAPTURE;
+	} else {
+		data->route = cfg->dai_route;
+	}
 
 	ret = wm8960_validate_dai_cfg(cfg);
 	if (ret < 0) {
@@ -2017,6 +2034,8 @@ static int wm8960_configure(const struct device *dev,
 		LOG_ERR("Failed to set mute: %d", ret);
 		return ret;
 	}
+
+	data->configured = true;
 
 	return 0;
 }
