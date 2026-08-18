@@ -7,7 +7,7 @@ config I2S_NXP_SAI_SDMA
 	depends on DT_HAS_NXP_SAI_SDMA_ENABLED
 	depends on CLOCK_CONTROL
 	depends on DMA
-	select PINCTRL
+	depends on PINCTRL
 	help
 	  Enable the I2S driver for NXP SAI instances whose transfers are
 	  carried by an SDMA engine (i.MX8M family Cortex-M cores). The SDMA
