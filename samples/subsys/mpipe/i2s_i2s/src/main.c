@@ -15,6 +15,7 @@
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
 #include <zephyr/mpipe/aud/mpipe_aud_gain.h>
 #include <zephyr/mpipe/base/mpipe_caps_filter.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 LOG_MODULE_REGISTER(main);
 
@@ -139,13 +140,25 @@ int main(void)
 	struct mpipe_message msg;
 	int sub_ret;
 
-	do {
-		sub_ret = zbus_sub_wait_msg(&main_sub, &chan, &msg, K_FOREVER);
+	while (true) {
+		sub_ret = zbus_sub_wait_msg(&main_sub, &chan, &msg, K_MSEC(2000));
+		if (sub_ret == -ENOMSG) {
+			struct mpipe_latency_stats lat;
+
+			mpipe_latency_get_stats(&lat);
+			LOG_INF("latency: n=%u min=%u avg=%u max=%u us", lat.count, lat.min_us,
+				lat.count ? (uint32_t)(lat.sum_us / lat.count) : 0U, lat.max_us);
+			mpipe_latency_reset();
+			continue;
+		}
 		if (sub_ret != 0) {
 			LOG_ERR("zbus_sub_wait_msg failed (%d)", sub_ret);
 			goto err_set_state;
 		}
-	} while ((msg.type & (MPIPE_MESSAGE_ERROR | MPIPE_MESSAGE_EOS)) == 0);
+		if ((msg.type & (MPIPE_MESSAGE_ERROR | MPIPE_MESSAGE_EOS)) != 0) {
+			break;
+		}
+	}
 
 	int origin_id = (msg.origin != NULL) ? msg.origin->object.id : -1;
 
