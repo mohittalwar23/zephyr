@@ -1,0 +1,58 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SAI3/WM8960 analog loop. SAI3, SDMA3 and I2C3 must be in the M7 RDC domain
+ * (the default with imx8mp-evk-rpmsg.dtb).
+ */
+
+#include <zephyr/dt-bindings/clock/imx_ccm.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
+/delete-node/ &sai3;
+
+&sdma3 {
+	status = "okay";
+};
+
+/ {
+	aliases {
+		i2s-codec-tx = &i2s3;
+		i2s-codec-rx = &i2s3;
+		audio-codec-capture = &audio_codec;
+	};
+
+	soc {
+		i2s3: i2s@30c30000 {
+			compatible = "nxp,sai-sdma";
+			reg = <0x30c30000 0x10000>;
+			clocks = <&ccm IMX_CCM_SAI3_CLK 0x0 0x0>;
+			interrupts = <50 3>;
+			dmas = <&sdma3 5 5>, <&sdma3 4 5>;
+			dma-names = "tx", "rx";
+			mclk-output;
+			rx-sync-mode;
+			pinctrl-0 = <&sai3_default>;
+			pinctrl-names = "default";
+			status = "okay";
+		};
+	};
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_i2c3>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+
+	audio_codec: wm8960@1a {
+		compatible = "wolfson,wm8960";
+		reg = <0x1a>;
+		clocks = <&ccm IMX_CCM_SAI3_CLK 0x0 0x0>;
+		clock-names = "mclk";
+		left-input = "WM8960_IN_MIC_DE_13";
+		right-input = "WM8960_IN_MIC_DE_13";
+		shared-lrclk;
+	};
+};
