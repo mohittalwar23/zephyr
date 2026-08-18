@@ -15,6 +15,7 @@
 #include <zephyr/mpipe/mpipe_bin.h>
 #include <zephyr/mpipe/mpipe_dispatch.h>
 #include <zephyr/mpipe/mpipe_element.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 #include <zephyr/mpipe/mpipe_message.h>
 #include <zephyr/mpipe/mpipe_object.h>
 #include <zephyr/mpipe/mpipe_pad.h>
@@ -142,6 +143,9 @@ int mpipe_push_buffer(struct mpipe_pad *src_pad, struct net_buf *buffer)
 		return -EINVAL;
 	}
 
+	/* Latency: stamp ingress at a source (no-op, and compiled out, otherwise). */
+	mpipe_latency_mark((struct mpipe_element *)src_pad->object.container, buffer);
+
 	while (cur_src_pad != NULL && buffer != NULL) {
 		next_sink_pad = cur_src_pad->peer;
 
@@ -170,6 +174,10 @@ int mpipe_push_buffer(struct mpipe_pad *src_pad, struct net_buf *buffer)
 
 		if (next_sink_pad->chain_fn != NULL) {
 			out_buf = NULL;
+
+			/* Latency: measure egress before a sink consumes the buffer. */
+			mpipe_latency_measure(
+				(struct mpipe_element *)next_sink_pad->object.container, buffer);
 
 			ret = next_sink_pad->chain_fn(next_sink_pad, buffer, &out_buf);
 			if (ret != 0) {

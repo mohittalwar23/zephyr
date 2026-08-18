@@ -1,0 +1,6 @@
+tests:
+  mpipe.latency:
+    tags:
+      - mpipe
+    platform_allow:
+      - native_sim/native/64

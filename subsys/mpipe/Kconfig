@@ -130,6 +130,21 @@ config MPIPE_DUMP
 
 	  Costs a name pointer on every element, plus the rendering code.
 
+config MPIPE_LATENCY
+	bool "Source-to-sink latency measurement"
+	help
+	  Measure how long each buffer takes from the source that produced it to
+	  the sink that consumes it, in microseconds, by instrumenting the one
+	  path every buffer travels. Media-agnostic: it works the same for audio,
+	  video and multi-pipeline graphs, with no per-plugin code.
+
+	  Each measurement is logged at debug level, tagged with the sink's
+	  element id so several sinks or pipelines stay apart, and folded into
+	  aggregate statistics read with mpipe_latency_get_stats().
+
+	  A debugging aid. Leave it off in production, where every entry point
+	  compiles to nothing and the buffer path is unchanged.
+
 config MPIPE_BIN_MAX_CHILDREN
 	int "Maximum number of elements in a bin/pipeline"
 	range 2 64
