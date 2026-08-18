@@ -46,6 +46,14 @@ struct mpipe_latency_stats {
 	uint64_t sum_us;
 };
 
+/** @brief Declared end-to-end latency bound, in microseconds. */
+struct mpipe_latency_bound {
+	/** Buffering the pipeline always adds (best case). */
+	uint32_t min_us;
+	/** Buffering headroom before overrun (worst case, >= min_us). */
+	uint32_t max_us;
+};
+
 #if defined(CONFIG_MPIPE_LATENCY) || defined(__DOXYGEN__)
 
 /**
@@ -73,6 +81,23 @@ void mpipe_latency_get_stats(struct mpipe_latency_stats *out);
 /** @brief Clear the accumulated latency statistics. */
 void mpipe_latency_reset(void);
 
+/**
+ * @brief Declare an element's own end-to-end latency contribution.
+ *
+ * Called by a source or sink at configure time; contributions accumulate
+ * (GStreamer's rule: pipeline min/max latency is the sum of each element's).
+ *
+ * @param min_us Buffering this element always adds.
+ * @param max_us Buffering headroom before overrun.
+ */
+void mpipe_latency_declare(uint32_t min_us, uint32_t max_us);
+
+/**
+ * @brief Read the aggregated end-to-end latency bound.
+ * @param out Storage for the snapshot.
+ */
+void mpipe_latency_get_e2e(struct mpipe_latency_bound *out);
+
 #else /* !CONFIG_MPIPE_LATENCY */
 
 static inline void mpipe_latency_mark(struct mpipe_element *elem, struct net_buf *buf)
@@ -94,6 +119,17 @@ static inline void mpipe_latency_get_stats(struct mpipe_latency_stats *out)
 
 static inline void mpipe_latency_reset(void)
 {
+}
+
+static inline void mpipe_latency_declare(uint32_t min_us, uint32_t max_us)
+{
+	ARG_UNUSED(min_us);
+	ARG_UNUSED(max_us);
+}
+
+static inline void mpipe_latency_get_e2e(struct mpipe_latency_bound *out)
+{
+	*out = (struct mpipe_latency_bound){0};
 }
 
 #endif /* CONFIG_MPIPE_LATENCY */

@@ -12,6 +12,7 @@
 #include <zephyr/mpipe/mpipe_dispatch.h>
 #include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
@@ -271,6 +272,9 @@ static int mpipe_aud_i2s_codec_sink_set_caps(struct mpipe_sink *sink,
 		LOG_ERR("Failed to configure I2S stream: %d", ret);
 		return ret;
 	}
+
+	/* Declared latency: a played sample waits behind the primed frames. */
+	mpipe_latency_declare(AUD_I2S_SINK_START_PRIME * frame_interval, 0);
 
 	return 0;
 }

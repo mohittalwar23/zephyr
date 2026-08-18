@@ -11,6 +11,7 @@
 
 #include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_buffer_pool.h>
@@ -65,6 +66,10 @@ static int mpipe_aud_buffer_pool_config(struct mpipe_buffer_pool *pool,
 	 * - Proper flow control prevents buffer starvation
 	 */
 	pool->config.min_buffers += MPIPE_AUD_BUFFER_POOL_EXTRA_BUFS;
+
+	/* Declared latency headroom: a full pool is the worst-case buffering. */
+	mpipe_latency_declare(0, pool->config.min_buffers * frame_interval);
+
 	pool->config.size = (bit_width / BITS_PER_BYTE) * (sample_rate * frame_interval / 1000000) *
 			    num_of_channel;
 	/* The address needs to be aligned to the size of the DMA transfer */

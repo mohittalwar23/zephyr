@@ -16,7 +16,27 @@
 LOG_MODULE_REGISTER(mpipe_latency, CONFIG_MPIPE_LOG_LEVEL);
 
 static struct mpipe_latency_stats stats = {.min_us = UINT32_MAX};
+static struct mpipe_latency_bound e2e;
 static struct k_spinlock lock;
+
+void mpipe_latency_declare(uint32_t min_us, uint32_t max_us)
+{
+	K_SPINLOCK(&lock) {
+		e2e.min_us += min_us;
+		e2e.max_us += max_us;
+	}
+}
+
+void mpipe_latency_get_e2e(struct mpipe_latency_bound *out)
+{
+	if (out == NULL) {
+		return;
+	}
+
+	K_SPINLOCK(&lock) {
+		*out = e2e;
+	}
+}
 
 void mpipe_latency_mark(struct mpipe_element *elem, struct net_buf *buf)
 {

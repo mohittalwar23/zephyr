@@ -12,6 +12,7 @@
 
 #include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_buffer_pool.h>
@@ -207,6 +208,9 @@ static int mpipe_aud_i2s_src_set_caps(struct mpipe_src *src, const struct mpipe_
 		LOG_ERR("Failed to configure I2S stream: %d", ret);
 		return ret;
 	}
+
+	/* Declared latency: the capture period is the source's own contribution. */
+	mpipe_latency_declare(frame_interval, frame_interval);
 
 	mpipe_pad_set_caps(&src->src_pad, caps);
 
