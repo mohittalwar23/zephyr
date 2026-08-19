@@ -311,6 +311,20 @@ static int mpipe_transform_query(struct mpipe_pad *pad, struct mpipe_dispatch *q
 		}
 
 		return 0;
+#if defined(CONFIG_MPIPE_LATENCY)
+	case MPIPE_DISPATCH_LATENCY:
+		if (self->element.report_latency != NULL) {
+			struct mpipe_latency_bound b = {0};
+
+			self->element.report_latency(&self->element, &b);
+			query->latency.min_us += b.min_us;
+			query->latency.max_us += b.max_us;
+		}
+		if (self->src_pad.peer == NULL) {
+			return 0;
+		}
+		return mpipe_pad_query(self->src_pad.peer, query);
+#endif
 	default:
 		return -ENOTSUP;
 	}

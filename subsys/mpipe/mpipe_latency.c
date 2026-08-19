@@ -11,6 +11,8 @@
 
 #include <zephyr/mpipe/mpipe_buffer.h>
 #include <zephyr/mpipe/mpipe_element.h>
+#include <zephyr/mpipe/mpipe_pad.h>
+#include <zephyr/mpipe/mpipe_dispatch.h>
 #include <zephyr/mpipe/mpipe_latency.h>
 
 LOG_MODULE_REGISTER(mpipe_latency, CONFIG_MPIPE_LOG_LEVEL);
@@ -86,4 +88,47 @@ void mpipe_latency_reset(void)
 	K_SPINLOCK(&lock) {
 		stats = (struct mpipe_latency_stats){.min_us = UINT32_MAX};
 	}
+}
+
+void mpipe_latency_set_report(struct mpipe_element *elem, mpipe_latency_report_fn fn)
+{
+	if (elem != NULL) {
+		elem->report_latency = fn;
+	}
+}
+
+static struct mpipe_pad *first_pad(sys_dlist_t *pads)
+{
+	struct mpipe_object *pad_obj = NULL;
+
+	pad_obj = SYS_DLIST_PEEK_HEAD_CONTAINER(pads, pad_obj, node);
+	return (struct mpipe_pad *)pad_obj;
+}
+
+void mpipe_latency_query(struct mpipe_element *elem, struct mpipe_latency_bound *out)
+{
+	*out = (struct mpipe_latency_bound){0};
+	if (elem == NULL) {
+		return;
+	}
+
+	/* Walk up to the source (element with no sink pads). */
+	struct mpipe_element *src = elem;
+	struct mpipe_pad *sink_pad;
+
+	while ((sink_pad = first_pad(&src->sink_pads)) != NULL && sink_pad->peer != NULL) {
+		src = (struct mpipe_element *)sink_pad->peer->object.container;
+	}
+
+	/* Kick the LATENCY query off on the source's src pad; it sums downstream. */
+	struct mpipe_pad *src_pad = first_pad(&src->src_pads);
+
+	if (src_pad == NULL) {
+		return;
+	}
+
+	struct mpipe_dispatch q = {.type = MPIPE_DISPATCH_LATENCY};
+
+	(void)mpipe_pad_query(src_pad, &q);
+	*out = q.latency;
 }

@@ -39,6 +39,17 @@ static int mpipe_sink_query(struct mpipe_pad *pad, struct mpipe_dispatch *query)
 		}
 
 		return 0;
+#if defined(CONFIG_MPIPE_LATENCY)
+	case MPIPE_DISPATCH_LATENCY:
+		if (self->element.report_latency != NULL) {
+			struct mpipe_latency_bound b = {0};
+
+			self->element.report_latency(&self->element, &b);
+			query->latency.min_us += b.min_us;
+			query->latency.max_us += b.max_us;
+		}
+		return 0; /* sink terminates the chain */
+#endif
 	default:
 		return -ENOTSUP;
 	}

@@ -63,6 +63,23 @@ static int mpipe_src_query(struct mpipe_pad *pad, struct mpipe_dispatch *query)
 	switch (query->type) {
 	case MPIPE_DISPATCH_CAPS:
 		return mpipe_pad_answer_caps_query(pad, query);
+#if defined(CONFIG_MPIPE_LATENCY)
+	case MPIPE_DISPATCH_LATENCY: {
+		struct mpipe_src *src = (struct mpipe_src *)pad->object.container;
+
+		if (src->element.report_latency != NULL) {
+			struct mpipe_latency_bound b = {0};
+
+			src->element.report_latency(&src->element, &b);
+			query->latency.min_us += b.min_us;
+			query->latency.max_us += b.max_us;
+		}
+		if (src->src_pad.peer == NULL) {
+			return 0;
+		}
+		return mpipe_pad_query(src->src_pad.peer, query);
+	}
+#endif
 	default:
 		return -ENOTSUP;
 	}
