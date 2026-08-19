@@ -8,6 +8,10 @@
 
 #include <zephyr/mpipe/mpipe.h>
 #include <zephyr/mpipe/mpipe_latency.h>
+#include <zephyr/mpipe/mpipe_pad.h>
+#include <zephyr/mpipe/mpipe_structure.h>
+#include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_src.h>
 #include <zephyr/mpipe/aud/mpipe_aud_gain.h>
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
@@ -52,6 +56,26 @@ ZTEST(mpipe_latency_query, test_query_sums_source_and_sink)
 	mpipe_latency_query(gain_e, &b);
 	zassert_equal(b.min_us, 25U, "min: got %u", b.min_us);
 	zassert_equal(b.max_us, 55U, "max: got %u", b.max_us);
+}
+
+ZTEST(mpipe_latency_query, test_source_reports_one_frame)
+{
+	struct mpipe_aud_i2s_src s;
+
+	zassert_ok(mpipe_aud_i2s_src_init(&s, 1));
+
+	struct mpipe_structure caps;
+
+	zassert_ok(mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM,
+					       MPIPE_CAPS_FRAME_INTERVAL, MPIPE_TYPE_UINT, 10000,
+					       MPIPE_CAPS_END));
+	mpipe_pad_set_caps(&s.aud_src.src.src_pad, &caps);
+
+	struct mpipe_latency_bound b = {0};
+
+	s.aud_src.src.element.report_latency((struct mpipe_element *)&s, &b);
+	zassert_equal(b.min_us, 10000U, "min: got %u", b.min_us);
+	zassert_equal(b.max_us, 10000U, "max: got %u", b.max_us);
 }
 
 ZTEST_SUITE(mpipe_latency_query, NULL, NULL, NULL, NULL, NULL);

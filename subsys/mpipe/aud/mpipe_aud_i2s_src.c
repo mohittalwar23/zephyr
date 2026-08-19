@@ -12,6 +12,7 @@
 
 #include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_buffer_pool.h>
@@ -293,6 +294,20 @@ static int mpipe_aud_i2s_src_stop(struct mpipe_buffer_pool *pool)
 	return 0;
 }
 
+static void mpipe_aud_i2s_src_report_latency(struct mpipe_element *elem,
+					     struct mpipe_latency_bound *out)
+{
+	struct mpipe_src *src = (struct mpipe_src *)elem;
+	uint32_t frame_interval;
+
+	if (mpipe_aud_caps_get_uint(&src->src_pad.caps, MPIPE_CAPS_FRAME_INTERVAL,
+				    &frame_interval) != 0) {
+		return; /* not negotiated yet: contribute nothing */
+	}
+	out->min_us = frame_interval;
+	out->max_us = frame_interval;
+}
+
 int mpipe_aud_i2s_src_init(struct mpipe_aud_i2s_src *aud_i2s_src, uint8_t id)
 {
 	__ASSERT_NO_MSG(aud_i2s_src != NULL);
@@ -329,6 +344,8 @@ int mpipe_aud_i2s_src_init(struct mpipe_aud_i2s_src *aud_i2s_src, uint8_t id)
 	src->pool->stop = mpipe_aud_i2s_src_stop;
 
 	mpipe_aud_i2s_src_update_caps(src);
+
+	mpipe_latency_set_report(self, mpipe_aud_i2s_src_report_latency);
 
 	return 0;
 }
