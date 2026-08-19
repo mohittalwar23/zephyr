@@ -426,6 +426,7 @@ struct wm8960_config {
 	uint32_t clk_out;
 	uint32_t hp_jd;
 	uint32_t gpio1_sel;
+	bool shared_lrclk;
 	bool enable_spkr;
 	uint32_t left_input;
 	uint32_t right_input;
@@ -826,7 +827,9 @@ static int wm8960_configure_pll(const struct device *dev, struct audio_codec_cfg
 
 static int wm8960_configure_audio_interface(const struct device *dev, struct audio_codec_cfg *cfg)
 {
+	const struct wm8960_config *config = dev->config;
 	uint16_t iface1_val = 0;
+	int ret;
 
 	/* Configure audio format based on dai_type */
 	switch (cfg->dai_type) {
@@ -869,7 +872,27 @@ static int wm8960_configure_audio_interface(const struct device *dev, struct aud
 	}
 
 	/* Write audio interface configuration */
-	return wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	ret = wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/*
+	 * Boards that route a single frame clock leave ADCLRC unconnected, so
+	 * the ADC has to take its frame clock from DACLRC. Without it the ADC
+	 * is never clocked and capture reads as silence.
+	 *
+	 * Linux sets LRCM in ADDCTL2 for its wlf,shared-lrclk property. That
+	 * alone was measured to be insufficient on i.MX8MP: capture produced
+	 * only the noise floor until the ADCLRC pin function was reassigned as
+	 * well, which is what ALRCGPIO does.
+	 */
+	if (config->shared_lrclk) {
+		return wm8960_reg_update(dev, WM8960_IFACE2, WM8960_IFACE2_ALRCGPIO,
+					 WM8960_IFACE2_ALRCGPIO);
+	}
+
+	return 0;
 }
 
 static int wm8960_route_input(const struct device *dev, audio_channel_t channel, uint32_t input)
@@ -2104,6 +2127,7 @@ static int wm8960_init(const struct device *dev)
 		.left_input = DT_INST_ENUM_IDX(inst, left_input), \
 		.right_input = DT_INST_ENUM_IDX(inst, right_input), \
 		.mclk_freq = DT_INST_PROP_OR(inst, mclk_freq, 12288000), \
+		.shared_lrclk = DT_INST_PROP(inst, shared_lrclk), \
 		.enable_spkr = DT_INST_PROP(inst, enable_spkr)}; \
 \
 	DEVICE_DT_INST_DEFINE( \
@@ -2134,6 +2158,7 @@ static int wm8960_init(const struct device *dev)
 			name, \
 			0\
 		), \
+		.shared_lrclk = DT_INST_PROP(inst, shared_lrclk), \
 		.enable_spkr = DT_INST_PROP(inst, enable_spkr)}; \
 \
 	DEVICE_DT_INST_DEFINE(\
