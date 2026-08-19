@@ -78,4 +78,19 @@ ZTEST(mpipe_latency_query, test_source_reports_one_frame)
 	zassert_equal(b.max_us, 10000U, "max: got %u", b.max_us);
 }
 
+ZTEST(mpipe_latency_query, test_sink_reports_prime_and_pool)
+{
+	struct mpipe_aud_i2s_codec_sink k;
+
+	zassert_ok(mpipe_aud_i2s_codec_sink_init(&k, 3));
+	k.frame_interval = 10000U;
+	k.mem_slab = NULL; /* no slab -> max falls back to prime */
+
+	struct mpipe_latency_bound b = {0};
+
+	k.sink.element.report_latency((struct mpipe_element *)&k, &b);
+	zassert_equal(b.min_us, 3U * 10000U, "min: got %u", b.min_us); /* PRIME=3 */
+	zassert_equal(b.max_us, 3U * 10000U, "max: got %u", b.max_us);
+}
+
 ZTEST_SUITE(mpipe_latency_query, NULL, NULL, NULL, NULL, NULL);

@@ -12,6 +12,7 @@
 #include <zephyr/mpipe/mpipe_dispatch.h>
 #include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_value.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
@@ -206,6 +207,8 @@ static int mpipe_aud_i2s_codec_sink_set_caps(struct mpipe_sink *sink,
 		return -EINVAL;
 	}
 
+	aud_i2s_codec_sink->frame_interval = frame_interval;
+
 	if (aud_i2s_codec_sink->mem_slab == NULL) {
 		LOG_ERR("Memory slab not configured");
 		return -EINVAL;
@@ -332,6 +335,23 @@ int mpipe_aud_i2s_codec_sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_
 	return 0;
 }
 
+static void mpipe_aud_i2s_codec_sink_report_latency(struct mpipe_element *elem,
+						    struct mpipe_latency_bound *out)
+{
+	struct mpipe_aud_i2s_codec_sink *self =
+		CONTAINER_OF(elem, struct mpipe_aud_i2s_codec_sink, sink.element);
+	uint32_t fi = self->frame_interval;
+	uint32_t depth = (self->mem_slab != NULL && self->mem_slab->info.num_blocks > 0U)
+				 ? self->mem_slab->info.num_blocks
+				 : AUD_I2S_SINK_START_PRIME;
+
+	if (fi == 0U) {
+		return; /* not configured yet */
+	}
+	out->min_us = AUD_I2S_SINK_START_PRIME * fi;
+	out->max_us = depth * fi;
+}
+
 int mpipe_aud_i2s_codec_sink_init(struct mpipe_aud_i2s_codec_sink *aud_i2s_codec_sink, uint8_t id)
 {
 	__ASSERT_NO_MSG(aud_i2s_codec_sink != NULL);
@@ -359,6 +379,8 @@ int mpipe_aud_i2s_codec_sink_init(struct mpipe_aud_i2s_codec_sink *aud_i2s_codec
 	sink->propose_buffer_pool = mpipe_aud_i2s_codec_sink_propose_buffer_pool;
 
 	mpipe_aud_i2s_codec_sink_update_caps(sink);
+
+	mpipe_latency_set_report(self, mpipe_aud_i2s_codec_sink_report_latency);
 
 	aud_i2s_codec_sink->started = false;
 	aud_i2s_codec_sink->count = 0;

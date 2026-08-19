@@ -72,6 +72,8 @@ struct mpipe_aud_i2s_codec_sink {
 	const struct device *codec_dev;
 	/** Memory slab for audio buffer allocation */
 	struct k_mem_slab *mem_slab;
+	/** Negotiated frame interval (us), for declared latency */
+	uint32_t frame_interval;
 	/** Number of buffers written at the beginning of the stream */
 	uint8_t count;
 	/** Number of queued buffers required before starting the stream */
