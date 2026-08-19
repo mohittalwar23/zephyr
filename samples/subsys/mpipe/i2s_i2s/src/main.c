@@ -136,6 +136,12 @@ int main(void)
 		goto err_set_state;
 	}
 
+	struct mpipe_latency_bound e2e;
+
+	mpipe_latency_query((struct mpipe_element *)&sink, &e2e);
+	LOG_INF("latency e2e (declared): min %u ms / max %u ms", e2e.min_us / 1000U,
+		e2e.max_us / 1000U);
+
 	const struct zbus_channel *chan;
 	struct mpipe_message msg;
 	int sub_ret;
