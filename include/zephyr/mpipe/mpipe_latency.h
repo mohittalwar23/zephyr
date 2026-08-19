@@ -46,6 +46,18 @@ struct mpipe_latency_stats {
 	uint64_t sum_us;
 };
 
+/** @brief Declared end-to-end latency bound, in microseconds. */
+struct mpipe_latency_bound {
+	/** Buffering the pipeline always adds (best case). */
+	uint32_t min_us;
+	/** Buffering headroom before overrun (worst case, >= min_us). */
+	uint32_t max_us;
+};
+
+/** @brief An element's own latency contribution reporter. */
+typedef void (*mpipe_latency_report_fn)(struct mpipe_element *elem,
+					struct mpipe_latency_bound *out);
+
 #if defined(CONFIG_MPIPE_LATENCY) || defined(__DOXYGEN__)
 
 /**
@@ -73,6 +85,12 @@ void mpipe_latency_get_stats(struct mpipe_latency_stats *out);
 /** @brief Clear the accumulated latency statistics. */
 void mpipe_latency_reset(void);
 
+/** @brief Register an element's latency reporter (no-op when disabled). */
+void mpipe_latency_set_report(struct mpipe_element *elem, mpipe_latency_report_fn fn);
+
+/** @brief Aggregate a chain's declared end-to-end latency (query from any element). */
+void mpipe_latency_query(struct mpipe_element *elem, struct mpipe_latency_bound *out);
+
 #else /* !CONFIG_MPIPE_LATENCY */
 
 static inline void mpipe_latency_mark(struct mpipe_element *elem, struct net_buf *buf)
@@ -94,6 +112,18 @@ static inline void mpipe_latency_get_stats(struct mpipe_latency_stats *out)
 
 static inline void mpipe_latency_reset(void)
 {
+}
+
+static inline void mpipe_latency_set_report(struct mpipe_element *elem, mpipe_latency_report_fn fn)
+{
+	ARG_UNUSED(elem);
+	ARG_UNUSED(fn);
+}
+
+static inline void mpipe_latency_query(struct mpipe_element *elem, struct mpipe_latency_bound *out)
+{
+	ARG_UNUSED(elem);
+	*out = (struct mpipe_latency_bound){0};
 }
 
 #endif /* CONFIG_MPIPE_LATENCY */

@@ -45,6 +45,7 @@
 
 #include <zephyr/mpipe/mpipe_buffer.h>
 #include <zephyr/mpipe/mpipe_structure.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 /**
  * @enum mpipe_dispatch_type
@@ -55,6 +56,9 @@ enum mpipe_dispatch_type {
 	MPIPE_DISPATCH_EOS,             /**< EOS dispatch type */
 	MPIPE_DISPATCH_CAPS,            /**< CAPS dispatch type */
 	MPIPE_DISPATCH_BUFFER_POOL,     /**< Buffer pool negotiation type */
+#if defined(CONFIG_MPIPE_LATENCY)
+	MPIPE_DISPATCH_LATENCY, /**< Declared end-to-end latency query */
+#endif
 	MPIPE_DISPATCH_END = UINT8_MAX, /**< Maximum dispatch type identifier */
 };
 
@@ -106,6 +110,10 @@ struct mpipe_dispatch {
 	struct mpipe_buffer_pool *pool;
 	/** A pool config proposed without a pool, negotiated by value */
 	struct mpipe_buffer_pool_config pool_cfg;
+#if defined(CONFIG_MPIPE_LATENCY)
+	/** LATENCY query accumulator: each element adds its own contribution. */
+	struct mpipe_latency_bound latency;
+#endif
 };
 
 /** @} */

@@ -62,6 +62,7 @@
 #include <zephyr/sys/util.h>
 
 #include <zephyr/mpipe/mpipe_object.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 
 struct mpipe_dispatch;
 struct zbus_channel;
@@ -203,6 +204,11 @@ struct mpipe_element {
 	/** Change state function */
 	enum mpipe_state_change_return (*change_state)(struct mpipe_element *element,
 						       enum mpipe_state_change transition);
+
+#if defined(CONFIG_MPIPE_LATENCY)
+	/** Optional: this element's own latency contribution. */
+	mpipe_latency_report_fn report_latency;
+#endif
 };
 
 /**
