@@ -426,6 +426,7 @@ struct wm8960_config {
 	uint32_t clk_out;
 	uint32_t hp_jd;
 	uint32_t gpio1_sel;
+	bool shared_lrclk;
 	bool enable_spkr;
 	uint32_t left_input;
 	uint32_t right_input;
@@ -782,6 +783,20 @@ static int wm8960_configure_pll(const struct device *dev, struct audio_codec_cfg
 	}
 
 	LOG_DBG("sys_out_freq is %d", data->sysclk_out_freq);
+
+	/*
+	 * Boards that route a single frame clock to the codec leave ADCLRC
+	 * unconnected, so the ADC has to take its frame clock from DACLRC.
+	 * That is what ALRCGPIO selects; without it the ADC is never clocked
+	 * and capture reads as silence.
+	 */
+	if (((const struct wm8960_config *)dev->config)->shared_lrclk) {
+		ret = wm8960_reg_update(dev, WM8960_IFACE2, WM8960_IFACE2_ALRCGPIO,
+					WM8960_IFACE2_ALRCGPIO);
+		if (ret < 0) {
+			return ret;
+		}
+	}
 
 	/* if in controller mode */
 	if ((cfg->dai_cfg.i2s.options & I2S_OPT_FRAME_CLK_TARGET) == I2S_OPT_FRAME_CLK_CONTROLLER) {
@@ -2126,6 +2141,7 @@ static int wm8960_init(const struct device *dev)
 		.left_input = DT_INST_ENUM_IDX(inst, left_input), \
 		.right_input = DT_INST_ENUM_IDX(inst, right_input), \
 		.mclk_freq = DT_INST_PROP_OR(inst, mclk_freq, 12288000), \
+		.shared_lrclk = DT_INST_PROP(inst, shared_lrclk), \
 		.enable_spkr = DT_INST_PROP(inst, enable_spkr)}; \
 \
 	DEVICE_DT_INST_DEFINE( \
@@ -2156,6 +2172,7 @@ static int wm8960_init(const struct device *dev)
 			name, \
 			0\
 		), \
+		.shared_lrclk = DT_INST_PROP(inst, shared_lrclk), \
 		.enable_spkr = DT_INST_PROP(inst, enable_spkr)}; \
 \
 	DEVICE_DT_INST_DEFINE(\
