@@ -394,12 +394,28 @@ static int dma_emul_configure(const struct device *dev, uint32_t channel,
 	return ret;
 }
 
+static int dma_emul_start(const struct device *dev, uint32_t channel);
+
 static int dma_emul_reload(const struct device *dev, uint32_t channel, dma_addr_t src,
 			   dma_addr_t dst, size_t size)
 {
-	LOG_DBG("%s()", __func__);
+	const struct dma_emul_config *config = dev->config;
+	struct dma_block_config *block;
 
-	return -ENOSYS;
+	if (channel >= config->num_channels) {
+		return -EINVAL;
+	}
+
+	block = &config->block[channel * config->num_requests +
+			       config->xfer[channel].config.dma_slot];
+	block->source_address = src;
+	block->dest_address = dst;
+	block->block_size = size;
+	config->xfer[channel].config.block_count = 1;
+
+	dma_emul_set_channel_state(dev, channel, DMA_EMUL_CHANNEL_LOADED);
+
+	return dma_emul_start(dev, channel);
 }
 
 static int dma_emul_start(const struct device *dev, uint32_t channel)
