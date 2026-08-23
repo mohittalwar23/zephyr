@@ -482,9 +482,19 @@ static int dma_emul_resume(const struct device *dev, uint32_t channel)
 static int dma_emul_get_status(const struct device *dev, uint32_t channel,
 			       struct dma_status *status)
 {
-	LOG_DBG("%s()", __func__);
+	const struct dma_emul_config *config = dev->config;
+	enum dma_emul_channel_state state;
 
-	return -ENOSYS;
+	if (channel >= config->num_channels || status == NULL) {
+		return -EINVAL;
+	}
+
+	memset(status, 0, sizeof(*status));
+	state = dma_emul_get_channel_state(dev, channel);
+	status->busy = (state == DMA_EMUL_CHANNEL_STARTED);
+	status->dir = config->xfer[channel].config.channel_direction;
+
+	return 0;
 }
 
 static int dma_emul_get_attribute(const struct device *dev, uint32_t type, uint32_t *value)
