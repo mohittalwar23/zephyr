@@ -14,7 +14,7 @@ config DMA_NXP_SDMA_BD_COUNT
 	default 4
 	range 2 64
 	help
-	  Depth of the per-channel buffer-descriptor pool. For scatter-gather
+	  Depth of the per-channel buffer-descriptor pool. For append-mode
 	  consumers (I2S/SAI) this bounds how many blocks dma_reload() can
 	  queue ahead of the engine; it must exceed the block_count passed to
 	  dma_config() so reload() has room to append. SOF's fixed-ring use is

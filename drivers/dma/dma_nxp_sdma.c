@@ -10,6 +10,7 @@
 #include <zephyr/logging/log.h>
 #include "fsl_sdma.h"
 #include "dma_nxp_sdma_accounting.h"
+#include "dma_nxp_sdma_common.h"
 #include "dma_nxp_sdma_lifecycle.h"
 
 LOG_MODULE_REGISTER(nxp_sdma);
@@ -42,11 +43,13 @@ struct sdma_channel_data {
 	bool callback_pending;
 	bool error_callback_dis;
 	int callback_status;
-	bool sg;               /* scatter-gather append mode (gather/scatter set) */
-	uint32_t bus_width;    /* source_data_size, kept for reload() BD reprogram */
-	uint32_t bd_write_idx; /* next pool slot reload() programs (sg) */
-	uint32_t bd_pending;   /* BDs handed to the engine, not yet completed (sg) */
-	uint32_t bd_size[CONFIG_DMA_NXP_SDMA_BD_COUNT]; /* per-BD byte count (sg) */
+	bool append_mode;
+	uint32_t bus_width;
+	uint32_t bd_write_idx;
+	uint32_t bd_pending;
+	uint32_t bd_pending_bytes;
+	uint64_t total_copied;
+	uint32_t bd_size[CONFIG_DMA_NXP_SDMA_BD_COUNT];
 
 	void *arg; /* argument passed to user-defined DMA callback */
 	dma_callback_t cb; /* user-defined callback for DMA transfer completion */
@@ -132,10 +135,12 @@ void sdma_set_transfer_type(struct dma_config *config, sdma_transfer_type_t *typ
 
 int sdma_set_peripheral_type(struct dma_config *config, sdma_peripheral_t *type)
 {
-	switch (config->dma_slot) {
+	uint32_t peripheral = config->dma_slot & DMA_NXP_SDMA_PERIPHERAL_MASK;
+
+	switch (peripheral) {
 	case kSDMA_PeripheralNormal_SP:
 	case kSDMA_PeripheralMultiFifoPDM:
-		*type = config->dma_slot;
+		*type = peripheral;
 		break;
 	default:
 		return -EINVAL;
@@ -180,15 +185,46 @@ static void dma_nxp_sdma_rearm_descriptor(void *context, uint32_t index, uint32_
 	bd->status |= (uint8_t)kSDMA_BDStatusDone;
 }
 
+static int dma_nxp_sdma_append_complete(struct sdma_channel_data *chan_data, uint32_t next_bd)
+{
+	uint32_t completed_bd;
+	uint32_t size;
+
+	if (next_bd >= CONFIG_DMA_NXP_SDMA_BD_COUNT || chan_data->bd_pending == 0U) {
+		return -EINVAL;
+	}
+
+	/* MCUX advances bdIndex before reporting a completion. */
+	completed_bd = (next_bd + CONFIG_DMA_NXP_SDMA_BD_COUNT - 1U) %
+		       CONFIG_DMA_NXP_SDMA_BD_COUNT;
+	size = chan_data->bd_size[completed_bd];
+	if (size == 0U || size > chan_data->bd_pending_bytes) {
+		return -EINVAL;
+	}
+
+	chan_data->bd_size[completed_bd] = 0U;
+	chan_data->bd_pending--;
+	chan_data->bd_pending_bytes -= size;
+	chan_data->total_copied += size;
+
+	return 0;
+}
+
 static bool dma_nxp_sdma_complete(void *context)
 {
 	struct dma_nxp_sdma_completion *completion = context;
 	struct sdma_channel_data *chan_data = completion->chan_data;
+	bool restart = true;
 	int ret;
 
-	ret = dma_nxp_sdma_descriptor_complete(&chan_data->descriptor_state,
-					       chan_data->direction, completion->bd_index,
-					       dma_nxp_sdma_rearm_descriptor, chan_data);
+	if (chan_data->append_mode) {
+		ret = dma_nxp_sdma_append_complete(chan_data, completion->bd_index);
+		restart = chan_data->bd_pending != 0U;
+	} else {
+		ret = dma_nxp_sdma_descriptor_complete(&chan_data->descriptor_state,
+						       chan_data->direction, completion->bd_index,
+						       dma_nxp_sdma_rearm_descriptor, chan_data);
+	}
 
 	chan_data->callback_status = (ret != 0) ? ret : DMA_STATUS_BLOCK;
 	chan_data->callback_pending = true;
@@ -198,7 +234,7 @@ static bool dma_nxp_sdma_complete(void *context)
 		return false;
 	}
 
-	return true;
+	return restart;
 }
 
 void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferDone,
@@ -236,34 +272,51 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	sdma_buffer_descriptor_t *crt_bd;
+	uint32_t bd_count;
 	uint32_t i;
 
 	chan_data = &dev_data->chan[channel];
 
 	chan_data->bd_pool = &dev_data->bd_pool[channel][0];
+	bd_count = chan_data->append_mode ? CONFIG_DMA_NXP_SDMA_BD_COUNT
+					  : chan_data->descriptor_state.bd_count;
+	chan_data->bd_write_idx = 0U;
+	chan_data->bd_pending = 0U;
+	chan_data->bd_pending_bytes = 0U;
+	chan_data->total_copied = 0U;
+	memset(chan_data->bd_size, 0, sizeof(chan_data->bd_size));
 
-	memset(chan_data->bd_pool, 0,
-	       sizeof(sdma_buffer_descriptor_t) * chan_data->descriptor_state.bd_count);
-	SDMA_InstallBDMemory(&chan_data->handle, chan_data->bd_pool,
-			     chan_data->descriptor_state.bd_count);
+	memset(chan_data->bd_pool, 0, sizeof(sdma_buffer_descriptor_t) * bd_count);
+	SDMA_InstallBDMemory(&chan_data->handle, chan_data->bd_pool, bd_count);
 
 	crt_bd = chan_data->bd_pool;
 	for (i = 0U; i < chan_data->descriptor_state.bd_count; i++) {
 		bool is_last = false;
 		bool is_wrap = false;
 
-		if (i == chan_data->descriptor_state.bd_count - 1U) {
+		if (!chan_data->append_mode &&
+		    i == chan_data->descriptor_state.bd_count - 1U) {
 			is_last = true;
+			is_wrap = true;
+		} else if (chan_data->append_mode && i == bd_count - 1U) {
 			is_wrap = true;
 		}
 
 		SDMA_ConfigBufferDescriptor(crt_bd,
 			chan_data->descriptor_state.source_address[i],
 			chan_data->descriptor_state.dest_address[i],
-			config->source_data_size, chan_data->descriptor_state.bd_size[i],
+			chan_data->bus_width, chan_data->descriptor_state.bd_size[i],
 			is_last, true, is_wrap, chan_data->transfer_cfg.type);
+		chan_data->bd_size[i] = chan_data->descriptor_state.bd_size[i];
 
 		crt_bd++;
+	}
+
+	if (chan_data->append_mode) {
+		chan_data->bd_pool[bd_count - 1U].status |= (uint8_t)kSDMA_BDStatusWrap;
+		chan_data->bd_write_idx = chan_data->descriptor_state.bd_count % bd_count;
+		chan_data->bd_pending = chan_data->descriptor_state.bd_count;
+		chan_data->bd_pending_bytes = chan_data->descriptor_state.capacity;
 	}
 }
 
@@ -276,12 +329,32 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	struct dma_nxp_sdma_descriptor_state descriptor_state;
 	sdma_peripheral_t peripheral;
 	k_spinlock_key_t key;
+	bool append_mode;
+	uint32_t dest_width;
+	uint32_t source_width;
 	uint32_t watermark;
 	int ret;
 
 	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL || config == NULL) {
 		LOG_ERR("sdma_config() invalid channel %d", channel);
 		return -EINVAL;
+	}
+
+	chan_data = &dev_data->chan[channel];
+	if (!chan_data->requested) {
+		LOG_ERR("%s: channel %u has no SDMA event request", __func__, channel);
+		return -EINVAL;
+	}
+
+	ret = dma_nxp_sdma_encode_width(config->source_data_size, &source_width);
+	if (ret < 0) {
+		LOG_ERR("%s: unsupported source width %u", __func__, config->source_data_size);
+		return ret;
+	}
+	ret = dma_nxp_sdma_encode_width(config->dest_data_size, &dest_width);
+	if (ret < 0) {
+		LOG_ERR("%s: unsupported destination width %u", __func__, config->dest_data_size);
+		return ret;
 	}
 
 	ret = dma_nxp_sdma_descriptor_prepare(&descriptor_state, config);
@@ -293,10 +366,19 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 		LOG_ERR("%s: failed to set peripheral type", __func__);
 		return ret;
 	}
+	append_mode = dma_nxp_sdma_is_append_mode(config);
+	if ((config->dma_slot & DMA_NXP_SDMA_MODE_APPEND) && !append_mode) {
+		LOG_ERR("%s: append mode requires a cyclic peripheral transfer", __func__);
+		return -EINVAL;
+	}
+	if (append_mode && config->block_count >= CONFIG_DMA_NXP_SDMA_BD_COUNT) {
+		LOG_ERR("%s: append block_count %u leaves no free BD in pool %u", __func__,
+			config->block_count, CONFIG_DMA_NXP_SDMA_BD_COUNT);
+		return -EINVAL;
+	}
 
 	dma_nxp_sdma_channel_init(dev, channel);
 
-	chan_data = &dev_data->chan[channel];
 	chan_data->index = channel;
 
 	key = k_spin_lock(&chan_data->lifecycle.lock);
@@ -308,25 +390,10 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	chan_data->dev = dev;
 	chan_data->direction = config->channel_direction;
 	chan_data->descriptor_state = descriptor_state;
-
-	/*
-	 * A consumer that does not go through dma_request_channel() (e.g.
-	 * i2s_mcux_sai, which pins a fixed channel) never runs the filter that
-	 * latches the request line, so derive it here: by convention the channel
-	 * number is the peripheral's SDMA event line.
-	 */
-	if (!chan_data->requested) {
-		chan_data->event_source = channel;
-	}
-
-	chan_data->sg = config->head_block->source_gather_en || config->head_block->dest_scatter_en;
-	chan_data->bus_width = config->source_data_size;
-
-	if (chan_data->sg && config->block_count > CONFIG_DMA_NXP_SDMA_BD_COUNT) {
-		LOG_ERR("%s: block_count %u exceeds BD pool depth %u", __func__,
-			config->block_count, CONFIG_DMA_NXP_SDMA_BD_COUNT);
-		return -EINVAL;
-	}
+	chan_data->append_mode = append_mode;
+	chan_data->bus_width = config->channel_direction == MEMORY_TO_PERIPHERAL
+				       ? dest_width
+				       : source_width;
 
 	chan_data->cb = config->dma_callback;
 	chan_data->arg = config->user_data;
@@ -441,11 +508,19 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 	key = k_spin_lock(&chan_data->lifecycle.lock);
 	stat->busy = chan_data->lifecycle.started;
 	stat->dir = chan_data->direction;
-	stat->free = chan_data->descriptor_state.stat.free;
-	stat->pending_length = chan_data->descriptor_state.stat.pending_length;
-	stat->read_position = chan_data->descriptor_state.stat.read_position;
-	stat->write_position = chan_data->descriptor_state.stat.write_position;
-	stat->total_copied = chan_data->descriptor_state.stat.total_copied;
+	if (chan_data->append_mode) {
+		stat->free = CONFIG_DMA_NXP_SDMA_BD_COUNT - chan_data->bd_pending;
+		stat->pending_length = chan_data->bd_pending_bytes;
+		stat->read_position = 0U;
+		stat->write_position = 0U;
+		stat->total_copied = chan_data->total_copied;
+	} else {
+		stat->free = chan_data->descriptor_state.stat.free;
+		stat->pending_length = chan_data->descriptor_state.stat.pending_length;
+		stat->read_position = chan_data->descriptor_state.stat.read_position;
+		stat->write_position = chan_data->descriptor_state.stat.write_position;
+		stat->total_copied = chan_data->descriptor_state.stat.total_copied;
+	}
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
 
 	return 0;
@@ -469,8 +544,39 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 		return 0;
 	}
 	key = k_spin_lock(&chan_data->lifecycle.lock);
+	if (chan_data->append_mode) {
+		sdma_buffer_descriptor_t *bd;
+		bool is_wrap;
+
+		if (size > UINT16_MAX || size > UINT32_MAX - chan_data->bd_pending_bytes) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (chan_data->bd_pending >= CONFIG_DMA_NXP_SDMA_BD_COUNT) {
+			ret = -EBUSY;
+			goto out;
+		}
+
+		bd = &chan_data->bd_pool[chan_data->bd_write_idx];
+		is_wrap = chan_data->bd_write_idx == CONFIG_DMA_NXP_SDMA_BD_COUNT - 1U;
+		SDMA_ConfigBufferDescriptor(bd, src, dst, chan_data->bus_width, size, false, true,
+					    is_wrap, chan_data->transfer_cfg.type);
+		chan_data->bd_size[chan_data->bd_write_idx] = size;
+		chan_data->bd_write_idx = (chan_data->bd_write_idx + 1U) %
+					  CONFIG_DMA_NXP_SDMA_BD_COUNT;
+		chan_data->bd_pending++;
+		chan_data->bd_pending_bytes += size;
+		if (chan_data->lifecycle.started) {
+			dma_nxp_sdma_start_hardware(chan_data);
+		}
+		ret = 0;
+		goto out;
+	}
+
 	ret = dma_nxp_sdma_descriptor_reload(&chan_data->descriptor_state,
 					     chan_data->direction, src, dst, size);
+
+out:
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
 
 	return ret;
@@ -504,16 +610,28 @@ static bool sdma_channel_filter(const struct device *dev, int chan_id, void *par
 		return false;
 	}
 
-	if (chan_id >= FSL_FEATURE_SDMA_MODULE_CHANNEL) {
+	if (chan_id >= FSL_FEATURE_SDMA_MODULE_CHANNEL || param == NULL) {
 		return false;
 	}
 
-	dev_data->chan[chan_id].event_source = *((int *)param);
+	dev_data->chan[chan_id].event_source = *((uint32_t *)param);
 	dev_data->chan[chan_id].index = chan_id;
 	dev_data->chan[chan_id].requested = true;
 	dev_data->chan[chan_id].descriptor_state.capacity = 0;
 
 	return true;
+}
+
+static void sdma_channel_release(const struct device *dev, uint32_t channel)
+{
+	struct sdma_dev_data *dev_data = dev->data;
+
+	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL) {
+		return;
+	}
+
+	dev_data->chan[channel].requested = false;
+	dev_data->chan[channel].event_source = 0U;
 }
 
 static DEVICE_API(dma, sdma_api) = {
@@ -526,6 +644,7 @@ static DEVICE_API(dma, sdma_api) = {
 	.get_status = dma_nxp_sdma_get_status,
 	.get_attribute = dma_nxp_sdma_get_attribute,
 	.chan_filter = sdma_channel_filter,
+	.chan_release = sdma_channel_release,
 };
 
 static int dma_nxp_sdma_init(const struct device *dev)
