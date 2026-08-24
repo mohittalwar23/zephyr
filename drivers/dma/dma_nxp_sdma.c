@@ -50,8 +50,8 @@ struct sdma_dev_data {
 	struct dma_context dma_ctx;
 	atomic_t *channels_atomic;
 	struct sdma_channel_data chan[FSL_FEATURE_SDMA_MODULE_CHANNEL];
-	sdma_buffer_descriptor_t bd_pool[FSL_FEATURE_SDMA_MODULE_CHANNEL][DMA_NXP_SDMA_BD_COUNT]
-		__aligned(64);
+	sdma_buffer_descriptor_t bd_pool[FSL_FEATURE_SDMA_MODULE_CHANNEL]
+					[CONFIG_DMA_NXP_SDMA_BD_COUNT] __aligned(64);
 	struct k_mutex ch0_lock; /* serialises the shared channel-0 context load */
 };
 
@@ -450,7 +450,7 @@ static int dma_nxp_sdma_get_attribute(const struct device *dev, uint32_t type, u
 		*val = 128; /* should be dcache_align */
 		break;
 	case DMA_ATTR_MAX_BLOCK_COUNT:
-		*val = DMA_NXP_SDMA_BD_COUNT;
+		*val = CONFIG_DMA_NXP_SDMA_BD_COUNT;
 		break;
 	default:
 		LOG_ERR("invalid attribute type: %d", type);
