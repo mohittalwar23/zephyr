@@ -8,3 +8,12 @@ tests:
     integration_platforms:
       - native_sim
     filter: dt_nodelabel_enabled("tst_dma0")
+  drivers.dma.sdma_lifecycle:
+    platform_allow:
+      - qemu_x86_64
+    extra_configs:
+      - CONFIG_SMP=y
+      - CONFIG_MP_MAX_NUM_CPUS=2
+      - CONFIG_SCHED_CPU_MASK=y
+    tags:
+      - dma
