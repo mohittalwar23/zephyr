@@ -40,6 +40,7 @@ struct sdma_channel_data {
 	struct dma_status stat;
 	bool started;           /* between start() and stop(); reported as dma_status.busy */
 	struct k_spinlock lock; /* guards stat */
+	int xfer_status;        /* status handed to the user callback */
 
 	void *arg; /* argument passed to user-defined DMA callback */
 	dma_callback_t cb; /* user-defined callback for DMA transfer completion */
@@ -143,7 +144,8 @@ static void dma_nxp_sdma_isr(const void *data)
 			SDMA_HandleIRQ(&chan_data->handle);
 
 			if (chan_data->cb)
-				chan_data->cb(chan_data->dev, chan_data->arg, i, DMA_STATUS_BLOCK);
+				chan_data->cb(chan_data->dev, chan_data->arg, i,
+					      chan_data->xfer_status);
 		}
 		i++;
 		val >>= 1;
@@ -195,6 +197,7 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 	sdma_buffer_descriptor_t *bd;
 	k_spinlock_key_t key;
 	int xfer_size;
+	int ret;
 
 	dev_cfg = chan_data->dev->config;
 
@@ -204,14 +207,18 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 
 	switch (chan_data->direction) {
 	case MEMORY_TO_PERIPHERAL:
-		dma_nxp_sdma_consume(chan_data, xfer_size);
+		ret = dma_nxp_sdma_consume(chan_data, xfer_size);
 		break;
 	case PERIPHERAL_TO_MEMORY:
-		dma_nxp_sdma_produce(chan_data, xfer_size);
+		ret = dma_nxp_sdma_produce(chan_data, xfer_size);
 		break;
 	default:
+		ret = 0;
 		break;
 	}
+
+	/* Surface a position mismatch to the caller instead of drifting silently. */
+	chan_data->xfer_status = (ret != 0) ? ret : DMA_STATUS_BLOCK;
 
 	/* prepare next BD for transfer */
 	bd = &chan_data->bd_pool[bdIndex];
@@ -425,6 +432,11 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	k_spinlock_key_t key;
+	int ret;
+
+	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL) {
+		return -EINVAL;
+	}
 
 	chan_data = &dev_data->chan[channel];
 
@@ -434,13 +446,13 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 
 	key = k_spin_lock(&chan_data->lock);
 	if (chan_data->direction == MEMORY_TO_PERIPHERAL) {
-		dma_nxp_sdma_produce(chan_data, size);
+		ret = dma_nxp_sdma_produce(chan_data, size);
 	} else {
-		dma_nxp_sdma_consume(chan_data, size);
+		ret = dma_nxp_sdma_consume(chan_data, size);
 	}
 	k_spin_unlock(&chan_data->lock, key);
 
-	return 0;
+	return ret;
 }
 
 static int dma_nxp_sdma_get_attribute(const struct device *dev, uint32_t type, uint32_t *val)
