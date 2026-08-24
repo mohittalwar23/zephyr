@@ -6,5 +6,6 @@ project(dma_reload)
 
 target_sources(app PRIVATE src/main.c
 	${ZEPHYR_BASE}/drivers/dma/dma_nxp_sdma_accounting.c
+	${ZEPHYR_BASE}/drivers/dma/dma_nxp_sdma_append.c
 	${ZEPHYR_BASE}/drivers/dma/dma_nxp_sdma_lifecycle.c)
 target_include_directories(app PRIVATE ${ZEPHYR_BASE}/drivers/dma)

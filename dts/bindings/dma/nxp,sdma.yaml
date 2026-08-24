@@ -1,7 +1,14 @@
 # Copyright 2024 NXP
 # SPDX-License-Identifier: Apache-2.0
 
-description: NXP SDMA
+description: |
+  NXP Smart DMA controller.
+
+  The channel cell is the peripheral event/request source. The driver allocates
+  the physical SDMA channel independently with dma_request_channel(). The mux
+  cell selects an MCUX SDMA peripheral script: 5 is Normal SP and 6 is
+  MultiFifo PDM. Bit 7 is reserved for the driver's runtime append-mode flag
+  and must not appear in a devicetree DMA specifier.
 
 compatible: "nxp,sdma"
 
@@ -12,10 +19,10 @@ properties:
     required: true
   "#dma-cells":
     const: 2
+  dma-requests:
+    required: true
+    description: Number of peripheral event/request sources
 
-# The channel cell is the peripheral event/request source. The physical SDMA
-# channel is allocated by the driver and is intentionally independent of it.
-# The mux cell selects the MCUX SDMA peripheral script type.
 dma-cells:
   - channel
   - mux
