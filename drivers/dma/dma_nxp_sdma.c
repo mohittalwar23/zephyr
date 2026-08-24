@@ -38,7 +38,8 @@ struct sdma_channel_data {
 	struct dma_config *dma_cfg;
 	uint32_t event_source; /* DMA REQ number that trigger this channel */
 	struct dma_status stat;
-	bool started; /* between start() and stop(); reported as dma_status.busy */
+	bool started;           /* between start() and stop(); reported as dma_status.busy */
+	struct k_spinlock lock; /* guards stat */
 
 	void *arg; /* argument passed to user-defined DMA callback */
 	dma_callback_t cb; /* user-defined callback for DMA transfer completion */
@@ -50,6 +51,7 @@ struct sdma_dev_data {
 	struct sdma_channel_data chan[FSL_FEATURE_SDMA_MODULE_CHANNEL];
 	sdma_buffer_descriptor_t bd_pool[FSL_FEATURE_SDMA_MODULE_CHANNEL][DMA_NXP_SDMA_BD_COUNT]
 		__aligned(64);
+	struct k_mutex ch0_lock; /* serialises the shared channel-0 context load */
 };
 
 static int dma_nxp_sdma_init_stat(struct sdma_channel_data *chan_data)
@@ -191,9 +193,12 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 	const struct sdma_dev_cfg *dev_cfg;
 	struct sdma_channel_data *chan_data = userData;
 	sdma_buffer_descriptor_t *bd;
+	k_spinlock_key_t key;
 	int xfer_size;
 
 	dev_cfg = chan_data->dev->config;
+
+	key = k_spin_lock(&chan_data->lock);
 
 	xfer_size = chan_data->capacity / chan_data->bd_count;
 
@@ -212,6 +217,8 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 	bd = &chan_data->bd_pool[bdIndex];
 	bd->count = xfer_size;
 	bd->status |= (uint8_t)kSDMA_BDStatusDone;
+
+	k_spin_unlock(&chan_data->lock, key);
 
 	SDMA_StartChannelSoftware(dev_cfg->base, chan_data->index);
 }
@@ -335,7 +342,16 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	 */
 	chan_data->transfer_cfg.isEventIgnore = false;
 	chan_data->transfer_cfg.isSoftTriggerIgnore = false;
+
+	/*
+	 * SDMA_SubmitTransfer() loads the context through the single shared
+	 * channel-0 boot script; concurrent config() calls (e.g. TX and RX)
+	 * would corrupt each other's load. config() is always thread context,
+	 * so a mutex is safe.
+	 */
+	k_mutex_lock(&dev_data->ch0_lock, K_FOREVER);
 	SDMA_SubmitTransfer(&chan_data->handle, &chan_data->transfer_cfg);
+	k_mutex_unlock(&dev_data->ch0_lock);
 
 	return 0;
 }
@@ -382,7 +398,7 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 {
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
-	unsigned int key;
+	k_spinlock_key_t key;
 
 	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL || stat == NULL) {
 		return -EINVAL;
@@ -390,7 +406,7 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 
 	chan_data = &dev_data->chan[channel];
 
-	key = irq_lock();
+	key = k_spin_lock(&chan_data->lock);
 	stat->busy = chan_data->started;
 	stat->dir = chan_data->direction;
 	stat->free = chan_data->stat.free;
@@ -398,7 +414,7 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 	stat->read_position = chan_data->stat.read_position;
 	stat->write_position = chan_data->stat.write_position;
 	stat->total_copied = chan_data->stat.total_copied;
-	irq_unlock(key);
+	k_spin_unlock(&chan_data->lock, key);
 
 	return 0;
 }
@@ -408,7 +424,7 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 {
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
-	unsigned int key;
+	k_spinlock_key_t key;
 
 	chan_data = &dev_data->chan[channel];
 
@@ -416,13 +432,13 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 		return 0;
 	}
 
-	key = irq_lock();
+	key = k_spin_lock(&chan_data->lock);
 	if (chan_data->direction == MEMORY_TO_PERIPHERAL) {
 		dma_nxp_sdma_produce(chan_data, size);
 	} else {
 		dma_nxp_sdma_consume(chan_data, size);
 	}
-	irq_unlock(key);
+	k_spin_unlock(&chan_data->lock, key);
 
 	return 0;
 }
@@ -492,6 +508,8 @@ static int dma_nxp_sdma_init(const struct device *dev)
 	defconfig.ratio = kSDMA_ARMClockFreq;
 
 	SDMA_Init(cfg->base, &defconfig);
+
+	k_mutex_init(&data->ch0_lock);
 
 	/* configure interrupts */
 	cfg->irq_config();
