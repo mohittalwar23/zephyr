@@ -134,6 +134,9 @@ int dma_nxp_sdma_descriptor_prepare(struct dma_nxp_sdma_descriptor_state *state,
 		prepared.capacity += block->block_size;
 		block = block->next_block;
 	}
+	if (block != NULL) {
+		return -EINVAL;
+	}
 
 	*state = prepared;
 	return 0;
