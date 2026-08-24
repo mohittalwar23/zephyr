@@ -276,6 +276,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	struct dma_nxp_sdma_descriptor_state descriptor_state;
 	sdma_peripheral_t peripheral;
 	k_spinlock_key_t key;
+	uint32_t watermark;
 	int ret;
 
 	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL || config == NULL) {
@@ -318,8 +319,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 		chan_data->event_source = channel;
 	}
 
-	chan_data->sg = config->head_block->source_gather_en ||
-			config->head_block->dest_scatter_en;
+	chan_data->sg = config->head_block->source_gather_en || config->head_block->dest_scatter_en;
 	chan_data->bus_width = config->source_data_size;
 
 	if (chan_data->sg && config->block_count > CONFIG_DMA_NXP_SDMA_BD_COUNT) {
@@ -351,12 +351,23 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 		return ret;
 	}
 
+	/*
+	 * The watermark is how many words the engine moves per peripheral DMA
+	 * request; it must match the consumer's burst length (e.g. the SAI word
+	 * size), not a fixed value, or the channel waits for data that never
+	 * arrives.
+	 */
+	watermark = chan_data->direction == PERIPHERAL_TO_MEMORY ? config->source_burst_length
+								 : config->dest_burst_length;
+	if (watermark == 0) {
+		watermark = 64;
+	}
+
 	/* prepare first block for transfer ...*/
 	SDMA_PrepareTransfer(&chan_data->transfer_cfg,
 			     chan_data->descriptor_state.source_address[0],
 			     chan_data->descriptor_state.dest_address[0],
-			     config->source_data_size, config->dest_data_size,
-			     /* watermark = */64,
+			     config->source_data_size, config->dest_data_size, watermark,
 			     chan_data->descriptor_state.bd_size[0], chan_data->event_source,
 			     chan_data->peripheral, chan_data->transfer_cfg.type);
 
@@ -443,7 +454,6 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint32_t src,
 			       uint32_t dst, size_t size)
 {
-	const struct sdma_dev_cfg *dev_cfg = dev->config;
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	k_spinlock_key_t key;
@@ -458,7 +468,6 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	if (!size) {
 		return 0;
 	}
-
 	key = k_spin_lock(&chan_data->lifecycle.lock);
 	ret = dma_nxp_sdma_descriptor_reload(&chan_data->descriptor_state,
 					     chan_data->direction, src, dst, size);
