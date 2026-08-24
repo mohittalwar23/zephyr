@@ -9,11 +9,11 @@
 #include <zephyr/cache.h>
 #include <zephyr/logging/log.h>
 #include "fsl_sdma.h"
+#include "dma_nxp_sdma_accounting.h"
 #include "dma_nxp_sdma_lifecycle.h"
 
 LOG_MODULE_REGISTER(nxp_sdma);
 
-#define DMA_NXP_SDMA_BD_COUNT 2
 #define DMA_NXP_SDMA_CHAN_DEFAULT_PRIO 4
 
 #define DT_DRV_COMPAT nxp_sdma
@@ -34,11 +34,9 @@ struct sdma_channel_data {
 	uint32_t index;
 	const struct device *dev;
 	sdma_buffer_descriptor_t *bd_pool; /*pre-allocated list of BD used for transfer */
-	uint32_t bd_count; /* number of bd */
-	uint32_t capacity; /* total transfer capacity for this channel */
+	struct dma_nxp_sdma_descriptor_state descriptor_state;
 	struct dma_config *dma_cfg;
 	uint32_t event_source; /* DMA REQ number that trigger this channel */
-	struct dma_status stat;
 	struct dma_nxp_sdma_lifecycle lifecycle;
 	bool callback_pending;
 	bool error_callback_dis;
@@ -56,74 +54,6 @@ struct sdma_dev_data {
 		__aligned(64);
 	struct k_mutex ch0_lock; /* serialises the shared channel-0 context load */
 };
-
-static int dma_nxp_sdma_init_stat(struct sdma_channel_data *chan_data)
-{
-	chan_data->stat.read_position = 0;
-	chan_data->stat.write_position = 0;
-	chan_data->stat.total_copied = 0;
-
-	switch (chan_data->direction) {
-	case MEMORY_TO_PERIPHERAL:
-		/* buffer is full */
-		chan_data->stat.pending_length = chan_data->capacity;
-		chan_data->stat.free = 0;
-		break;
-	case PERIPHERAL_TO_MEMORY:
-		/* buffer is empty */
-		chan_data->stat.pending_length = 0;
-		chan_data->stat.free = chan_data->capacity;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int dma_nxp_sdma_consume(struct sdma_channel_data *chan_data, uint32_t bytes)
-{
-	if (bytes > chan_data->stat.pending_length)
-		return -EINVAL;
-
-	chan_data->stat.read_position += bytes;
-	chan_data->stat.read_position %= chan_data->capacity;
-
-	if (chan_data->stat.read_position > chan_data->stat.write_position) {
-		chan_data->stat.free = chan_data->stat.read_position -
-			chan_data->stat.write_position;
-	} else {
-		chan_data->stat.free = chan_data->capacity -
-			(chan_data->stat.write_position - chan_data->stat.read_position);
-	}
-
-	chan_data->stat.pending_length = chan_data->capacity - chan_data->stat.free;
-	chan_data->stat.total_copied += bytes;
-
-	return 0;
-}
-
-static int dma_nxp_sdma_produce(struct sdma_channel_data *chan_data, uint32_t bytes)
-{
-	if (bytes > chan_data->stat.free)
-		return -EINVAL;
-
-	chan_data->stat.write_position += bytes;
-	chan_data->stat.write_position %= chan_data->capacity;
-
-	if (chan_data->stat.write_position > chan_data->stat.read_position) {
-		chan_data->stat.pending_length = chan_data->stat.write_position -
-			chan_data->stat.read_position;
-	} else {
-		chan_data->stat.pending_length = chan_data->capacity -
-			(chan_data->stat.read_position - chan_data->stat.write_position);
-	}
-
-	chan_data->stat.free = chan_data->capacity - chan_data->stat.pending_length;
-	chan_data->stat.total_copied += bytes;
-
-	return 0;
-}
 
 static bool dma_nxp_sdma_take_callback(struct sdma_channel_data *chan_data, int *status)
 {
@@ -235,27 +165,24 @@ struct dma_nxp_sdma_completion {
 	uint32_t bd_index;
 };
 
+static void dma_nxp_sdma_rearm_descriptor(void *context, uint32_t index, uint32_t size)
+{
+	struct sdma_channel_data *chan_data = context;
+	sdma_buffer_descriptor_t *bd = &chan_data->bd_pool[index];
+
+	bd->count = size;
+	bd->status |= (uint8_t)kSDMA_BDStatusDone;
+}
+
 static bool dma_nxp_sdma_complete(void *context)
 {
 	struct dma_nxp_sdma_completion *completion = context;
 	struct sdma_channel_data *chan_data = completion->chan_data;
-	sdma_buffer_descriptor_t *bd;
-	int xfer_size;
 	int ret;
 
-	xfer_size = chan_data->capacity / chan_data->bd_count;
-
-	switch (chan_data->direction) {
-	case MEMORY_TO_PERIPHERAL:
-		ret = dma_nxp_sdma_consume(chan_data, xfer_size);
-		break;
-	case PERIPHERAL_TO_MEMORY:
-		ret = dma_nxp_sdma_produce(chan_data, xfer_size);
-		break;
-	default:
-		ret = 0;
-		break;
-	}
+	ret = dma_nxp_sdma_descriptor_complete(&chan_data->descriptor_state,
+					       chan_data->direction, completion->bd_index,
+					       dma_nxp_sdma_rearm_descriptor, chan_data);
 
 	chan_data->callback_status = (ret != 0) ? ret : DMA_STATUS_BLOCK;
 	chan_data->callback_pending = true;
@@ -264,10 +191,6 @@ static bool dma_nxp_sdma_complete(void *context)
 		dma_nxp_sdma_stop_after_error(chan_data);
 		return false;
 	}
-
-	bd = &chan_data->bd_pool[completion->bd_index];
-	bd->count = xfer_size;
-	bd->status |= (uint8_t)kSDMA_BDStatusDone;
 
 	return true;
 }
@@ -302,44 +225,38 @@ static int dma_nxp_sdma_channel_init(const struct device *dev, uint32_t channel)
 }
 
 static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
-				struct dma_config *config)
+				  const struct dma_config *config)
 {
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	sdma_buffer_descriptor_t *crt_bd;
-	struct dma_block_config *block_cfg;
-	int i;
+	uint32_t i;
 
 	chan_data = &dev_data->chan[channel];
 
-	chan_data->capacity = 0;
-
-	/* initialize bd pool */
 	chan_data->bd_pool = &dev_data->bd_pool[channel][0];
-	chan_data->bd_count = config->block_count;
 
-	memset(chan_data->bd_pool, 0, sizeof(sdma_buffer_descriptor_t) * chan_data->bd_count);
-	SDMA_InstallBDMemory(&chan_data->handle, chan_data->bd_pool, chan_data->bd_count);
+	memset(chan_data->bd_pool, 0,
+	       sizeof(sdma_buffer_descriptor_t) * chan_data->descriptor_state.bd_count);
+	SDMA_InstallBDMemory(&chan_data->handle, chan_data->bd_pool,
+			     chan_data->descriptor_state.bd_count);
 
 	crt_bd = chan_data->bd_pool;
-	block_cfg = config->head_block;
-
-	for (i = 0; i < config->block_count; i++) {
+	for (i = 0U; i < chan_data->descriptor_state.bd_count; i++) {
 		bool is_last = false;
 		bool is_wrap = false;
 
-		if (i == config->block_count - 1) {
+		if (i == chan_data->descriptor_state.bd_count - 1U) {
 			is_last = true;
 			is_wrap = true;
 		}
 
 		SDMA_ConfigBufferDescriptor(crt_bd,
-			block_cfg->source_address, block_cfg->dest_address,
-			config->source_data_size, block_cfg->block_size,
+			chan_data->descriptor_state.source_address[i],
+			chan_data->descriptor_state.dest_address[i],
+			config->source_data_size, chan_data->descriptor_state.bd_size[i],
 			is_last, true, is_wrap, chan_data->transfer_cfg.type);
 
-		chan_data->capacity += block_cfg->block_size;
-		block_cfg = block_cfg->next_block;
 		crt_bd++;
 	}
 }
@@ -350,13 +267,18 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	const struct sdma_dev_cfg *dev_cfg = dev->config;
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
-	struct dma_block_config *block_cfg;
+	struct dma_nxp_sdma_descriptor_state descriptor_state;
 	k_spinlock_key_t key;
 	int ret;
 
-	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL) {
+	if (channel >= FSL_FEATURE_SDMA_MODULE_CHANNEL || config == NULL) {
 		LOG_ERR("sdma_config() invalid channel %d", channel);
 		return -EINVAL;
+	}
+
+	ret = dma_nxp_sdma_descriptor_prepare(&descriptor_state, config);
+	if (ret < 0) {
+		return ret;
 	}
 
 	dma_nxp_sdma_channel_init(dev, channel);
@@ -372,6 +294,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
 	chan_data->dev = dev;
 	chan_data->direction = config->channel_direction;
+	chan_data->descriptor_state = descriptor_state;
 
 	chan_data->cb = config->dma_callback;
 	chan_data->arg = config->user_data;
@@ -393,21 +316,20 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	}
 
 	dma_nxp_sdma_setup_bd(dev, channel, config);
-	ret = dma_nxp_sdma_init_stat(chan_data);
+	ret = dma_nxp_sdma_descriptor_init_stat(&chan_data->descriptor_state,
+						 chan_data->direction);
 	if (ret < 0) {
 		LOG_ERR("%s: failed to init stat", __func__);
 		return ret;
 	}
 
-	block_cfg = config->head_block;
-
 	/* prepare first block for transfer ...*/
 	SDMA_PrepareTransfer(&chan_data->transfer_cfg,
-			     block_cfg->source_address,
-			     block_cfg->dest_address,
+			     chan_data->descriptor_state.source_address[0],
+			     chan_data->descriptor_state.dest_address[0],
 			     config->source_data_size, config->dest_data_size,
 			     /* watermark = */64,
-			     block_cfg->block_size, chan_data->event_source,
+			     chan_data->descriptor_state.bd_size[0], chan_data->event_source,
 			     chan_data->peripheral, chan_data->transfer_cfg.type);
 
 	/*... and submit it to SDMA engine.
@@ -480,11 +402,11 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 	key = k_spin_lock(&chan_data->lifecycle.lock);
 	stat->busy = chan_data->lifecycle.started;
 	stat->dir = chan_data->direction;
-	stat->free = chan_data->stat.free;
-	stat->pending_length = chan_data->stat.pending_length;
-	stat->read_position = chan_data->stat.read_position;
-	stat->write_position = chan_data->stat.write_position;
-	stat->total_copied = chan_data->stat.total_copied;
+	stat->free = chan_data->descriptor_state.stat.free;
+	stat->pending_length = chan_data->descriptor_state.stat.pending_length;
+	stat->read_position = chan_data->descriptor_state.stat.read_position;
+	stat->write_position = chan_data->descriptor_state.stat.write_position;
+	stat->total_copied = chan_data->descriptor_state.stat.total_copied;
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
 
 	return 0;
@@ -509,11 +431,8 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 	}
 
 	key = k_spin_lock(&chan_data->lifecycle.lock);
-	if (chan_data->direction == MEMORY_TO_PERIPHERAL) {
-		ret = dma_nxp_sdma_produce(chan_data, size);
-	} else {
-		ret = dma_nxp_sdma_consume(chan_data, size);
-	}
+	ret = dma_nxp_sdma_descriptor_reload(&chan_data->descriptor_state,
+					     chan_data->direction, src, dst, size);
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
 
 	return ret;
@@ -553,7 +472,7 @@ static bool sdma_channel_filter(const struct device *dev, int chan_id, void *par
 
 	dev_data->chan[chan_id].event_source = *((int *)param);
 	dev_data->chan[chan_id].index = chan_id;
-	dev_data->chan[chan_id].capacity = 0;
+	dev_data->chan[chan_id].descriptor_state.capacity = 0;
 
 	return true;
 }
