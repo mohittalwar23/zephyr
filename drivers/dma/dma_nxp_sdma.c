@@ -32,6 +32,7 @@ struct sdma_channel_data {
 	sdma_peripheral_t peripheral;
 	uint32_t direction;
 	uint32_t index;
+	bool requested; /* channel was handed out by dma_request_channel() */
 	const struct device *dev;
 	sdma_buffer_descriptor_t *bd_pool; /*pre-allocated list of BD used for transfer */
 	struct dma_nxp_sdma_descriptor_state descriptor_state;
@@ -307,6 +308,16 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	chan_data->direction = config->channel_direction;
 	chan_data->descriptor_state = descriptor_state;
 
+	/*
+	 * A consumer that does not go through dma_request_channel() (e.g.
+	 * i2s_mcux_sai, which pins a fixed channel) never runs the filter that
+	 * latches the request line, so derive it here: by convention the channel
+	 * number is the peripheral's SDMA event line.
+	 */
+	if (!chan_data->requested) {
+		chan_data->event_source = channel;
+	}
+
 	chan_data->sg = config->head_block->source_gather_en ||
 			config->head_block->dest_scatter_en;
 	chan_data->bus_width = config->source_data_size;
@@ -490,6 +501,7 @@ static bool sdma_channel_filter(const struct device *dev, int chan_id, void *par
 
 	dev_data->chan[chan_id].event_source = *((int *)param);
 	dev_data->chan[chan_id].index = chan_id;
+	dev_data->chan[chan_id].requested = true;
 	dev_data->chan[chan_id].descriptor_state.capacity = 0;
 
 	return true;
