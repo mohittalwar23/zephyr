@@ -41,6 +41,11 @@ struct sdma_channel_data {
 	bool callback_pending;
 	bool error_callback_dis;
 	int callback_status;
+	bool sg;               /* scatter-gather append mode (gather/scatter set) */
+	uint32_t bus_width;    /* source_data_size, kept for reload() BD reprogram */
+	uint32_t bd_write_idx; /* next pool slot reload() programs (sg) */
+	uint32_t bd_pending;   /* BDs handed to the engine, not yet completed (sg) */
+	uint32_t bd_size[CONFIG_DMA_NXP_SDMA_BD_COUNT]; /* per-BD byte count (sg) */
 
 	void *arg; /* argument passed to user-defined DMA callback */
 	dma_callback_t cb; /* user-defined callback for DMA transfer completion */
@@ -302,6 +307,16 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	chan_data->direction = config->channel_direction;
 	chan_data->descriptor_state = descriptor_state;
 
+	chan_data->sg = config->head_block->source_gather_en ||
+			config->head_block->dest_scatter_en;
+	chan_data->bus_width = config->source_data_size;
+
+	if (chan_data->sg && config->block_count > CONFIG_DMA_NXP_SDMA_BD_COUNT) {
+		LOG_ERR("%s: block_count %u exceeds BD pool depth %u", __func__,
+			config->block_count, CONFIG_DMA_NXP_SDMA_BD_COUNT);
+		return -EINVAL;
+	}
+
 	chan_data->cb = config->dma_callback;
 	chan_data->arg = config->user_data;
 
@@ -417,6 +432,7 @@ static int dma_nxp_sdma_get_status(const struct device *dev, uint32_t channel,
 static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint32_t src,
 			       uint32_t dst, size_t size)
 {
+	const struct sdma_dev_cfg *dev_cfg = dev->config;
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	k_spinlock_key_t key;
