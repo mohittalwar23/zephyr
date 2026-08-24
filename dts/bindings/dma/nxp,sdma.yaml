@@ -13,6 +13,9 @@ properties:
   "#dma-cells":
     const: 2
 
+# The channel cell is the peripheral event/request source. The physical SDMA
+# channel is allocated by the driver and is intentionally independent of it.
+# The mux cell selects the MCUX SDMA peripheral script type.
 dma-cells:
   - channel
   - mux
