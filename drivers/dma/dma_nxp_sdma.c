@@ -268,6 +268,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	struct sdma_dev_data *dev_data = dev->data;
 	struct sdma_channel_data *chan_data;
 	struct dma_nxp_sdma_descriptor_state descriptor_state;
+	sdma_peripheral_t peripheral;
 	k_spinlock_key_t key;
 	int ret;
 
@@ -278,6 +279,11 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 
 	ret = dma_nxp_sdma_descriptor_prepare(&descriptor_state, config);
 	if (ret < 0) {
+		return ret;
+	}
+	ret = sdma_set_peripheral_type(config, &peripheral);
+	if (ret < 0) {
+		LOG_ERR("%s: failed to set peripheral type", __func__);
 		return ret;
 	}
 
@@ -301,11 +307,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 
 	sdma_set_transfer_type(config, &chan_data->transfer_cfg.type);
 
-	ret = sdma_set_peripheral_type(config, &chan_data->peripheral);
-	if (ret < 0) {
-		LOG_ERR("%s: failed to set peripheral type", __func__);
-		return ret;
-	}
+	chan_data->peripheral = peripheral;
 
 	if (chan_data->peripheral == kSDMA_PeripheralMultiFifoPDM) {
 		unsigned int n_fifos = 4; /* TODO: make this configurable */
