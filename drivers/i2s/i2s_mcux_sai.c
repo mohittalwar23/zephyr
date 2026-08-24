@@ -30,7 +30,9 @@
 #include <soc.h>
 
 #include <fsl_sai.h>
+#if defined(CONFIG_DMA_MCUX_EDMA)
 #include <fsl_edma.h>
+#endif
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(dev_i2s_mcux, CONFIG_I2S_LOG_LEVEL);
@@ -41,9 +43,26 @@ BUILD_ASSERT(NUM_DMA_BLOCKS_RX_PREP >= 3,
 	     "eDMA avoids TCD coherency issue if NUM_DMA_BLOCKS_RX_PREP >= 3");
 #endif /* CONFIG_DMA_MCUX_EDMA */
 
+/* Depth of the DMA controller's queued-block pool (eDMA TCDs / SDMA BDs). */
+#if defined(CONFIG_DMA_MCUX_EDMA)
 #define MAX_TX_DMA_BLOCKS CONFIG_DMA_TCD_QUEUE_SIZE
+#elif defined(CONFIG_DMA_NXP_SDMA)
+#define MAX_TX_DMA_BLOCKS CONFIG_DMA_NXP_SDMA_BD_COUNT
+#else
+#error "i2s_mcux_sai requires an eDMA or SDMA controller"
+#endif
 BUILD_ASSERT(MAX_TX_DMA_BLOCKS > NUM_DMA_BLOCKS_RX_PREP,
-	     "NUM_DMA_BLOCKS_RX_PREP must be < CONFIG_DMA_TCD_QUEUE_SIZE");
+	     "the DMA controller's max block count must exceed NUM_DMA_BLOCKS_RX_PREP");
+
+/*
+ * dma_slot carries the per-controller DMA request identifier: eDMA names that
+ * dmas cell "source"; SDMA names it "mux" (the peripheral type).
+ */
+#if defined(CONFIG_DMA_MCUX_EDMA)
+#define I2S_SAI_DMA_SLOT(id, dir) DT_INST_DMAS_CELL_BY_NAME(id, dir, source)
+#elif defined(CONFIG_DMA_NXP_SDMA)
+#define I2S_SAI_DMA_SLOT(id, dir) DT_INST_DMAS_CELL_BY_NAME(id, dir, mux)
+#endif
 
 #define SAI_WORD_SIZE_BITS_MIN 8
 #define SAI_WORD_SIZE_BITS_MAX 32
@@ -1294,8 +1313,8 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 		.pll_pd = DT_PHA_BY_NAME_OR(DT_DRV_INST(i2s_id), pll_clocks, pd, value, 0),        \
 		.pll_num = DT_PHA_BY_NAME_OR(DT_DRV_INST(i2s_id), pll_clocks, num, value, 0),      \
 		.pll_den = DT_PHA_BY_NAME_OR(DT_DRV_INST(i2s_id), pll_clocks, den, value, 0),      \
-		I2S_MCUX_PINMUX_INIT(i2s_id)                                                       \
-		.mclk_output = DT_INST_PROP_OR(i2s_id, mclk_output, 0),                            \
+		I2S_MCUX_PINMUX_INIT(i2s_id).mclk_output =                                         \
+			DT_INST_PROP_OR(i2s_id, mclk_output, 0),                                   \
 		.clk_sub_sys =                                                                     \
 			(clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(i2s_id, 0, name),       \
 		.ccm_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(i2s_id)),                             \
@@ -1325,8 +1344,7 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.tx.dma_block,   \
 						.channel_direction = MEMORY_TO_PERIPHERAL,         \
-						.dma_slot = DT_INST_DMAS_CELL_BY_NAME(i2s_id, tx,  \
-										      source),     \
+						.dma_slot = I2S_SAI_DMA_SLOT(i2s_id, tx),          \
 						.cyclic = 1,                                       \
 					},                                                         \
 			},                                                                         \
@@ -1343,8 +1361,7 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.rx.dma_block,   \
 						.channel_direction = PERIPHERAL_TO_MEMORY,         \
-						.dma_slot = DT_INST_DMAS_CELL_BY_NAME(i2s_id, rx,  \
-										      source),     \
+						.dma_slot = I2S_SAI_DMA_SLOT(i2s_id, rx),          \
 						.cyclic = 1,                                       \
 					},                                                         \
 			},                                                                         \

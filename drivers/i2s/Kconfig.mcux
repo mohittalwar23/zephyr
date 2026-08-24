@@ -30,6 +30,10 @@ config I2S_EDMA_BURST_SIZE
 
 config I2S_HAS_PLL_SETTING
 	bool "I2S will setting pll in driver"
-	default y
+	default y if SOC_SERIES_IMXRT10XX || SOC_SERIES_IMXRT11XX || SOC_SERIES_IMXRT118X
+	help
+	  Configure the audio PLL from the I2S driver. Only the i.MX RT series
+	  provide the PLL init the driver calls; on other SoCs (e.g. i.MX8M) the
+	  audio clock is set up elsewhere and the driver only sets the MCLK rate.
 
 endif # I2S_MCUX_SAI
