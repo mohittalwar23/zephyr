@@ -8,6 +8,7 @@
 #include <zephyr/drivers/dma.h>
 #include <zephyr/ztest.h>
 #include <dma_nxp_sdma_accounting.h>
+#include <dma_nxp_sdma_append.h>
 #include <dma_nxp_sdma_lifecycle.h>
 
 #define N  4
@@ -710,6 +711,93 @@ ZTEST(dma_reload, test_stop_serializes_internal_restart)
 	zassert_false(hardware_started, "stop must be the final hardware operation");
 }
 #endif
+
+ZTEST(dma_reload, test_sdma_append_tracks_one_completion_ring)
+{
+	struct dma_nxp_sdma_descriptor_state descriptors = {
+		.bd_count = 1U,
+		.capacity = 16U,
+		.bd_size = {16U},
+	};
+	struct dma_nxp_sdma_append_state append;
+	struct dma_status status = {0};
+
+	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
+	zassert_equal(append.write_index, 1U);
+	zassert_equal(append.pending_count, 1U);
+	zassert_equal(append.pending_bytes, 16U);
+	zassert_equal(append.size[0], 16U);
+
+	/* MCUX reports descriptor 1 as next after completing descriptor 0. */
+	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
+	zassert_equal(append.pending_count, 0U);
+	zassert_equal(append.pending_bytes, 0U);
+	zassert_equal(append.total_copied, 16U);
+	zassert_equal(append.size[0], 0U);
+
+	dma_nxp_sdma_append_status(&append, true, MEMORY_TO_PERIPHERAL, &status);
+	zassert_false(status.busy, "empty append ring reported busy");
+	zassert_equal(status.free, DMA_NXP_SDMA_BD_COUNT);
+	zassert_equal(status.pending_length, 0U);
+	zassert_equal(status.total_copied, 16U);
+}
+
+ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
+{
+	struct dma_nxp_sdma_descriptor_state descriptors = {
+		.bd_count = 1U,
+		.capacity = 16U,
+		.bd_size = {16U},
+	};
+	struct dma_nxp_sdma_append_slot slot;
+	struct dma_nxp_sdma_append_state append;
+	bool restart = false;
+
+	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
+	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 24U, &slot, &restart));
+	zassert_equal(slot.index, DMA_NXP_SDMA_BD_COUNT - 1U);
+	zassert_true(slot.wrap, "last pool descriptor did not close the ring");
+	zassert_true(restart, "enabled append ring did not request a hardware kick");
+	zassert_equal(append.pending_count, DMA_NXP_SDMA_BD_COUNT);
+	zassert_equal(append.pending_bytes, 40U);
+
+	struct dma_nxp_sdma_append_state full = append;
+
+	zassert_equal(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart), -EBUSY);
+	zassert_mem_equal(&append, &full, sizeof(append), "full rejection mutated append state");
+
+	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
+	zassert_ok(dma_nxp_sdma_append_complete(&append, 0U));
+	zassert_equal(append.pending_count, 0U);
+	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart));
+	zassert_equal(slot.index, 0U);
+	zassert_false(slot.wrap);
+	zassert_true(restart, "reload after underrun did not resume the enabled channel");
+}
+
+ZTEST(dma_reload, test_sdma_append_stop_reload_order_controls_restart)
+{
+	struct dma_nxp_sdma_descriptor_state descriptors = {
+		.bd_count = 1U,
+		.capacity = 16U,
+		.bd_size = {16U},
+	};
+	struct dma_nxp_sdma_append_slot slot;
+	struct dma_nxp_sdma_append_state append;
+	bool restart = true;
+
+	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
+	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
+
+	/* Stop wins the lifecycle lock before reload. */
+	zassert_ok(dma_nxp_sdma_append_reload(&append, false, 24U, &slot, &restart));
+	zassert_false(restart, "reload restarted a stopped channel");
+
+	/* Complete the stopped work, then reload wins before a later stop. */
+	zassert_ok(dma_nxp_sdma_append_complete(&append, 0U));
+	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart));
+	zassert_true(restart, "enabled reload did not start queued work");
+}
 
 static void *setup(void)
 {
