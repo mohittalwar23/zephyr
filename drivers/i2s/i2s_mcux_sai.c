@@ -873,24 +873,6 @@ static void audio_clock_settings(const struct device *dev)
 #endif
 }
 
-static int i2s_mcux_acquire_dma_channel(const struct device *dma_dev,
-					struct i2s_mcux_sai_stream *strm)
-{
-	struct i2s_mcux_sai_dma_channel spec = {
-		.channel = strm->dma.channel,
-		.request = strm->dma.request,
-		.request_channel = strm->dma.request_channel,
-	};
-	int ret;
-
-	ret = i2s_mcux_sai_dma_acquire_channel(dma_dev, &spec);
-	if (ret == 0) {
-		strm->dma.channel = spec.channel;
-	}
-
-	return ret;
-}
-
 static int i2s_mcux_initialize(const struct device *dev)
 {
 	const struct i2s_mcux_config *dev_cfg = dev->config;
@@ -899,20 +881,10 @@ static int i2s_mcux_initialize(const struct device *dev)
 	uint32_t mclk;
 	int err;
 
-	if (!dev_data->dev_dma) {
-		LOG_ERR("DMA device not found");
-		return -ENODEV;
-	}
-
-	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->tx);
+	err = i2s_mcux_sai_dma_acquire_pair(dev_data->dev_dma, &dev_data->tx.dma,
+					    &dev_data->rx.dma);
 	if (err < 0) {
-		LOG_ERR("Failed to acquire TX DMA channel (%d)", err);
-		return err;
-	}
-
-	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->rx);
-	if (err < 0) {
-		LOG_ERR("Failed to acquire RX DMA channel (%d)", err);
+		LOG_ERR("Failed to acquire the DMA channels (%d)", err);
 		return err;
 	}
 
@@ -929,19 +901,17 @@ static int i2s_mcux_initialize(const struct device *dev)
 	k_msgq_init(&dev_data->rx.out_queue, (char *)dev_data->rx_out_msgs,
 		    sizeof(struct i2s_mcux_sai_q_entry), CONFIG_I2S_RX_BLOCK_COUNT);
 
-	/* register ISR */
-	dev_cfg->irq_connect(dev);
-
 	if (dev_cfg->reset.dev != NULL) {
 		if (!device_is_ready(dev_cfg->reset.dev)) {
 			LOG_ERR("reset controller not ready");
-			return -ENODEV;
+			err = -ENODEV;
+			goto release_dma;
 		}
 
 		err = reset_line_deassert_dt(&dev_cfg->reset);
 		if (err != 0) {
 			LOG_ERR("Failed to deassert reset line (%d)", err);
-			return err;
+			goto release_dma;
 		}
 	}
 
@@ -949,8 +919,11 @@ static int i2s_mcux_initialize(const struct device *dev)
 	err = pinctrl_apply_state(dev_cfg->pinctrl, PINCTRL_STATE_DEFAULT);
 	if (err) {
 		LOG_ERR("mclk pinctrl setup failed (%d)", err);
-		return err;
+		goto release_dma;
 	}
+
+	/* register the ISR only once the device cannot fail to initialize */
+	dev_cfg->irq_connect(dev);
 
 	/*clock configuration*/
 	audio_clock_settings(dev);
@@ -991,6 +964,11 @@ static int i2s_mcux_initialize(const struct device *dev)
 	LOG_INF("Device %s initialized", dev->name);
 
 	return 0;
+
+release_dma:
+	i2s_mcux_sai_dma_release_pair(dev_data->dev_dma, &dev_data->tx.dma, &dev_data->rx.dma);
+
+	return err;
 }
 
 static DEVICE_API(i2s, i2s_mcux_driver_api) = {

@@ -37,6 +37,7 @@ struct i2s_mcux_sai_dma_channel {
 	uint32_t channel;
 	uint32_t request;
 	bool request_channel;
+	bool acquired;
 };
 
 static inline int i2s_mcux_sai_dma_acquire_channel(
@@ -58,8 +59,59 @@ static inline int i2s_mcux_sai_dma_acquire_channel(
 	}
 
 	spec->channel = channel;
+	spec->acquired = true;
 
 	return 0;
+}
+
+static inline void i2s_mcux_sai_dma_release_channel(const struct device *dma_dev,
+						    struct i2s_mcux_sai_dma_channel *spec)
+{
+	if (dma_dev == NULL || spec == NULL || !spec->acquired) {
+		return;
+	}
+
+	dma_release_channel(dma_dev, spec->channel);
+	spec->acquired = false;
+}
+
+static inline int i2s_mcux_sai_dma_acquire_pair(const struct device *dma_dev,
+						struct i2s_mcux_sai_dma_channel *tx,
+						struct i2s_mcux_sai_dma_channel *rx)
+{
+	int ret;
+
+	if (tx == NULL || rx == NULL) {
+		return -EINVAL;
+	}
+
+	/* A devicetree controller reference is not a readiness check: the
+	 * controller may have failed its own initialization.
+	 */
+	if (!device_is_ready(dma_dev)) {
+		return -ENODEV;
+	}
+
+	ret = i2s_mcux_sai_dma_acquire_channel(dma_dev, tx);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = i2s_mcux_sai_dma_acquire_channel(dma_dev, rx);
+	if (ret < 0) {
+		i2s_mcux_sai_dma_release_channel(dma_dev, tx);
+		return ret;
+	}
+
+	return 0;
+}
+
+static inline void i2s_mcux_sai_dma_release_pair(const struct device *dma_dev,
+						 struct i2s_mcux_sai_dma_channel *tx,
+						 struct i2s_mcux_sai_dma_channel *rx)
+{
+	i2s_mcux_sai_dma_release_channel(dma_dev, rx);
+	i2s_mcux_sai_dma_release_channel(dma_dev, tx);
 }
 
 #endif /* ZEPHYR_DRIVERS_I2S_I2S_MCUX_SAI_DMA_H_ */
