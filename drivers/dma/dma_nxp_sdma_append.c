@@ -40,26 +40,47 @@ int dma_nxp_sdma_append_prepare(struct dma_nxp_sdma_append_state *state,
 	return 0;
 }
 
-int dma_nxp_sdma_append_complete(struct dma_nxp_sdma_append_state *state, uint32_t next_bd)
+int dma_nxp_sdma_append_complete(struct dma_nxp_sdma_append_state *state,
+				 dma_nxp_sdma_descriptor_owned_t owned, void *context,
+				 uint32_t *completed)
 {
-	uint32_t completed_bd;
-	uint32_t size;
+	uint32_t pending = state != NULL ? state->pending_count : 0U;
+	uint32_t count = 0U;
 
-	if (state == NULL || next_bd >= DMA_NXP_SDMA_BD_COUNT || state->pending_count == 0U) {
+	if (state == NULL || owned == NULL || completed == NULL) {
 		return -EINVAL;
 	}
 
-	/* MCUX advances bdIndex before reporting a completion. */
-	completed_bd = (next_bd + DMA_NXP_SDMA_BD_COUNT - 1U) % DMA_NXP_SDMA_BD_COUNT;
-	size = state->size[completed_bd];
-	if (size == 0U || size > state->pending_bytes) {
-		return -EINVAL;
+	/*
+	 * One IRQ can coalesce several finished descriptors, so walk the
+	 * currently outstanding append slots in order until hardware still
+	 * owns the next one. Appended slots are one-shot: a completed slot
+	 * is freed here and re-armed later by dma_reload(), not by this scan.
+	 */
+	while (count < pending) {
+		uint32_t index = (state->write_index + DMA_NXP_SDMA_BD_COUNT - pending + count) %
+				  DMA_NXP_SDMA_BD_COUNT;
+		uint32_t size;
+
+		if (owned(context, index)) {
+			break;
+		}
+
+		size = state->size[index];
+		if (size == 0U || size > state->pending_bytes) {
+			state->pending_count -= count;
+			*completed = count;
+			return -EINVAL;
+		}
+
+		state->size[index] = 0U;
+		state->pending_bytes -= size;
+		state->total_copied += size;
+		count++;
 	}
 
-	state->size[completed_bd] = 0U;
-	state->pending_count--;
-	state->pending_bytes -= size;
-	state->total_copied += size;
+	state->pending_count -= count;
+	*completed = count;
 
 	return 0;
 }
