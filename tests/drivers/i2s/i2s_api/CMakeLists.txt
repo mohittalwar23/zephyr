@@ -11,6 +11,10 @@ if(NOT CONFIG_DMA_NXP_SDMA)
   target_sources(app PRIVATE ${ZEPHYR_BASE}/drivers/dma/dma_nxp_sdma_common.c)
 endif()
 
+if(NOT CONFIG_I2S_MCUX_SAI)
+  target_sources(app PRIVATE ${ZEPHYR_BASE}/drivers/i2s/i2s_mcux_sai_stream.c)
+endif()
+
 if(CONFIG_SOC_MIMX8ML8_M7 AND CONFIG_DMA_NXP_SDMA)
   zephyr_linker_sources(RAM_SECTIONS boards/imx8mp-noncacheable.ld)
 endif()
