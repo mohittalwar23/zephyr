@@ -123,6 +123,12 @@ int i2s_mcux_sai_stream_tx_start(struct i2s_mcux_sai_stream *strm, const struct 
 	strm->dma_cfg.block_count = 1;
 	strm->dma_cfg.head_block = blk_cfg;
 
+	/* A controller drops a failed transfer instead of reporting it when the
+	 * client disables the error callback, which would leave the stream
+	 * running against a stopped channel.
+	 */
+	strm->dma_cfg.error_callback_dis = 0;
+
 	ret = dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
 	if (ret != 0) {
 		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
@@ -178,6 +184,12 @@ int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct 
 
 	strm->dma_cfg.block_count = 1;
 	strm->dma_cfg.head_block = blk_cfg;
+
+	/* A controller drops a failed transfer instead of reporting it when the
+	 * client disables the error callback, which would leave the stream
+	 * running against a stopped channel.
+	 */
+	strm->dma_cfg.error_callback_dis = 0;
 
 	ret = dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
 	if (ret != 0) {
@@ -307,7 +319,7 @@ i2s_mcux_sai_stream_rx_complete(struct i2s_mcux_sai_stream *strm, const struct d
 	}
 
 	if (strm->state != I2S_STATE_STOPPING && strm->state != I2S_STATE_RUNNING) {
-		return I2S_MCUX_SAI_STREAM_RUN;
+		return I2S_MCUX_SAI_STREAM_IGNORE;
 	}
 
 	ret = k_msgq_get(&strm->in_queue, &q_entry, K_NO_WAIT);

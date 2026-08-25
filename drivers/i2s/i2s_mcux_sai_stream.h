@@ -61,6 +61,8 @@ struct i2s_mcux_sai_stream {
 enum i2s_mcux_sai_stream_action {
 	/* Leave the stream enabled. */
 	I2S_MCUX_SAI_STREAM_RUN,
+	/* The callback arrived in a state the stream does not handle. */
+	I2S_MCUX_SAI_STREAM_IGNORE,
 	/* Gate the bit clock but keep every queued buffer. */
 	I2S_MCUX_SAI_STREAM_PAUSE,
 	/* Disable the stream and keep every queued buffer. */

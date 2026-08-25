@@ -201,19 +201,25 @@ static void i2s_dma_tx_callback(const struct device *dma_dev, void *arg, uint32_
 	enum i2s_mcux_sai_stream_action action;
 
 	ARG_UNUSED(dma_dev);
-	ARG_UNUSED(channel);
 
 	action = i2s_mcux_sai_stream_tx_complete(&dev_data->tx, dev_data->dev_dma,
 						 i2s_tx_data_address(dev), status);
 
 	switch (action) {
 	case I2S_MCUX_SAI_STREAM_PAUSE:
+		LOG_WRN("TX channel %u paused, no block queued", channel);
 		SAI_TxEnable(get_base(dev), false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP:
+		if (dev_data->tx.state == I2S_STATE_ERROR) {
+			LOG_ERR("TX channel %u error, DMA status %d", channel, status);
+		} else {
+			LOG_DBG("TX channel %u stopped", channel);
+		}
 		i2s_tx_stream_disable(dev, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DROP:
+		LOG_ERR("TX channel %u completed in state %d", channel, dev_data->tx.state);
 		i2s_tx_stream_disable(dev, true);
 		break;
 	default:
@@ -229,19 +235,24 @@ static void i2s_dma_rx_callback(const struct device *dma_dev, void *arg, uint32_
 	enum i2s_mcux_sai_stream_action action;
 
 	ARG_UNUSED(dma_dev);
-	ARG_UNUSED(channel);
 
 	action = i2s_mcux_sai_stream_rx_complete(&dev_data->rx, dev_data->dev_dma,
 						 i2s_rx_data_address(dev), status);
 
 	switch (action) {
+	case I2S_MCUX_SAI_STREAM_IGNORE:
+		LOG_ERR("RX channel %u completed in state %d", channel, dev_data->rx.state);
+		break;
 	case I2S_MCUX_SAI_STREAM_STOP:
+		LOG_ERR("RX channel %u error, DMA status %d", channel, status);
 		i2s_rx_stream_disable(dev, false, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DRAIN:
+		LOG_DBG("RX channel %u stopped", channel);
 		i2s_rx_stream_disable(dev, true, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DROP:
+		LOG_ERR("RX channel %u completed while in error state", channel);
 		i2s_rx_stream_disable(dev, true, true);
 		break;
 	default:
@@ -1055,7 +1066,6 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.dest_burst_length = CONFIG_I2S_EDMA_BURST_SIZE,   \
 						.dma_callback = i2s_dma_tx_callback,               \
 						.complete_callback_en = 1,                         \
-						.error_callback_dis = 1,                           \
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.tx.dma_block,   \
 						.channel_direction = MEMORY_TO_PERIPHERAL,         \
@@ -1080,7 +1090,6 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.dest_burst_length = CONFIG_I2S_EDMA_BURST_SIZE,   \
 						.dma_callback = i2s_dma_rx_callback,               \
 						.complete_callback_en = 1,                         \
-						.error_callback_dis = 1,                           \
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.rx.dma_block,   \
 						.channel_direction = PERIPHERAL_TO_MEMORY,         \

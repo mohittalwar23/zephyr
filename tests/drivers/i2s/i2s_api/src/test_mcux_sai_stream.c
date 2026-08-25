@@ -34,6 +34,7 @@ struct fake_sai_dma_data {
 	uint32_t stop_calls;
 	uint32_t release_calls;
 	uint32_t released[FAKE_SAI_DMA_CHANNELS];
+	struct dma_config captured_config;
 };
 
 static struct fake_sai_dma_data fake_sai_dma_data = {
@@ -46,8 +47,8 @@ static int fake_sai_dma_config(const struct device *dev, uint32_t channel,
 	struct fake_sai_dma_data *data = dev->data;
 
 	ARG_UNUSED(channel);
-	ARG_UNUSED(config);
 
+	data->captured_config = *config;
 	data->config_calls++;
 
 	return data->config_status;
@@ -191,6 +192,37 @@ static void queue_blocks(struct k_msgq *queue, uint32_t count)
 	}
 }
 
+static enum i2s_mcux_sai_stream_action reported_action;
+
+/* Stands in for the SAI front end callback, which cannot build on the host. */
+static void test_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+			     int status)
+{
+	ARG_UNUSED(channel);
+
+	reported_action = i2s_mcux_sai_stream_tx_complete(arg, dma_dev, TEST_FIFO_ADDRESS, status);
+}
+
+static void test_rx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+			     int status)
+{
+	ARG_UNUSED(channel);
+
+	reported_action = i2s_mcux_sai_stream_rx_complete(arg, dma_dev, TEST_FIFO_ADDRESS, status);
+}
+
+static void fake_sai_dma_report(int status)
+{
+	struct dma_config *config = &fake_sai_dma_data.captured_config;
+
+	/* the notification gate dma_nxp_sdma applies to every completion */
+	if (status < 0 && config->error_callback_dis) {
+		return;
+	}
+
+	config->dma_callback(fake_dma_dev(), config->user_data, 1U, status);
+}
+
 static void stream_before(void *fixture)
 {
 	struct dma_context context = fake_sai_dma_data.context;
@@ -202,6 +234,7 @@ static void stream_before(void *fixture)
 	fake_sai_dma_data.grant_limit = FAKE_SAI_DMA_CHANNELS;
 	zassert_ok(k_mem_slab_init(&test_slab, test_slab_buffer, TEST_BLOCK_SIZE,
 				   TEST_BLOCK_COUNT));
+	reported_action = I2S_MCUX_SAI_STREAM_RUN;
 	stream_setup(I2S_STATE_READY);
 }
 
@@ -437,6 +470,58 @@ ZTEST(mcux_sai_stream, test_fixed_channel_pair_is_never_released)
 
 	zassert_equal(fake_sai_dma_data.release_calls, 0U,
 		      "a fixed channel is not owned by the request allocator");
+}
+
+ZTEST(mcux_sai_stream, test_a_failed_tx_transfer_reaches_the_stream)
+{
+	stream.dma_cfg.dma_callback = test_tx_callback;
+	stream.dma_cfg.user_data = &stream;
+	stream.dma_cfg.error_callback_dis = 1U;
+	queue_blocks(&stream.in_queue, 1U);
+
+	zassert_ok(i2s_mcux_sai_stream_tx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS));
+	zassert_equal(fake_sai_dma_data.captured_config.error_callback_dis, 0U,
+		      "the controller must not be told to drop a failed transfer");
+
+	stream.state = I2S_STATE_RUNNING;
+	fake_sai_dma_report(-EIO);
+
+	zassert_equal(reported_action, I2S_MCUX_SAI_STREAM_STOP,
+		      "the failed transfer never reached the stream");
+	zassert_equal(stream.state, I2S_STATE_ERROR);
+	zassert_equal(k_msgq_num_used_get(&stream.out_queue), 1U);
+}
+
+ZTEST(mcux_sai_stream, test_a_failed_rx_transfer_reaches_the_stream)
+{
+	stream.dma_cfg.dma_callback = test_rx_callback;
+	stream.dma_cfg.user_data = &stream;
+	stream.dma_cfg.error_callback_dis = 1U;
+
+	zassert_ok(i2s_mcux_sai_stream_rx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS));
+	zassert_equal(fake_sai_dma_data.captured_config.error_callback_dis, 0U,
+		      "the controller must not be told to drop a failed transfer");
+
+	stream.state = I2S_STATE_RUNNING;
+	fake_sai_dma_report(-EIO);
+
+	zassert_equal(reported_action, I2S_MCUX_SAI_STREAM_STOP,
+		      "the failed transfer never reached the stream");
+	zassert_equal(stream.state, I2S_STATE_ERROR);
+	zassert_equal(k_msgq_num_used_get(&stream.out_queue), 0U);
+}
+
+ZTEST(mcux_sai_stream, test_rx_complete_reports_a_callback_it_cannot_handle)
+{
+	enum i2s_mcux_sai_stream_action action;
+
+	stream.state = I2S_STATE_READY;
+
+	action = i2s_mcux_sai_stream_rx_complete(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS, 0);
+
+	zassert_equal(action, I2S_MCUX_SAI_STREAM_IGNORE,
+		      "a callback in an unhandled state must be reported");
+	zassert_equal(stream.state, I2S_STATE_READY);
 }
 
 ZTEST_SUITE(mcux_sai_stream, NULL, NULL, stream_before, NULL, NULL);
