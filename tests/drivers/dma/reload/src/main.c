@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/ztest.h>
@@ -17,6 +19,49 @@
 #define CH1 1U
 #define LIFECYCLE_STACK_SIZE 512
 #define EMUL_THREAD_STACK_SIZE 512
+
+struct sdma_mock_descriptor {
+	uintptr_t source_address;
+	uintptr_t dest_address;
+	uint32_t count;
+};
+
+struct sdma_mock_ring {
+	struct sdma_mock_descriptor descriptor[DMA_NXP_SDMA_BD_COUNT];
+	bool owned[DMA_NXP_SDMA_BD_COUNT];
+	uint32_t rearmed_index;
+	uint32_t rearm_order[DMA_NXP_SDMA_BD_COUNT];
+	uint32_t rearm_count;
+};
+
+/* All descriptors start hardware-owned, mirroring a freshly armed ring. */
+static void sdma_mock_ring_init(struct sdma_mock_ring *ring)
+{
+	memset(ring, 0, sizeof(*ring));
+	for (size_t i = 0; i < ARRAY_SIZE(ring->owned); i++) {
+		ring->owned[i] = true;
+	}
+}
+
+static bool sdma_mock_owned(void *context, uint32_t index)
+{
+	struct sdma_mock_ring *ring = context;
+
+	return ring->owned[index];
+}
+
+static void sdma_mock_rearm(void *context, uint32_t index, uint32_t size)
+{
+	struct sdma_mock_ring *ring = context;
+
+	ring->descriptor[index].count = size;
+	ring->rearmed_index = index;
+	if (ring->rearm_count < ARRAY_SIZE(ring->rearm_order)) {
+		ring->rearm_order[ring->rearm_count] = index;
+	}
+	ring->rearm_count++;
+	ring->owned[index] = true;
+}
 
 #if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 static const struct device *const dma = DEVICE_DT_GET(DT_NODELABEL(tst_dma0));
@@ -486,25 +531,6 @@ ZTEST(dma_reload, test_emul_rejects_null_config_and_invalid_status_arguments)
 	zassert_equal(after.total_copied, before.total_copied, "rejection changed total copied");
 }
 
-struct sdma_mock_descriptor {
-	uintptr_t source_address;
-	uintptr_t dest_address;
-	uint32_t count;
-};
-
-struct sdma_mock_ring {
-	struct sdma_mock_descriptor descriptor[DMA_NXP_SDMA_BD_COUNT];
-	uint32_t rearmed_index;
-};
-
-static void sdma_mock_rearm(void *context, uint32_t index, uint32_t size)
-{
-	struct sdma_mock_ring *ring = context;
-
-	ring->descriptor[index].count = size;
-	ring->rearmed_index = index;
-}
-
 static void assert_sdma_state_unchanged(const struct dma_nxp_sdma_descriptor_state *actual,
 					const struct dma_nxp_sdma_descriptor_state *expected)
 {
@@ -528,7 +554,6 @@ static void test_sdma_cyclic_descriptor_accounting(uint32_t direction)
 	struct dma_nxp_sdma_descriptor_state state;
 	struct dma_config config = base_cfg(&blocks[0]);
 	struct sdma_mock_ring ring;
-	const uint32_t next_bd[] = { 1U, 0U, 1U };
 	const uint32_t expected_bd[] = { 0U, 1U, 0U };
 	const uint32_t expected_size[] = { 16U, 24U, 16U };
 	const uint64_t expected_total[] = { 16U, 40U, 56U };
@@ -540,6 +565,7 @@ static void test_sdma_cyclic_descriptor_accounting(uint32_t direction)
 	config.channel_direction = direction;
 	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
 	zassert_ok(dma_nxp_sdma_descriptor_init_stat(&state, direction));
+	sdma_mock_ring_init(&ring);
 	for (size_t i = 0; i < DMA_NXP_SDMA_BD_COUNT; i++) {
 		ring.descriptor[i].source_address = state.source_address[i];
 		ring.descriptor[i].dest_address = state.dest_address[i];
@@ -548,9 +574,13 @@ static void test_sdma_cyclic_descriptor_accounting(uint32_t direction)
 		dest_address[i] = ring.descriptor[i].dest_address;
 	}
 
-	for (size_t i = 0; i < ARRAY_SIZE(next_bd); i++) {
-		zassert_ok(dma_nxp_sdma_descriptor_complete(&state, direction, next_bd[i],
-						      sdma_mock_rearm, &ring));
+	for (size_t i = 0; i < ARRAY_SIZE(expected_bd); i++) {
+		uint32_t completed = 0xdeadbeefU;
+
+		ring.owned[expected_bd[i]] = false;
+		zassert_ok(dma_nxp_sdma_descriptor_complete(&state, direction, sdma_mock_owned,
+						      sdma_mock_rearm, &ring, &completed));
+		zassert_equal(completed, 1U, "completion %zu reported wrong count", i);
 		zassert_equal(ring.rearmed_index, expected_bd[i],
 			      "completion %zu rearmed wrong BD", i);
 		zassert_equal(ring.descriptor[expected_bd[i]].count, expected_size[i],
@@ -561,6 +591,11 @@ static void test_sdma_cyclic_descriptor_accounting(uint32_t direction)
 						   expected_size[i]));
 		zassert_equal(state.stat.total_copied, expected_total[i],
 			      "reload %zu was counted as hardware progress", i);
+
+		completed = 0xdeadbeefU;
+		zassert_ok(dma_nxp_sdma_descriptor_complete(&state, direction, sdma_mock_owned,
+						      sdma_mock_rearm, &ring, &completed));
+		zassert_equal(completed, 0U, "a duplicate IRQ reported a completion");
 	}
 
 	for (size_t i = 0; i < DMA_NXP_SDMA_BD_COUNT; i++) {
@@ -604,10 +639,13 @@ ZTEST(dma_reload, test_sdma_descriptor_prepare_validates_ring)
 	blocks[0].next_block = &blocks[1];
 	config.block_count = ARRAY_SIZE(blocks);
 	config.channel_direction = PERIPHERAL_TO_MEMORY;
+	uint32_t completed;
+
 	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
 	zassert_equal(state.capacity, 2U * UINT16_MAX, "largest ring capacity was wrong");
-	zassert_equal(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_MEMORY, 1U,
-			      sdma_mock_rearm, &ring), -EINVAL,
+	sdma_mock_ring_init(&ring);
+	zassert_equal(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_MEMORY, sdma_mock_owned,
+			      sdma_mock_rearm, &ring, &completed), -EINVAL,
 		      "completion accepted an unsupported direction");
 	zassert_equal(dma_nxp_sdma_descriptor_reload(&state, MEMORY_TO_MEMORY, 0U, 0U,
 			      UINT16_MAX), -EINVAL, "reload accepted an unsupported direction");
@@ -659,6 +697,99 @@ ZTEST(dma_reload, test_sdma_descriptor_prepare_validates_ring)
 	zassert_equal(dma_nxp_sdma_descriptor_prepare(&preserved, &config), -EINVAL,
 		      "long descriptor chain was accepted");
 	assert_sdma_state_unchanged(&preserved, &expected);
+}
+
+/* One IRQ can represent several finished descriptors; each one must be
+ * accounted and reported exactly once, in order, with the right size.
+ */
+ZTEST(dma_reload, test_sdma_descriptor_accounts_coalesced_completions)
+{
+	struct dma_block_config blocks[] = {
+		{
+			.source_address = 0x1000U,
+			.dest_address = 0x2000U,
+			.block_size = 16U,
+		},
+		{
+			.source_address = 0x3000U,
+			.dest_address = 0x4000U,
+			.block_size = 24U,
+		},
+	};
+	struct dma_nxp_sdma_descriptor_state state;
+	struct dma_config config = base_cfg(&blocks[0]);
+	struct sdma_mock_ring ring;
+	uint32_t completed = 0xdeadbeefU;
+
+	blocks[0].next_block = &blocks[1];
+	config.block_count = ARRAY_SIZE(blocks);
+	config.channel_direction = MEMORY_TO_PERIPHERAL;
+	sdma_mock_ring_init(&ring);
+	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
+	zassert_ok(dma_nxp_sdma_descriptor_init_stat(&state, MEMORY_TO_PERIPHERAL));
+
+	/* Both descriptors finished before the coalesced IRQ was serviced. */
+	ring.owned[0] = false;
+	ring.owned[1] = false;
+	zassert_ok(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_PERIPHERAL, sdma_mock_owned,
+						    sdma_mock_rearm, &ring, &completed));
+	zassert_equal(completed, 2U, "coalesced IRQ reported %u of 2 completions", completed);
+	zassert_equal(ring.rearm_order[0], 0U, "coalesced IRQ rearmed out of order");
+	zassert_equal(ring.rearm_order[1], 1U, "coalesced IRQ rearmed out of order");
+	zassert_equal(state.stat.total_copied, 40U, "coalesced IRQ mis-accounted unequal blocks");
+
+	completed = 0xdeadbeefU;
+	zassert_ok(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_PERIPHERAL, sdma_mock_owned,
+						    sdma_mock_rearm, &ring, &completed));
+	zassert_equal(completed, 0U, "a duplicate IRQ reported a completion");
+}
+
+ZTEST(dma_reload, test_sdma_descriptor_reports_one_error_for_a_coalesced_irq)
+{
+	struct dma_block_config blocks[] = {
+		{
+			.source_address = 0x1000U,
+			.dest_address = 0x2000U,
+			.block_size = 16U,
+		},
+		{
+			.source_address = 0x3000U,
+			.dest_address = 0x4000U,
+			.block_size = 24U,
+		},
+	};
+	struct dma_nxp_sdma_descriptor_state state;
+	struct dma_config config = base_cfg(&blocks[0]);
+	struct sdma_mock_ring ring;
+	uint32_t completed = 0xdeadbeefU;
+
+	blocks[0].next_block = &blocks[1];
+	config.block_count = ARRAY_SIZE(blocks);
+	config.channel_direction = MEMORY_TO_PERIPHERAL;
+	sdma_mock_ring_init(&ring);
+	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
+	zassert_ok(dma_nxp_sdma_descriptor_init_stat(&state, MEMORY_TO_PERIPHERAL));
+
+	/* Corrupt the software credit so only the first coalesced BD's worth
+	 * of data was actually queued, simulating a pre-existing accounting
+	 * invariant failure: the second BD then has nothing left to consume.
+	 */
+	state.stat.write_position = 16U;
+	state.stat.pending_length = 16U;
+	state.stat.free = state.capacity - state.stat.pending_length;
+
+	ring.owned[0] = false;
+	ring.owned[1] = false;
+	zassert_equal(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_PERIPHERAL,
+						       sdma_mock_owned, sdma_mock_rearm, &ring,
+						       &completed),
+		      -EINVAL, "scan past the software credit was accepted");
+	zassert_equal(completed, 1U,
+		      "scan reported %u descriptors before the invariant failure", completed);
+	zassert_equal(ring.rearm_count, 1U,
+		      "scan rearmed %u descriptors before the invariant failure",
+		      ring.rearm_count);
+	zassert_equal(state.stat.total_copied, 16U, "failed scan accounted the bad descriptor");
 }
 #endif
 
@@ -721,15 +852,19 @@ ZTEST(dma_reload, test_sdma_append_tracks_one_completion_ring)
 	};
 	struct dma_nxp_sdma_append_state append;
 	struct dma_status status = {0};
+	struct sdma_mock_ring ring;
+	uint32_t completed = 0xdeadbeefU;
 
+	sdma_mock_ring_init(&ring);
 	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
 	zassert_equal(append.write_index, 1U);
 	zassert_equal(append.pending_count, 1U);
 	zassert_equal(append.pending_bytes, 16U);
 	zassert_equal(append.size[0], 16U);
 
-	/* MCUX reports descriptor 1 as next after completing descriptor 0. */
-	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
+	ring.owned[0] = false;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 1U, "single completion reported wrong count");
 	zassert_equal(append.pending_count, 0U);
 	zassert_equal(append.pending_bytes, 0U);
 	zassert_equal(append.total_copied, 16U);
@@ -740,6 +875,45 @@ ZTEST(dma_reload, test_sdma_append_tracks_one_completion_ring)
 	zassert_equal(status.free, DMA_NXP_SDMA_BD_COUNT);
 	zassert_equal(status.pending_length, 0U);
 	zassert_equal(status.total_copied, 16U);
+
+	completed = 0xdeadbeefU;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 0U, "a duplicate IRQ reported a completion");
+}
+
+/* One IRQ can represent several finished descriptors; each one must be
+ * accounted exactly once, in order, with the right size.
+ */
+ZTEST(dma_reload, test_sdma_append_accounts_coalesced_completions)
+{
+	struct dma_nxp_sdma_descriptor_state descriptors = {
+		.bd_count = 1U,
+		.capacity = 16U,
+		.bd_size = {16U},
+	};
+	struct dma_nxp_sdma_append_slot slot;
+	struct dma_nxp_sdma_append_state append;
+	struct sdma_mock_ring ring;
+	uint32_t completed = 0xdeadbeefU;
+	bool restart;
+
+	sdma_mock_ring_init(&ring);
+	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
+	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 24U, &slot, &restart));
+	zassert_equal(slot.index, 1U);
+
+	/* Both descriptors finished before the coalesced IRQ was serviced. */
+	ring.owned[0] = false;
+	ring.owned[1] = false;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 2U, "coalesced IRQ reported %u of 2 completions", completed);
+	zassert_equal(append.pending_count, 0U, "coalesced IRQ left a descriptor pending");
+	zassert_equal(append.pending_bytes, 0U, "coalesced IRQ left bytes pending");
+	zassert_equal(append.total_copied, 40U, "coalesced IRQ mis-accounted unequal blocks");
+
+	completed = 0xdeadbeefU;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 0U, "a duplicate IRQ reported a completion");
 }
 
 ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
@@ -751,8 +925,11 @@ ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
 	};
 	struct dma_nxp_sdma_append_slot slot;
 	struct dma_nxp_sdma_append_state append;
+	struct sdma_mock_ring ring;
+	uint32_t completed;
 	bool restart = false;
 
+	sdma_mock_ring_init(&ring);
 	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
 	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 24U, &slot, &restart));
 	zassert_equal(slot.index, DMA_NXP_SDMA_BD_COUNT - 1U);
@@ -766,8 +943,10 @@ ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
 	zassert_equal(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart), -EBUSY);
 	zassert_mem_equal(&append, &full, sizeof(append), "full rejection mutated append state");
 
-	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
-	zassert_ok(dma_nxp_sdma_append_complete(&append, 0U));
+	ring.owned[0] = false;
+	ring.owned[1] = false;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 2U);
 	zassert_equal(append.pending_count, 0U);
 	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart));
 	zassert_equal(slot.index, 0U);
@@ -784,17 +963,24 @@ ZTEST(dma_reload, test_sdma_append_stop_reload_order_controls_restart)
 	};
 	struct dma_nxp_sdma_append_slot slot;
 	struct dma_nxp_sdma_append_state append;
+	struct sdma_mock_ring ring;
+	uint32_t completed;
 	bool restart = true;
 
+	sdma_mock_ring_init(&ring);
 	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
-	zassert_ok(dma_nxp_sdma_append_complete(&append, 1U));
+	ring.owned[0] = false;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 1U);
 
 	/* Stop wins the lifecycle lock before reload. */
 	zassert_ok(dma_nxp_sdma_append_reload(&append, false, 24U, &slot, &restart));
 	zassert_false(restart, "reload restarted a stopped channel");
 
 	/* Complete the stopped work, then reload wins before a later stop. */
-	zassert_ok(dma_nxp_sdma_append_complete(&append, 0U));
+	ring.owned[slot.index] = false;
+	zassert_ok(dma_nxp_sdma_append_complete(&append, sdma_mock_owned, &ring, &completed));
+	zassert_equal(completed, 1U);
 	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 32U, &slot, &restart));
 	zassert_true(restart, "enabled reload did not start queued work");
 }

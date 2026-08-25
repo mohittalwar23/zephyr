@@ -45,7 +45,8 @@ struct sdma_channel_data {
 	struct dma_nxp_sdma_descriptor_state descriptor_state;
 	struct dma_config *dma_cfg;
 	struct dma_nxp_sdma_lifecycle lifecycle;
-	bool callback_pending;
+	uint32_t callback_pending_blocks;
+	bool callback_pending_error;
 	bool error_callback_dis;
 	int callback_status;
 	bool append_mode;
@@ -65,14 +66,23 @@ struct sdma_dev_data {
 	struct k_mutex ch0_lock; /* serialises the shared channel-0 context load */
 };
 
+/*
+ * Drains one queued notification per call: successful block completions
+ * first (one per completed descriptor, in order), then at most one final
+ * error. Callers loop this until it returns false.
+ */
 static bool dma_nxp_sdma_take_callback(struct sdma_channel_data *chan_data, int *status)
 {
 	k_spinlock_key_t key = k_spin_lock(&chan_data->lifecycle.lock);
-	bool notify = chan_data->callback_pending;
+	bool notify = false;
 
-	if (notify) {
+	if (chan_data->callback_pending_blocks != 0U) {
+		chan_data->callback_pending_blocks--;
+		*status = DMA_STATUS_BLOCK;
+		notify = true;
+	} else if (chan_data->callback_pending_error) {
+		chan_data->callback_pending_error = false;
 		*status = chan_data->callback_status;
-		chan_data->callback_pending = false;
 		notify = *status >= 0 || !chan_data->error_callback_dis;
 	}
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
@@ -102,8 +112,10 @@ static void dma_nxp_sdma_isr(const void *data)
 			SDMA_ClearChannelInterruptStatus(dev_cfg->base, 1 << i);
 			SDMA_HandleIRQ(&chan_data->handle);
 
-			if (dma_nxp_sdma_take_callback(chan_data, &status) && chan_data->cb) {
-				chan_data->cb(chan_data->dev, chan_data->arg, i, status);
+			while (dma_nxp_sdma_take_callback(chan_data, &status)) {
+				if (chan_data->cb) {
+					chan_data->cb(chan_data->dev, chan_data->arg, i, status);
+				}
 			}
 		}
 		i++;
@@ -163,7 +175,8 @@ static void dma_nxp_sdma_stop_hardware(void *context)
 {
 	struct sdma_channel_data *chan_data = context;
 
-	chan_data->callback_pending = false;
+	chan_data->callback_pending_blocks = 0U;
+	chan_data->callback_pending_error = false;
 	SDMA_StopTransfer(&chan_data->handle);
 }
 
@@ -171,11 +184,6 @@ static void dma_nxp_sdma_stop_after_error(struct sdma_channel_data *chan_data)
 {
 	SDMA_StopTransfer(&chan_data->handle);
 }
-
-struct dma_nxp_sdma_completion {
-	struct sdma_channel_data *chan_data;
-	uint32_t bd_index;
-};
 
 static void dma_nxp_sdma_rearm_descriptor(void *context, uint32_t index, uint32_t size)
 {
@@ -186,25 +194,37 @@ static void dma_nxp_sdma_rearm_descriptor(void *context, uint32_t index, uint32_
 	bd->status |= (uint8_t)kSDMA_BDStatusDone;
 }
 
+/* Done cleared means the SDMA engine has released the BD to software. */
+static bool dma_nxp_sdma_bd_owned(void *context, uint32_t index)
+{
+	struct sdma_channel_data *chan_data = context;
+
+	return (chan_data->bd_pool[index].status & (uint8_t)kSDMA_BDStatusDone) != 0U;
+}
+
 static bool dma_nxp_sdma_complete(void *context)
 {
-	struct dma_nxp_sdma_completion *completion = context;
-	struct sdma_channel_data *chan_data = completion->chan_data;
-	bool restart = true;
+	struct sdma_channel_data *chan_data = context;
+	uint32_t count = 0U;
+	bool restart;
 	int ret;
 
 	if (chan_data->append_mode) {
-		ret = dma_nxp_sdma_append_complete(&chan_data->append, completion->bd_index);
-		restart = chan_data->append.pending_count != 0U;
+		ret = dma_nxp_sdma_append_complete(&chan_data->append, dma_nxp_sdma_bd_owned,
+						   chan_data, &count);
+		restart = (ret == 0) && chan_data->append.pending_count != 0U;
 	} else {
 		ret = dma_nxp_sdma_descriptor_complete(&chan_data->descriptor_state,
-						       chan_data->direction, completion->bd_index,
-						       dma_nxp_sdma_rearm_descriptor, chan_data);
+						       chan_data->direction, dma_nxp_sdma_bd_owned,
+						       dma_nxp_sdma_rearm_descriptor, chan_data,
+						       &count);
+		restart = (ret == 0) && count != 0U;
 	}
 
-	chan_data->callback_status = (ret != 0) ? ret : DMA_STATUS_BLOCK;
-	chan_data->callback_pending = true;
+	chan_data->callback_pending_blocks += count;
 	if (ret != 0) {
+		chan_data->callback_status = ret;
+		chan_data->callback_pending_error = true;
 		chan_data->lifecycle.started = false;
 		dma_nxp_sdma_stop_after_error(chan_data);
 		return false;
@@ -217,14 +237,11 @@ void dma_nxp_sdma_callback(sdma_handle_t *handle, void *userData, bool TransferD
 			   uint32_t bdIndex)
 {
 	struct sdma_channel_data *chan_data = userData;
-	struct dma_nxp_sdma_completion completion = {
-		.chan_data = chan_data,
-		.bd_index = bdIndex,
-	};
 
 	ARG_UNUSED(handle);
 	ARG_UNUSED(TransferDone);
-	dma_nxp_sdma_lifecycle_complete(&chan_data->lifecycle, dma_nxp_sdma_complete, &completion,
+	ARG_UNUSED(bdIndex);
+	dma_nxp_sdma_lifecycle_complete(&chan_data->lifecycle, dma_nxp_sdma_complete, chan_data,
 					 dma_nxp_sdma_start_hardware, chan_data);
 }
 
@@ -364,7 +381,8 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 
 	key = k_spin_lock(&chan_data->lifecycle.lock);
 	chan_data->lifecycle.started = false;
-	chan_data->callback_pending = false;
+	chan_data->callback_pending_blocks = 0U;
+	chan_data->callback_pending_error = false;
 	chan_data->callback_status = DMA_STATUS_BLOCK;
 	chan_data->error_callback_dis = config->error_callback_dis;
 	k_spin_unlock(&chan_data->lifecycle.lock, key);
