@@ -298,9 +298,56 @@ ZTEST(mcux_sai_stream, test_rx_start_releases_the_block_a_failed_reload_never_to
 	zassert_equal(i2s_mcux_sai_stream_rx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS),
 		      -EIO);
 	zassert_equal(fake_sai_dma_data.start_calls, 0U);
-	zassert_equal(k_msgq_num_used_get(&stream.in_queue), 1U);
-	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT - 1U,
-		      "the rejected buffer was leaked");
+	zassert_equal(fake_sai_dma_data.stop_calls, 1U);
+	zassert_equal(k_msgq_num_used_get(&stream.in_queue), 0U,
+		      "a failed start must not retain a stale DMA descriptor");
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT,
+		      "every block prepared by the failed start must be released");
+}
+
+ZTEST(mcux_sai_stream, test_tx_start_unwinds_prepared_blocks_when_reload_fails)
+{
+	queue_blocks(&stream.in_queue, 2U);
+	fake_sai_dma_data.reload_status = -EIO;
+
+	zassert_equal(i2s_mcux_sai_stream_tx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS),
+		      -EIO);
+	zassert_equal(fake_sai_dma_data.start_calls, 0U);
+	zassert_equal(fake_sai_dma_data.stop_calls, 1U);
+	zassert_equal(k_msgq_num_used_get(&stream.in_queue), 0U);
+	zassert_equal(k_msgq_num_used_get(&stream.out_queue), 0U,
+		      "a failed start must not retain a stale DMA descriptor");
+	zassert_equal(stream.free_tx_dma_blocks, stream.max_dma_blocks);
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT,
+		      "every block consumed by the failed start must be released");
+}
+
+ZTEST(mcux_sai_stream, test_tx_start_unwinds_prepared_blocks_when_dma_start_fails)
+{
+	queue_blocks(&stream.in_queue, 3U);
+	fake_sai_dma_data.start_status = -EIO;
+
+	zassert_equal(i2s_mcux_sai_stream_tx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS),
+		      -EIO);
+	zassert_equal(fake_sai_dma_data.stop_calls, 1U);
+	zassert_equal(k_msgq_num_used_get(&stream.out_queue), 0U,
+		      "a rejected DMA start must release every prepared descriptor");
+	zassert_equal(k_msgq_num_used_get(&stream.in_queue), 1U,
+		      "a block not submitted to DMA remains queued for a retry");
+	zassert_equal(stream.free_tx_dma_blocks, stream.max_dma_blocks);
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT - 1U);
+}
+
+ZTEST(mcux_sai_stream, test_rx_start_unwinds_prepared_blocks_when_dma_start_fails)
+{
+	fake_sai_dma_data.start_status = -EIO;
+
+	zassert_equal(i2s_mcux_sai_stream_rx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS),
+		      -EIO);
+	zassert_equal(fake_sai_dma_data.stop_calls, 1U);
+	zassert_equal(k_msgq_num_used_get(&stream.in_queue), 0U,
+		      "a rejected DMA start must release every prepared descriptor");
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT);
 }
 
 ZTEST(mcux_sai_stream, test_tx_reload_releases_the_block_a_failed_reload_never_took)
