@@ -109,7 +109,6 @@ int i2s_mcux_sai_stream_tx_start(struct i2s_mcux_sai_stream *strm, const struct 
 		return -EIO;
 	}
 
-	/* The driver keeps track of how many blocks the controller can take */
 	strm->free_tx_dma_blocks = strm->max_dma_blocks;
 
 	memset(blk_cfg, 0, sizeof(*blk_cfg));
@@ -147,10 +146,20 @@ int i2s_mcux_sai_stream_tx_start(struct i2s_mcux_sai_stream *strm, const struct 
 
 	ret = i2s_mcux_sai_stream_tx_reload(strm, dma_dev, dest_address, &blocks_queued);
 	if (ret != 0) {
-		return ret;
+		goto stop_and_release;
 	}
 
-	return dma_start(dma_dev, strm->dma.channel);
+	ret = dma_start(dma_dev, strm->dma.channel);
+	if (ret == 0) {
+		return 0;
+	}
+
+stop_and_release:
+	dma_stop(dma_dev, strm->dma.channel);
+	i2s_mcux_sai_stream_purge(strm, false, true);
+	strm->free_tx_dma_blocks = strm->max_dma_blocks;
+
+	return ret;
 }
 
 int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct device *dma_dev,
@@ -207,8 +216,7 @@ int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct 
 	for (int i = 0; i < I2S_MCUX_SAI_RX_PREP_BLOCKS - 1; i++) {
 		ret = k_mem_slab_alloc(strm->cfg.mem_slab, &q_entry.mem_block, K_NO_WAIT);
 		if (ret != 0) {
-			dma_stop(dma_dev, strm->dma.channel);
-			return ret;
+			goto stop_and_release;
 		}
 		q_entry.size = blk_cfg->block_size;
 
@@ -216,19 +224,26 @@ int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct 
 				 (uint32_t)q_entry.mem_block, q_entry.size);
 		if (ret != 0) {
 			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
-			dma_stop(dma_dev, strm->dma.channel);
-			return ret;
+			goto stop_and_release;
 		}
 
 		ret = k_msgq_put(&strm->in_queue, &q_entry, K_NO_WAIT);
 		if (ret != 0) {
-			dma_stop(dma_dev, strm->dma.channel);
 			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
-			return ret;
+			goto stop_and_release;
 		}
 	}
 
-	return dma_start(dma_dev, strm->dma.channel);
+	ret = dma_start(dma_dev, strm->dma.channel);
+	if (ret == 0) {
+		return 0;
+	}
+
+stop_and_release:
+	dma_stop(dma_dev, strm->dma.channel);
+	i2s_mcux_sai_stream_purge(strm, true, false);
+
+	return ret;
 }
 
 enum i2s_mcux_sai_stream_action
