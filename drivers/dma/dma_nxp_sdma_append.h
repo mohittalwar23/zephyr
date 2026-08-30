@@ -20,6 +20,7 @@ struct dma_nxp_sdma_append_state {
 
 struct dma_nxp_sdma_append_slot {
 	uint32_t index;
+	bool last;
 	bool wrap;
 };
 
