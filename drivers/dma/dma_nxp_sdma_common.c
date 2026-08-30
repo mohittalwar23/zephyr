@@ -54,7 +54,7 @@ void *dma_nxp_sdma_context_at(const struct dma_nxp_sdma_context_store *store,
 }
 
 int dma_nxp_sdma_ram_script_claim(struct dma_nxp_sdma_ram_script_state *state,
-				  const void *controller, bool required)
+				  const void *controller, bool required, bool *claimed)
 {
 	k_spinlock_key_t key;
 	int ret = 0;
@@ -62,19 +62,49 @@ int dma_nxp_sdma_ram_script_claim(struct dma_nxp_sdma_ram_script_state *state,
 	if (!required) {
 		return 0;
 	}
-	if (state == NULL || controller == NULL) {
+	if (state == NULL || controller == NULL || claimed == NULL) {
 		return -EINVAL;
 	}
 
 	key = k_spin_lock(&state->lock);
-	if (state->owner == NULL) {
+	if (*claimed) {
+		if (state->owner != controller || state->claim_count == 0U) {
+			ret = -EINVAL;
+		}
+	} else if (state->owner == NULL) {
 		state->owner = controller;
+		state->claim_count = 1U;
 	} else if (state->owner != controller) {
 		ret = -ENOTSUP;
+	} else {
+		state->claim_count++;
+	}
+	if (ret == 0) {
+		*claimed = true;
 	}
 	k_spin_unlock(&state->lock, key);
 
 	return ret;
+}
+
+void dma_nxp_sdma_ram_script_release(struct dma_nxp_sdma_ram_script_state *state,
+				     const void *controller, bool *claimed)
+{
+	k_spinlock_key_t key;
+
+	if (state == NULL || controller == NULL || claimed == NULL) {
+		return;
+	}
+
+	key = k_spin_lock(&state->lock);
+	if (*claimed && state->owner == controller && state->claim_count != 0U) {
+		state->claim_count--;
+		*claimed = false;
+		if (state->claim_count == 0U) {
+			state->owner = NULL;
+		}
+	}
+	k_spin_unlock(&state->lock, key);
 }
 
 int dma_nxp_sdma_validate_slot(const struct dma_config *config, uint32_t *peripheral,

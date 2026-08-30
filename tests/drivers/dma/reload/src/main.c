@@ -50,6 +50,7 @@ static bool sdma_mock_owned(void *context, uint32_t index)
 	return ring->owned[index];
 }
 
+#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 static void sdma_mock_rearm(void *context, uint32_t index, uint32_t size)
 {
 	struct sdma_mock_ring *ring = context;
@@ -63,7 +64,6 @@ static void sdma_mock_rearm(void *context, uint32_t index, uint32_t size)
 	ring->owned[index] = true;
 }
 
-#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 static const struct device *const dma = DEVICE_DT_GET(DT_NODELABEL(tst_dma0));
 static K_SEM_DEFINE(done, 0, 1);
 static K_SEM_DEFINE(done1, 0, 1);
@@ -923,7 +923,7 @@ ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
 		.capacity = 16U,
 		.bd_size = {16U},
 	};
-	struct dma_nxp_sdma_append_slot slot;
+	struct dma_nxp_sdma_append_slot slot = {0};
 	struct dma_nxp_sdma_append_state append;
 	struct sdma_mock_ring ring;
 	uint32_t completed;
@@ -933,6 +933,7 @@ ZTEST(dma_reload, test_sdma_append_rejects_full_and_resumes_after_underrun)
 	zassert_ok(dma_nxp_sdma_append_prepare(&append, &descriptors));
 	zassert_ok(dma_nxp_sdma_append_reload(&append, true, 24U, &slot, &restart));
 	zassert_equal(slot.index, DMA_NXP_SDMA_BD_COUNT - 1U);
+	zassert_true(slot.last, "an appended peripheral buffer must terminate its BD");
 	zassert_true(slot.wrap, "last pool descriptor did not close the ring");
 	zassert_true(restart, "enabled append ring did not request a hardware kick");
 	zassert_equal(append.pending_count, DMA_NXP_SDMA_BD_COUNT);

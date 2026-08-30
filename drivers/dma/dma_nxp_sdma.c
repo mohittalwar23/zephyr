@@ -49,6 +49,7 @@ struct sdma_channel_data {
 	struct dma_nxp_sdma_irq_state irq;
 	bool error_callback_dis;
 	bool append_mode;
+	bool ram_script_claimed;
 	uint32_t bus_width;
 	struct dma_nxp_sdma_append_state append;
 
@@ -164,7 +165,7 @@ static void dma_nxp_sdma_start_hardware(void *context)
 
 	SDMA_SetChannelPriority(dev_cfg->base, chan_data->request.channel,
 				DMA_NXP_SDMA_CHAN_DEFAULT_PRIO);
-	SDMA_StartChannelSoftware(dev_cfg->base, chan_data->request.channel);
+	SDMA_StartTransfer(&chan_data->handle);
 }
 
 static void dma_nxp_sdma_stop_transfer(void *context)
@@ -307,11 +308,11 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 		bool is_last = false;
 		bool is_wrap = false;
 
-		if (!chan_data->append_mode &&
-		    i == chan_data->descriptor_state.bd_count - 1U) {
+		if (chan_data->append_mode) {
 			is_last = true;
-			is_wrap = true;
-		} else if (chan_data->append_mode && i == bd_count - 1U) {
+			is_wrap = i == bd_count - 1U;
+		} else if (i == chan_data->descriptor_state.bd_count - 1U) {
+			is_last = true;
 			is_wrap = true;
 		}
 
@@ -339,6 +340,7 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	sdma_peripheral_t peripheral;
 	k_spinlock_key_t key;
 	bool append_mode;
+	bool ram_script_required;
 	uint32_t dest_width;
 	uint32_t source_width;
 	uint32_t watermark;
@@ -387,15 +389,6 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 			return ret;
 		}
 	}
-	ret = dma_nxp_sdma_ram_script_claim(&ram_script_state, dev,
-					    SDMA_DRIVER_LOAD_RAM_SCRIPT &&
-					    peripheral == kSDMA_PeripheralMultiFifoPDM);
-	if (ret < 0) {
-		LOG_ERR("%s: RAM-script peripheral already belongs to another controller",
-			__func__);
-		return ret;
-	}
-
 	dma_nxp_sdma_channel_init(dev, channel);
 
 	chan_data->request.channel = channel;
@@ -437,6 +430,20 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 		return ret;
 	}
 
+	ram_script_required = SDMA_DRIVER_LOAD_RAM_SCRIPT &&
+			      peripheral == kSDMA_PeripheralMultiFifoPDM;
+	ret = dma_nxp_sdma_ram_script_claim(&ram_script_state, dev, ram_script_required,
+					    &chan_data->ram_script_claimed);
+	if (ret < 0) {
+		LOG_ERR("%s: RAM-script peripheral already belongs to another controller",
+			__func__);
+		return ret;
+	}
+	if (!ram_script_required) {
+		dma_nxp_sdma_ram_script_release(&ram_script_state, dev,
+						&chan_data->ram_script_claimed);
+	}
+
 	/*
 	 * The watermark is how many bytes the engine moves per peripheral DMA
 	 * request; it must match the consumer's burst length (e.g. the SAI word
@@ -461,9 +468,6 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	/*... and submit it to SDMA engine.
 	 * Note that SDMA transfer is later manually started by the dma_nxp_sdma_start()
 	 */
-	chan_data->transfer_cfg.isEventIgnore = false;
-	chan_data->transfer_cfg.isSoftTriggerIgnore = false;
-
 	/*
 	 * SDMA_SubmitTransfer() loads the context through the single shared
 	 * channel-0 boot script; concurrent config() calls (e.g. TX and RX)
@@ -574,8 +578,9 @@ static int dma_nxp_sdma_reload(const struct device *dev, uint32_t channel, uint3
 		}
 
 		bd = &chan_data->bd_pool[slot.index];
-		SDMA_ConfigBufferDescriptor(bd, src, dst, chan_data->bus_width, size, false, true,
-					    slot.wrap, chan_data->transfer_cfg.type);
+		SDMA_ConfigBufferDescriptor(bd, src, dst, chan_data->bus_width, size,
+					    slot.last, true, slot.wrap,
+					    chan_data->transfer_cfg.type);
 		if (restart) {
 			dma_nxp_sdma_start_hardware(chan_data);
 		}
@@ -637,6 +642,8 @@ static void sdma_channel_release(const struct device *dev, uint32_t channel)
 		return;
 	}
 
+	dma_nxp_sdma_ram_script_release(&ram_script_state, dev,
+					&dev_data->chan[channel].ram_script_claimed);
 	dma_nxp_sdma_request_release(&dev_data->chan[channel].request);
 }
 
