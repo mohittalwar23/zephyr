@@ -1,0 +1,12 @@
+description: Test NXP-style clock controller
+
+compatible: "vnd,nxp-clock"
+
+include: clock-controller.yaml
+
+properties:
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - name
