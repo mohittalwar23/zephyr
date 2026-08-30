@@ -7,3 +7,10 @@ project(i2s_api)
 
 FILE(GLOB app_sources src/*.c)
 target_sources(app PRIVATE ${app_sources})
+if(NOT CONFIG_DMA_NXP_SDMA)
+  target_sources(app PRIVATE ${ZEPHYR_BASE}/drivers/dma/dma_nxp_sdma_common.c)
+endif()
+
+if(CONFIG_SOC_MIMX8ML8_M7 AND CONFIG_DMA_NXP_SDMA)
+  zephyr_linker_sources(RAM_SECTIONS boards/imx8mp-noncacheable.ld)
+endif()
