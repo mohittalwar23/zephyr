@@ -291,6 +291,34 @@ ZTEST(mcux_sai_stream, test_rx_start_unwinds_when_dma_config_fails)
 		      "the allocated buffer was not released exactly once");
 }
 
+ZTEST(mcux_sai_stream, test_rx_start_rejects_slab_without_replacement_block)
+{
+	void *reserved[TEST_BLOCK_COUNT - I2S_MCUX_SAI_RX_PREP_BLOCKS];
+	uint32_t config_calls;
+	int ret;
+
+	for (size_t i = 0U; i < ARRAY_SIZE(reserved); i++) {
+		zassert_ok(k_mem_slab_alloc(&test_slab, &reserved[i], K_NO_WAIT));
+	}
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), I2S_MCUX_SAI_RX_PREP_BLOCKS);
+
+	ret = i2s_mcux_sai_stream_rx_start(&stream, fake_dma_dev(), TEST_FIFO_ADDRESS);
+	config_calls = fake_sai_dma_data.config_calls;
+
+	if (ret == 0) {
+		zassert_ok(dma_stop(fake_dma_dev(), stream.dma.channel));
+		i2s_mcux_sai_stream_purge(&stream, true, false);
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(reserved); i++) {
+		k_mem_slab_free(&test_slab, reserved[i]);
+	}
+
+	zassert_equal(ret, -EINVAL,
+		      "RX needs one free replacement in addition to its prepared DMA blocks");
+	zassert_equal(config_calls, 0U, "an undersized slab must be rejected before DMA setup");
+	zassert_equal(k_mem_slab_num_free_get(&test_slab), TEST_BLOCK_COUNT);
+}
+
 ZTEST(mcux_sai_stream, test_rx_start_releases_the_block_a_failed_reload_never_took)
 {
 	fake_sai_dma_data.reload_status = -EIO;
@@ -517,6 +545,30 @@ ZTEST(mcux_sai_stream, test_fixed_channel_pair_is_never_released)
 
 	zassert_equal(fake_sai_dma_data.release_calls, 0U,
 		      "a fixed channel is not owned by the request allocator");
+}
+
+ZTEST(mcux_sai_stream, test_fifo_channel_mask_is_preserved)
+{
+	zassert_equal(i2s_mcux_sai_stream_channel_mask(0x1U), 0x1U);
+	zassert_equal(i2s_mcux_sai_stream_channel_mask(0x5U), 0x5U);
+}
+
+ZTEST(mcux_sai_stream, test_sdma_fifo_request_matches_nxp_transactional_driver)
+{
+	struct i2s_mcux_sai_tx_fifo_config config =
+		i2s_mcux_sai_stream_tx_fifo_config(128U, 4U, true);
+
+	zassert_equal(config.watermark, 64U);
+	zassert_equal(config.burst_length, 256U);
+}
+
+ZTEST(mcux_sai_stream, test_edma_fifo_request_preserves_single_word_burst)
+{
+	struct i2s_mcux_sai_tx_fifo_config config =
+		i2s_mcux_sai_stream_tx_fifo_config(128U, 4U, false);
+
+	zassert_equal(config.watermark, 127U);
+	zassert_equal(config.burst_length, 4U);
 }
 
 ZTEST(mcux_sai_stream, test_a_failed_tx_transfer_reaches_the_stream)

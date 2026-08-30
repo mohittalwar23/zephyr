@@ -9,6 +9,28 @@
 
 #include "i2s_mcux_sai_stream.h"
 
+uint32_t i2s_mcux_sai_stream_channel_mask(uint32_t channel_mask)
+{
+	return channel_mask;
+}
+
+struct i2s_mcux_sai_tx_fifo_config
+i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
+				   bool is_sdma)
+{
+	struct i2s_mcux_sai_tx_fifo_config config;
+
+	if (is_sdma) {
+		config.watermark = fifo_count / 2U;
+		config.burst_length = (fifo_count - config.watermark) * word_size_bytes;
+	} else {
+		config.watermark = fifo_count - 1U;
+		config.burst_length = word_size_bytes;
+	}
+
+	return config;
+}
+
 void i2s_mcux_sai_stream_purge(struct i2s_mcux_sai_stream *strm, bool in_drop, bool out_drop)
 {
 	struct i2s_mcux_sai_q_entry q_entry;
@@ -170,10 +192,10 @@ int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct 
 	int ret;
 
 	/*
-	 * Need at least I2S_MCUX_SAI_RX_PREP_BLOCKS buffers on the RX memory
-	 * slab for reliable DMA reception.
+	 * RX keeps I2S_MCUX_SAI_RX_PREP_BLOCKS buffers prepared for DMA and
+	 * needs one more block to replace the first completed buffer.
 	 */
-	if (k_mem_slab_num_free_get(strm->cfg.mem_slab) < I2S_MCUX_SAI_RX_PREP_BLOCKS) {
+	if (k_mem_slab_num_free_get(strm->cfg.mem_slab) < I2S_MCUX_SAI_RX_PREP_BLOCKS + 1U) {
 		return -EINVAL;
 	}
 
