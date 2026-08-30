@@ -1,0 +1,37 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	clock_a: clock-a {
+		compatible = "vnd,nxp-clock";
+		#clock-cells = <1>;
+		status = "okay";
+	};
+
+	clock_b: clock-b {
+		compatible = "vnd,nxp-clock";
+		#clock-cells = <1>;
+		status = "okay";
+	};
+
+	clock_unready: clock-unready {
+		compatible = "vnd,nxp-clock";
+		#clock-cells = <1>;
+		status = "okay";
+	};
+
+	clock_zero: clock-zero {
+		compatible = "vnd,nxp-clock-zero-cell";
+		#clock-cells = <0>;
+		status = "okay";
+	};
+
+	clock_consumer: clock-consumer {
+		compatible = "vnd,nxp-clock-consumer";
+		clocks = <&clock_a 0x11>, <&clock_b 0x22>, <&clock_zero>;
+		status = "okay";
+	};
+};
