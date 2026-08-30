@@ -1,0 +1,59 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	test_intc: interrupt-controller@1000 {
+		compatible = "arm,v7m-nvic";
+		reg = <0x1000 0x100>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		arm,num-irq-priority-bits = <3>;
+	};
+
+	mixed_edma: dma-controller@2000 {
+		compatible = "nxp,mcux-edma";
+		reg = <0x2000 0x100>;
+		interrupt-parent = <&test_intc>;
+		interrupts = <1 0>;
+		#dma-cells = <2>;
+		dma-channels = <8>;
+		dma-requests = <64>;
+		nxp,version = <3>;
+		status = "okay";
+	};
+
+	mixed_sdma: dma-controller@3000 {
+		compatible = "nxp,sdma";
+		reg = <0x3000 0x100>;
+		interrupt-parent = <&test_intc>;
+		interrupts = <2 0>;
+		#dma-cells = <2>;
+		dma-requests = <48>;
+		status = "okay";
+	};
+
+	mcux_sai_edma_fixture: i2s@4000 {
+		compatible = "nxp,mcux-i2s";
+		reg = <0x4000 0x100>;
+		interrupt-parent = <&test_intc>;
+		interrupts = <3 0>;
+		dmas = <&mixed_edma 2 11>, <&mixed_edma 3 12>;
+		dma-names = "rx", "tx";
+		nxp,rx-dma-channel = <2>;
+		nxp,tx-dma-channel = <3>;
+		status = "okay";
+	};
+
+	mcux_sai_sdma_fixture: i2s@5000 {
+		compatible = "nxp,mcux-i2s";
+		reg = <0x5000 0x100>;
+		interrupt-parent = <&test_intc>;
+		interrupts = <4 0>;
+		dmas = <&mixed_sdma 5 5>, <&mixed_sdma 4 5>;
+		dma-names = "rx", "tx";
+		status = "okay";
+	};
+};

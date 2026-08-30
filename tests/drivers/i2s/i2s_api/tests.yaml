@@ -47,3 +47,40 @@ tests:
       - nrf54h20dk/nrf54h20/cpuapp
     integration_platforms:
       - nrf54h20dk/nrf54h20/cpuapp
+  drivers.i2s.mcux_dma.build:
+    build_only: true
+    tags:
+      - drivers
+      - i2s
+    platform_allow:
+      - frdm_mcxe31b
+      - imx8mp_evk/mimx8ml8/m7/ddr
+      - mimxrt1170_evk@A/mimxrt1176/cm7
+    integration_platforms:
+      - frdm_mcxe31b
+      - imx8mp_evk/mimx8ml8/m7/ddr
+      - mimxrt1170_evk@A/mimxrt1176/cm7
+  drivers.i2s.mcux_dma.edma_v3.build:
+    build_only: true
+    tags:
+      - drivers
+      - i2s
+    extra_args:
+      - DTC_OVERLAY_FILE=boards/frdm_mcxa577_edma_v3.overlay
+      - EXTRA_CONF_FILE=boards/frdm_mcxa577_edma_v3.conf
+    platform_allow:
+      - frdm_mcxa577
+    integration_platforms:
+      - frdm_mcxa577
+  drivers.i2s.mcux_dma.mixed.build:
+    build_only: true
+    tags:
+      - drivers
+      - i2s
+    extra_args:
+      - DTC_OVERLAY_FILE=boards/native_sim_mcux_mixed.overlay
+      - EXTRA_CONF_FILE=boards/native_sim_mcux_mixed.conf
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim

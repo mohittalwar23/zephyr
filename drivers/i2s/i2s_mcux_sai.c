@@ -18,6 +18,7 @@
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/dma/nxp_sdma.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
@@ -30,39 +31,27 @@
 #include <soc.h>
 
 #include <fsl_sai.h>
-#if defined(CONFIG_DMA_MCUX_EDMA)
-#include <fsl_edma.h>
-#endif
+
+#include "i2s_mcux_sai_dma.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(dev_i2s_mcux, CONFIG_I2S_LOG_LEVEL);
 
 #define NUM_DMA_BLOCKS_RX_PREP 3
-#if defined(CONFIG_DMA_MCUX_EDMA)
-BUILD_ASSERT(NUM_DMA_BLOCKS_RX_PREP >= 3,
-	     "eDMA avoids TCD coherency issue if NUM_DMA_BLOCKS_RX_PREP >= 3");
-#endif /* CONFIG_DMA_MCUX_EDMA */
 
-/* Depth of the DMA controller's queued-block pool (eDMA TCDs / SDMA BDs). */
-#if defined(CONFIG_DMA_MCUX_EDMA)
-#define MAX_TX_DMA_BLOCKS CONFIG_DMA_TCD_QUEUE_SIZE
-#elif defined(CONFIG_DMA_NXP_SDMA)
-#define MAX_TX_DMA_BLOCKS CONFIG_DMA_NXP_SDMA_BD_COUNT
-#else
-#error "i2s_mcux_sai requires an eDMA or SDMA controller"
-#endif
-BUILD_ASSERT(MAX_TX_DMA_BLOCKS > NUM_DMA_BLOCKS_RX_PREP,
-	     "the DMA controller's max block count must exceed NUM_DMA_BLOCKS_RX_PREP");
-
-/*
- * dma_slot carries the per-controller DMA request identifier: eDMA names that
- * dmas cell "source"; SDMA names it "mux" (the peripheral type).
- */
-#if defined(CONFIG_DMA_MCUX_EDMA)
-#define I2S_SAI_DMA_SLOT(id, dir) DT_INST_DMAS_CELL_BY_NAME(id, dir, source)
-#elif defined(CONFIG_DMA_NXP_SDMA)
-#define I2S_SAI_DMA_SLOT(id, dir) DT_INST_DMAS_CELL_BY_NAME(id, dir, mux)
-#endif
+#define I2S_SAI_DMA_CTLR(id, dir) I2S_MCUX_SAI_DMA_CTLR(DT_DRV_INST(id), dir)
+#define I2S_SAI_DMA_IS_SDMA(id, dir)                                                         \
+	I2S_MCUX_SAI_DMA_IS_SDMA(DT_DRV_INST(id), dir)
+#define I2S_SAI_DMA_IS_EDMA(id, dir)                                                         \
+	I2S_MCUX_SAI_DMA_IS_EDMA(DT_DRV_INST(id), dir)
+#define I2S_SAI_DMA_SLOT(id, dir) I2S_MCUX_SAI_DMA_SLOT(DT_DRV_INST(id), dir)
+#define I2S_SAI_DMA_REQUEST(id, dir) I2S_MCUX_SAI_DMA_REQUEST(DT_DRV_INST(id), dir)
+#define I2S_SAI_DMA_BLOCK_COUNT(id, dir)                                                     \
+	COND_CODE_1(I2S_SAI_DMA_IS_SDMA(id, dir),                                             \
+		(CONFIG_DMA_NXP_SDMA_BD_COUNT), (CONFIG_DMA_TCD_QUEUE_SIZE))
+#define I2S_SAI_CLOCK_SUBSYS(id)                                                             \
+	COND_CODE_1(DT_INST_PHA_HAS_CELL_AT_IDX(id, clocks, 0, name),                         \
+		((clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(id, 0, name)), (NULL))
 
 #define SAI_WORD_SIZE_BITS_MIN 8
 #define SAI_WORD_SIZE_BITS_MAX 32
@@ -71,11 +60,10 @@ BUILD_ASSERT(MAX_TX_DMA_BLOCKS > NUM_DMA_BLOCKS_RX_PREP,
 #define SAI_WORD_PER_FRAME_MAX 32
 
 /*
- * SAI driver uses source_gather_en/dest_scatter_en feature of DMA, and relies
- * on DMA driver managing circular list of DMA blocks.  Like eDMA driver links
- * Transfer Control Descriptors (TCDs) in list, and manages the tcdpool.
- * Calling dma_reload() adds new DMA block to DMA channel already configured,
- * into the DMA driver's circular list of blocks.
+ * The SAI driver relies on the DMA controller managing a circular queue of
+ * blocks. eDMA expresses this with gather/scatter; SDMA uses a driver-specific
+ * append mode in dma_slot.
+ * Calling dma_reload() adds a new block to the configured channel.
 
  * This indicates the Tx/Rx stream.
  *
@@ -100,6 +88,9 @@ struct i2s_q_entry {
 struct stream {
 	enum i2s_state state;
 	uint32_t dma_channel;
+	uint32_t dma_request;
+	uint8_t max_dma_blocks;
+	bool request_dma_channel;
 	uint32_t start_channel;
 	void (*irq_call_back)(void);
 	struct i2s_config cfg;
@@ -309,7 +300,7 @@ static void i2s_dma_tx_callback(const struct device *dma_dev, void *arg, uint32_
 		LOG_ERR("no buf in out_queue for channel %u", channel);
 	}
 
-	if (strm->free_tx_dma_blocks > MAX_TX_DMA_BLOCKS) {
+	if (strm->free_tx_dma_blocks > strm->max_dma_blocks) {
 		strm->state = I2S_STATE_ERROR;
 		LOG_ERR("free_tx_dma_blocks exceeded maximum, now %d", strm->free_tx_dma_blocks);
 		goto disabled_exit_no_drop;
@@ -338,7 +329,7 @@ static void i2s_dma_tx_callback(const struct device *dma_dev, void *arg, uint32_
 		goto disabled_exit_no_drop;
 	}
 
-	if (blocks_queued || (strm->free_tx_dma_blocks < MAX_TX_DMA_BLOCKS)) {
+	if (blocks_queued || (strm->free_tx_dma_blocks < strm->max_dma_blocks)) {
 		goto enabled_exit;
 	}
 
@@ -351,7 +342,7 @@ static void i2s_dma_tx_callback(const struct device *dma_dev, void *arg, uint32_
 	}
 
 	LOG_WRN("TX input queue empty!");
-	if (strm->free_tx_dma_blocks >= MAX_TX_DMA_BLOCKS) {
+	if (strm->free_tx_dma_blocks >= strm->max_dma_blocks) {
 		/* In running state, no TX blocks for transferring, so stop
 		 * TX (This will disable bit clock to avoid dummy bits
 		 * received in RX side.
@@ -781,7 +772,7 @@ static int i2s_tx_stream_start(const struct device *dev)
 	LOG_DBG("tx stream start");
 
 	/* Driver keeps track of how many DMA blocks can be loaded to the DMA */
-	strm->free_tx_dma_blocks = MAX_TX_DMA_BLOCKS;
+	strm->free_tx_dma_blocks = strm->max_dma_blocks;
 
 	/* Configure the DMA with the first TX block */
 	struct dma_block_config *blk_cfg = &strm->dma_block;
@@ -793,7 +784,9 @@ static int i2s_tx_stream_start(const struct device *dev)
 	blk_cfg->dest_address = (uint32_t)&base->TDR[data_path];
 	blk_cfg->source_address = (uint32_t)q_entry.mem_block;
 	blk_cfg->block_size = q_entry.size;
-	blk_cfg->dest_scatter_en = 1;
+	if (!strm->request_dma_channel) {
+		blk_cfg->dest_scatter_en = 1U;
+	}
 
 	strm->dma_cfg.block_count = 1;
 
@@ -881,7 +874,9 @@ static int i2s_rx_stream_start(const struct device *dev)
 	blk_cfg->source_address = (uint32_t)&base->RDR[data_path];
 	blk_cfg->block_size = q_entry.size;
 
-	blk_cfg->source_gather_en = 1;
+	if (!strm->request_dma_channel) {
+		blk_cfg->source_gather_en = 1U;
+	}
 
 	strm->dma_cfg.block_count = 1;
 	strm->dma_cfg.head_block = &strm->dma_block;
@@ -1091,7 +1086,8 @@ static int i2s_mcux_write(const struct device *dev, void *mem_block, size_t size
 		return ret;
 	}
 
-	if (strm->state == I2S_STATE_RUNNING && strm->free_tx_dma_blocks >= MAX_TX_DMA_BLOCKS) {
+	if (strm->state == I2S_STATE_RUNNING &&
+	    strm->free_tx_dma_blocks >= strm->max_dma_blocks) {
 		uint8_t blocks_queued = 0;
 		I2S_Type *base = get_base(dev);
 		/* As DMA has been stopped because reloading failure in TX callback,
@@ -1191,6 +1187,23 @@ static void audio_clock_settings(const struct device *dev)
 #endif
 }
 
+static int i2s_mcux_acquire_dma_channel(const struct device *dma_dev, struct stream *strm)
+{
+	struct i2s_mcux_sai_dma_channel spec = {
+		.channel = strm->dma_channel,
+		.request = strm->dma_request,
+		.request_channel = strm->request_dma_channel,
+	};
+	int ret;
+
+	ret = i2s_mcux_sai_dma_acquire_channel(dma_dev, &spec);
+	if (ret == 0) {
+		strm->dma_channel = spec.channel;
+	}
+
+	return ret;
+}
+
 static int i2s_mcux_initialize(const struct device *dev)
 {
 	const struct i2s_mcux_config *dev_cfg = dev->config;
@@ -1202,6 +1215,18 @@ static int i2s_mcux_initialize(const struct device *dev)
 	if (!dev_data->dev_dma) {
 		LOG_ERR("DMA device not found");
 		return -ENODEV;
+	}
+
+	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->tx);
+	if (err < 0) {
+		LOG_ERR("Failed to acquire TX DMA channel (%d)", err);
+		return err;
+	}
+
+	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->rx);
+	if (err < 0) {
+		LOG_ERR("Failed to acquire RX DMA channel (%d)", err);
+		return err;
 	}
 
 	DEVICE_MMIO_NAMED_MAP(dev, sai_mmio, K_MEM_CACHE_NONE | K_MEM_DIRECT_MAP);
@@ -1299,6 +1324,24 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 		.mclk_pin_offset = 0,))
 
 #define I2S_MCUX_INIT(i2s_id)                                                                      \
+	BUILD_ASSERT(I2S_SAI_DMA_IS_SDMA(i2s_id, rx) || I2S_SAI_DMA_IS_EDMA(i2s_id, rx),          \
+		     "RX DMA controller must be NXP SDMA or MCUX eDMA");                           \
+	BUILD_ASSERT(I2S_SAI_DMA_IS_SDMA(i2s_id, tx) || I2S_SAI_DMA_IS_EDMA(i2s_id, tx),          \
+		     "TX DMA controller must be NXP SDMA or MCUX eDMA");                           \
+	BUILD_ASSERT(!I2S_SAI_DMA_IS_EDMA(i2s_id, rx) ||                                         \
+			     DT_INST_NODE_HAS_PROP(i2s_id, nxp_rx_dma_channel),                    \
+		     "MCUX eDMA RX requires nxp,rx-dma-channel");                                  \
+	BUILD_ASSERT(!I2S_SAI_DMA_IS_EDMA(i2s_id, tx) ||                                         \
+			     DT_INST_NODE_HAS_PROP(i2s_id, nxp_tx_dma_channel),                    \
+		     "MCUX eDMA TX requires nxp,tx-dma-channel");                                  \
+	BUILD_ASSERT(I2S_MCUX_SAI_DMA_SDMA_MUX_SUPPORTED(DT_DRV_INST(i2s_id), rx),                 \
+		     "RX SDMA mux must select a supported peripheral script");                    \
+	BUILD_ASSERT(I2S_MCUX_SAI_DMA_SDMA_MUX_SUPPORTED(DT_DRV_INST(i2s_id), tx),                 \
+		     "TX SDMA mux must select a supported peripheral script");                    \
+	BUILD_ASSERT(DT_SAME_NODE(I2S_SAI_DMA_CTLR(i2s_id, rx), I2S_SAI_DMA_CTLR(i2s_id, tx)),    \
+		     "RX and TX must use the same DMA controller");                                \
+	BUILD_ASSERT(I2S_SAI_DMA_BLOCK_COUNT(i2s_id, rx) > NUM_DMA_BLOCKS_RX_PREP,                 \
+		     "DMA block pool must exceed the RX preload count");                           \
 	static void i2s_irq_connect_##i2s_id(const struct device *dev);                            \
                                                                                                    \
 	PINCTRL_DT_INST_DEFINE(i2s_id);                                                            \
@@ -1315,8 +1358,7 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 		.pll_den = DT_PHA_BY_NAME_OR(DT_DRV_INST(i2s_id), pll_clocks, den, value, 0),      \
 		I2S_MCUX_PINMUX_INIT(i2s_id).mclk_output =                                         \
 			DT_INST_PROP_OR(i2s_id, mclk_output, 0),                                   \
-		.clk_sub_sys =                                                                     \
-			(clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(i2s_id, 0, name),       \
+		.clk_sub_sys = I2S_SAI_CLOCK_SUBSYS(i2s_id),                                      \
 		.ccm_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(i2s_id)),                             \
 		.reset = RESET_DT_SPEC_INST_GET_OR(i2s_id, {0}),                                   \
 		.irq_connect = i2s_irq_connect_##i2s_id,                                           \
@@ -1333,7 +1375,11 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 		.dev_dma = DEVICE_DT_GET(DT_INST_DMAS_CTLR_BY_NAME(i2s_id, rx)),                   \
 		.tx =                                                                              \
 			{                                                                          \
-				.dma_channel = DT_INST_PROP(i2s_id, nxp_tx_dma_channel),           \
+				.dma_channel =                                            \
+					DT_INST_PROP_OR(i2s_id, nxp_tx_dma_channel, UINT32_MAX), \
+				.dma_request = I2S_SAI_DMA_REQUEST(i2s_id, tx),                   \
+				.max_dma_blocks = I2S_SAI_DMA_BLOCK_COUNT(i2s_id, tx),            \
+				.request_dma_channel = I2S_SAI_DMA_IS_SDMA(i2s_id, tx),           \
 				.dma_cfg =                                                         \
 					{                                                          \
 						.source_burst_length = CONFIG_I2S_EDMA_BURST_SIZE, \
@@ -1350,7 +1396,11 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 			},                                                                         \
 		.rx =                                                                              \
 			{                                                                          \
-				.dma_channel = DT_INST_PROP(i2s_id, nxp_rx_dma_channel),           \
+				.dma_channel =                                            \
+					DT_INST_PROP_OR(i2s_id, nxp_rx_dma_channel, UINT32_MAX), \
+				.dma_request = I2S_SAI_DMA_REQUEST(i2s_id, rx),                   \
+				.max_dma_blocks = I2S_SAI_DMA_BLOCK_COUNT(i2s_id, rx),            \
+				.request_dma_channel = I2S_SAI_DMA_IS_SDMA(i2s_id, rx),           \
 				.dma_cfg =                                                         \
 					{                                                          \
 						.source_burst_length = CONFIG_I2S_EDMA_BURST_SIZE, \
