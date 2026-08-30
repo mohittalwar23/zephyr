@@ -1,0 +1,34 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/devicetree.h>
+#include <zephyr/sys/util.h>
+
+#include "../../../../../drivers/i2s/i2s_mcux_sai_dma.h"
+
+#if DT_NODE_EXISTS(DT_NODELABEL(mcux_sai_edma_fixture))
+#define MIXED_EDMA_SAI DT_NODELABEL(mcux_sai_edma_fixture)
+#define MIXED_SDMA_SAI DT_NODELABEL(mcux_sai_sdma_fixture)
+
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_IS_EDMA(MIXED_EDMA_SAI, rx));
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_IS_EDMA(MIXED_EDMA_SAI, tx));
+BUILD_ASSERT(!I2S_MCUX_SAI_DMA_IS_SDMA(MIXED_EDMA_SAI, rx));
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_SLOT(MIXED_EDMA_SAI, rx) == 11U);
+
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_IS_SDMA(MIXED_SDMA_SAI, rx));
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_IS_SDMA(MIXED_SDMA_SAI, tx));
+BUILD_ASSERT(!I2S_MCUX_SAI_DMA_IS_EDMA(MIXED_SDMA_SAI, rx));
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_REQUEST(MIXED_SDMA_SAI, rx) == 5U);
+BUILD_ASSERT((I2S_MCUX_SAI_DMA_SLOT(MIXED_SDMA_SAI, rx) & DMA_NXP_SDMA_MODE_APPEND) != 0U);
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(mcux_sai_edma_v3_fixture))
+#define EDMA_V3_SAI DT_NODELABEL(mcux_sai_edma_v3_fixture)
+
+BUILD_ASSERT(DT_PROP(I2S_MCUX_SAI_DMA_CTLR(EDMA_V3_SAI, rx), nxp_version) == 3);
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_IS_EDMA(EDMA_V3_SAI, rx));
+BUILD_ASSERT(I2S_MCUX_SAI_DMA_SLOT(EDMA_V3_SAI, rx) == 100U);
+#endif

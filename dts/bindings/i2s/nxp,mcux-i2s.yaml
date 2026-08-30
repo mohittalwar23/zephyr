@@ -14,18 +14,30 @@ properties:
   interrupts:
     required: true
 
+  dmas:
+    required: true
+    description: |
+      RX and TX DMA specifiers must use the same controller. For MCUX eDMA,
+      the source cell provides the request source; this driver takes the fixed
+      physical channels from nxp,rx-dma-channel and nxp,tx-dma-channel rather
+      than from the specifier's mux cell. For NXP SDMA, the channel cell is the
+      event source and the mux cell is the peripheral script type; physical
+      channels are allocated at run time.
+
   dma-names:
     required: true
 
   nxp,tx-dma-channel:
     type: int
-    required: true
-    description: tx dma channel number
+    description: |
+      Fixed TX channel for an MCUX eDMA controller. Required by the driver
+      when the TX DMA specifier selects MCUX eDMA; unused for NXP SDMA.
 
   nxp,rx-dma-channel:
     type: int
-    required: true
-    description: rx dma channel number
+    description: |
+      Fixed RX channel for an MCUX eDMA controller. Required by the driver
+      when the RX DMA specifier selects MCUX eDMA; unused for NXP SDMA.
 
   nxp,tx-sync-mode:
     type: boolean
