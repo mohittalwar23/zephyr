@@ -1,0 +1,9 @@
+description: Test consumer of NXP-style clock specifiers
+
+compatible: "vnd,nxp-clock-consumer"
+
+include: base.yaml
+
+properties:
+  clocks:
+    required: true

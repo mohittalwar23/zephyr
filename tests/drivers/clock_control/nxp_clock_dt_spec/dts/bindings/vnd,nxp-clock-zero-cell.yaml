@@ -1,0 +1,9 @@
+description: Test zero-cell clock controller
+
+compatible: "vnd,nxp-clock-zero-cell"
+
+include: clock-controller.yaml
+
+properties:
+  "#clock-cells":
+    const: 0
