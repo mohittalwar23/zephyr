@@ -493,13 +493,18 @@ static int i2s_mcux_config(const struct device *dev, enum i2s_dir dir,
 	}
 
 	if (dir == I2S_DIR_TX) {
+		struct i2s_mcux_sai_tx_fifo_config fifo_config =
+			i2s_mcux_sai_stream_tx_fifo_config(
+				(uint32_t)FSL_FEATURE_SAI_FIFO_COUNTn(base), word_size_bytes,
+				dev_data->tx.dma.is_sdma);
+
 		memcpy(&dev_data->tx.cfg, i2s_cfg, sizeof(struct i2s_config));
 		LOG_DBG("tx slab free_list = 0x%x", (uint32_t)i2s_cfg->mem_slab->free_list);
 		LOG_DBG("tx slab num_blocks = %d", (uint32_t)i2s_cfg->mem_slab->info.num_blocks);
 		LOG_DBG("tx slab block_size = %d", (uint32_t)i2s_cfg->mem_slab->info.block_size);
 		LOG_DBG("tx slab buffer = 0x%x", (uint32_t)i2s_cfg->mem_slab->buffer);
 
-		config.fifo.fifoWatermark = (uint32_t)FSL_FEATURE_SAI_FIFO_COUNTn(base) - 1;
+		config.fifo.fifoWatermark = fifo_config.watermark;
 #if defined(FSL_FEATURE_SAI_HAS_FIFO_COMBINE_MODE) && FSL_FEATURE_SAI_HAS_FIFO_COMBINE_MODE
 		config.fifo.fifoCombine = kSAI_FifoCombineModeEnabledOnWrite;
 #endif
@@ -515,7 +520,7 @@ static int i2s_mcux_config(const struct device *dev, enum i2s_dir dir,
 		dev_data->tx.dma_cfg.source_data_size = word_size_bytes;
 		dev_data->tx.dma_cfg.dest_data_size = word_size_bytes;
 		dev_data->tx.dma_cfg.source_burst_length = word_size_bytes;
-		dev_data->tx.dma_cfg.dest_burst_length = word_size_bytes;
+		dev_data->tx.dma_cfg.dest_burst_length = fifo_config.burst_length;
 		dev_data->tx.dma_cfg.user_data = (void *)dev;
 		dev_data->tx.state = I2S_STATE_READY;
 	} else {
@@ -597,7 +602,8 @@ static int i2s_tx_stream_start(const struct device *dev)
 	SAI_TxEnableDMA(base, kSAI_FIFORequestDMAEnable, true);
 
 	/* Enable the channel FIFO */
-	SAI_TxSetChannelFIFOMask(base, dev_cfg->tx_channel);
+	SAI_TxSetChannelFIFOMask(base,
+				 i2s_mcux_sai_stream_channel_mask(dev_cfg->tx_channel));
 
 	/* Enable SAI Tx clock */
 	SAI_TxEnable(base, true);
@@ -630,7 +636,8 @@ static int i2s_rx_stream_start(const struct device *dev)
 	SAI_RxEnableDMA(base, kSAI_FIFORequestDMAEnable, true);
 
 	/* Enable the channel FIFO */
-	SAI_RxSetChannelFIFOMask(base, dev_cfg->tx_channel);
+	SAI_RxSetChannelFIFOMask(base,
+				 i2s_mcux_sai_stream_channel_mask(dev_cfg->tx_channel));
 
 	/* Enable SAI Rx clock */
 	SAI_RxEnable(base, true);
@@ -1056,6 +1063,7 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.channel = DT_INST_PROP_OR(                        \
 							i2s_id, nxp_tx_dma_channel, UINT32_MAX),   \
 						.request = I2S_SAI_DMA_REQUEST(i2s_id, tx),        \
+						.is_sdma = I2S_SAI_DMA_IS_SDMA(i2s_id, tx),       \
 						.request_channel =                                 \
 							I2S_SAI_DMA_IS_SDMA(i2s_id, tx),           \
 					},                                                         \
@@ -1080,6 +1088,7 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.channel = DT_INST_PROP_OR(                        \
 							i2s_id, nxp_rx_dma_channel, UINT32_MAX),   \
 						.request = I2S_SAI_DMA_REQUEST(i2s_id, rx),        \
+						.is_sdma = I2S_SAI_DMA_IS_SDMA(i2s_id, rx),       \
 						.request_channel =                                 \
 							I2S_SAI_DMA_IS_SDMA(i2s_id, rx),           \
 					},                                                         \

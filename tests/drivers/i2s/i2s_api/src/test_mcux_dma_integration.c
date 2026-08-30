@@ -228,6 +228,54 @@ ZTEST(mcux_dma_integration, test_sdma_ram_script_rejects_a_second_controller)
 	zassert_equal(script.claim_count, 1U, "reconfiguration double-counted one channel");
 }
 
+ZTEST(mcux_dma_integration, test_sdma_ram_script_releases_only_the_final_channel)
+{
+	struct dma_nxp_sdma_ram_script_state script = {0};
+	bool channel_one_claimed = false;
+	bool channel_two_claimed = false;
+	bool foreign_channel_claimed = false;
+	uint32_t controller = 0U;
+	uint32_t foreign_controller = 0U;
+
+	zassert_ok(dma_nxp_sdma_ram_script_claim(&script, &controller, true,
+						&channel_one_claimed));
+	zassert_ok(dma_nxp_sdma_ram_script_claim(&script, &controller, true,
+						&channel_two_claimed));
+	zassert_equal(script.claim_count, 2U);
+
+	dma_nxp_sdma_ram_script_release(&script, &controller, &channel_one_claimed);
+	zassert_false(channel_one_claimed);
+	zassert_equal(script.claim_count, 1U);
+	zassert_equal(dma_nxp_sdma_ram_script_claim(&script, &foreign_controller, true,
+						   &foreign_channel_claimed),
+		      -ENOTSUP, "one channel releasing must not release its controller's peer");
+
+	dma_nxp_sdma_ram_script_release(&script, &controller, &channel_two_claimed);
+	zassert_false(channel_two_claimed);
+	zassert_equal(script.claim_count, 0U);
+	zassert_is_null(script.owner);
+	zassert_ok(dma_nxp_sdma_ram_script_claim(&script, &foreign_controller, true,
+						&foreign_channel_claimed));
+}
+
+ZTEST(mcux_dma_integration, test_sdma_ram_script_ignores_foreign_and_duplicate_release)
+{
+	struct dma_nxp_sdma_ram_script_state script = {0};
+	bool claimed = false;
+	uint32_t controller = 0U;
+	uint32_t foreign_controller = 0U;
+
+	zassert_ok(dma_nxp_sdma_ram_script_claim(&script, &controller, true, &claimed));
+	dma_nxp_sdma_ram_script_release(&script, &foreign_controller, &claimed);
+	zassert_true(claimed);
+	zassert_equal(script.claim_count, 1U);
+
+	dma_nxp_sdma_ram_script_release(&script, &controller, &claimed);
+	dma_nxp_sdma_ram_script_release(&script, &controller, &claimed);
+	zassert_false(claimed);
+	zassert_equal(script.claim_count, 0U);
+}
+
 ZTEST(mcux_dma_integration, test_sdma_slot_validation_covers_supported_peripherals)
 {
 	struct dma_config config = {
