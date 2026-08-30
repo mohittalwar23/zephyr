@@ -36,6 +36,7 @@
 struct i2s_mcux_sai_dma_channel {
 	uint32_t channel;
 	uint32_t request;
+	bool is_sdma;
 	bool request_channel;
 	bool acquired;
 };
