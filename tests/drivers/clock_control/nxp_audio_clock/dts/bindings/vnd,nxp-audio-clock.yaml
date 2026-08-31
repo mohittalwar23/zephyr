@@ -1,0 +1,12 @@
+description: Test NXP audio clock provider
+
+compatible: "vnd,nxp-audio-clock"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - name

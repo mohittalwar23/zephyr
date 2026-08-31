@@ -1,0 +1,9 @@
+tests:
+  drivers.dai.nxp_sai_clock.build:
+    build_only: true
+    platform_allow:
+      - imx8mp_evk/mimx8ml8/m7/ddr
+    tags:
+      - clock_control
+      - dai
+      - drivers
