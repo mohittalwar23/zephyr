@@ -94,4 +94,21 @@ endchoice
 config INIT_VIDEO_PLL
 	bool "Initialize Video PLL"
 
+config IMX8M_M7_AUDIOMIX_BOOT_HANDOFF
+	bool "Boot firmware powers and hands off AUDIOMIX"
+	help
+	  Enable this only when boot firmware powers the AUDIOMIX domain and
+	  hands control of its clocks and peripherals to the M7. This is a boot
+	  prerequisite for using SAI3, SDMA3, or MICFIL from Zephyr.
+
+config IMX8M_M7_AUDIO_PLL1
+	bool "Let the M7 own Audio PLL1 and audio roots"
+	depends on IMX8M_M7_AUDIOMIX_BOOT_HANDOFF
+	default y
+	help
+	  Allow Zephyr to reprogram the shared Audio PLL1 and the enabled audio
+	  roots for the 48 kHz sample-rate family. Leave this disabled when boot
+	  firmware or another core owns those clocks; the AUDIOMIX clock
+	  attachments are still made so the M7 sees the roots it was handed.
+
 endif # SOC_MIMX8ML8_M7
