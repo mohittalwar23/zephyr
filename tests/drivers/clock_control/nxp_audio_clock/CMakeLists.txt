@@ -10,4 +10,8 @@ target_include_directories(app PRIVATE
   ${ZEPHYR_BASE}/drivers/dai/nxp/sai
   ${ZEPHYR_BASE}/drivers/dma
 )
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE
+  src/main.c
+  ${ZEPHYR_BASE}/drivers/dai/nxp/micfil/micfil_clock.c
+  ${ZEPHYR_BASE}/drivers/dai/nxp/sai/sai_clock.c
+)

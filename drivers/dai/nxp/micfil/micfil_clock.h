@@ -9,6 +9,15 @@
 
 #include <zephyr/drivers/clock_control/nxp_clock_control.h>
 
+/** Sample-rate programming seam, so the rate contract can be tested on host. */
+typedef int (*dai_nxp_micfil_set_rate_t)(uintptr_t base, uint32_t root_rate,
+					 uint32_t sample_rate);
+
+/** Root clock rate MICFIL divides down to the PDM clock. */
+struct dai_nxp_micfil_rate {
+	uint32_t root_rate;
+};
+
 static inline int dai_nxp_micfil_clock_prepare(const struct nxp_clock_dt_spec *clock,
 					       uint32_t *rate)
 {
@@ -30,5 +39,12 @@ static inline int dai_nxp_micfil_clock_prepare(const struct nxp_clock_dt_spec *c
 
 	return ret;
 }
+
+/**
+ * @brief Program the sample rate from the root rate MICFIL actually acquired.
+ */
+int dai_nxp_micfil_apply_sample_rate(uintptr_t base, const struct dai_nxp_micfil_rate *rate,
+				     uint32_t sample_rate,
+				     dai_nxp_micfil_set_rate_t set_rate);
 
 #endif /* ZEPHYR_DRIVERS_DAI_NXP_MICFIL_CLOCK_H_ */
