@@ -10,6 +10,7 @@
 #include <zephyr/logging/log.h>
 
 #include "fsl_pdm.h"
+#include "micfil_clock.h"
 
 #define DT_DRV_COMPAT nxp_dai_micfil
 LOG_MODULE_REGISTER(nxp_dai_micfil);
@@ -28,12 +29,14 @@ LOG_MODULE_REGISTER(nxp_dai_micfil);
 
 struct dai_nxp_micfil_data {
 	struct dai_config cfg;
+	uint32_t clock_rate;
 };
 
 struct dai_nxp_micfil_config {
 	PDM_Type *base;
 	const struct dai_properties *rx_props;
 	const struct pinctrl_dev_config *pincfg;
+	struct nxp_clock_dt_spec clock;
 };
 
 /* this needs to match SOF struct sof_ipc_dai_micfil_params */
@@ -117,6 +120,7 @@ static int dai_nxp_micfil_set_config(const struct device *dev,
 {
 	const struct micfil_bespoke_config *bespoke = bespoke_cfg;
 	const struct dai_nxp_micfil_config *micfil_cfg = dev->config;
+	const struct dai_nxp_micfil_data *micfil_data = dev->data;
 	pdm_channel_config_t chan_config = { 0 };
 	pdm_config_t global_config = { 0 };
 	int ret, i;
@@ -138,7 +142,8 @@ static int dai_nxp_micfil_set_config(const struct device *dev,
 		PDM_SetChannelConfig(micfil_cfg->base, i, &chan_config);
 	}
 
-	ret = PDM_SetSampleRateConfig(micfil_cfg->base, MICFIL_CLK_ROOT, bespoke->pdm_rate);
+	ret = PDM_SetSampleRateConfig(micfil_cfg->base, micfil_data->clock_rate,
+				      bespoke->pdm_rate);
 	if (ret == kStatus_Fail) {
 		LOG_ERR("Failure to set samplerate config rate %d", bespoke->pdm_rate);
 		return -EINVAL;
@@ -171,6 +176,7 @@ static DEVICE_API(dai, dai_nxp_micfil_ops) = {
 static int micfil_init(const struct device *dev)
 {
 	const struct dai_nxp_micfil_config *cfg = dev->config;
+	struct dai_nxp_micfil_data *data = dev->data;
 	int ret;
 
 	/* pinctrl is optional so do not return an error if not defined */
@@ -179,14 +185,24 @@ static int micfil_init(const struct device *dev)
 		return ret;
 	}
 
+	if (cfg->clock.dev != NULL) {
+		ret = dai_nxp_micfil_clock_prepare(&cfg->clock, &data->clock_rate);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
 	return 0;
 }
+
+#define MICFIL_CLOCK_SPEC(inst) NXP_CLOCK_DT_SPEC_GET_BY_IDX_OR(DT_DRV_INST(inst), 0, {})
 
 #define DAI_NXP_MICFIL_INIT(inst)						\
 PINCTRL_DT_INST_DEFINE(inst);							\
 static struct dai_nxp_micfil_data dai_nxp_micfil_data_##inst = {		\
 	.cfg.type = DAI_IMX_MICFIL,						\
 	.cfg.dai_index = DT_INST_PROP_OR(inst, dai_index, 0),			\
+	.clock_rate = MICFIL_CLK_ROOT,						\
 };										\
 										\
 static const struct dai_properties micfil_rx_props_##inst = {			\
@@ -199,6 +215,7 @@ static const struct dai_nxp_micfil_config dai_nxp_micfil_config_##inst = {	\
 	.base = UINT_TO_MICFIL(DT_INST_REG_ADDR(inst)),				\
 	.rx_props = &micfil_rx_props_##inst,					\
 	.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),				\
+	.clock = MICFIL_CLOCK_SPEC(inst),					\
 };										\
 										\
 DEVICE_DT_INST_DEFINE(inst, &micfil_init, NULL,					\

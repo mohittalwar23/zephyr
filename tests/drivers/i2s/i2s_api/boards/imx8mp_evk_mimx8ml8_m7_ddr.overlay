@@ -38,6 +38,8 @@
 	/delete-property/ dai-index;
 	/delete-property/ mclk-is-output;
 	compatible = "nxp,mcux-i2s";
+	clocks = <&sai3_mclk1>;
+	clock-names = "mclk1";
 	nxp,tx-channel = <0>;
 	mclk-output;
 	pinctrl-0 = <&sai3_default>;
