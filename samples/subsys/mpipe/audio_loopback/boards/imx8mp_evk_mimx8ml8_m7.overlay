@@ -1,0 +1,74 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * HW TEST ONLY. i.MX8MP EVK M7: external PDM microphone through MICFIL to
+ * SAI3/WM8960, using the in-tree DMIC and i2s_mcux_sai drivers.
+ */
+
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
+/delete-node/ &micfil;
+
+/ {
+	aliases {
+		i2s-codec-tx = &sai3;
+	};
+
+	soc {
+		dmic_dev: micfil@30ca0000 {
+			compatible = "nxp,micfil";
+			reg = <0x30ca0000 DT_SIZE_K(64)>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <109 0>;
+			clocks = <&ccm IMX_CCM_PDM_CLK 0x0 0x0>;
+			quality-mode = <1>;
+			cic-decimation-rate = <0>;
+			fifo-watermark = <4>;
+			sample-rate = <16000>;
+			pinctrl-0 = <&pdm_default>;
+			pinctrl-names = "default";
+			status = "okay";
+
+			channel0: micfil-channel@0 {
+				reg = <0>;
+			};
+
+			channel1: micfil-channel@1 {
+				reg = <1>;
+			};
+		};
+	};
+};
+
+&sdma3 {
+	status = "okay";
+};
+
+&sai3 {
+	/delete-property/ dai-index;
+	/delete-property/ mclk-is-output;
+	compatible = "nxp,mcux-i2s";
+	nxp,tx-channel = <1>;
+	mclk-output;
+	pinctrl-0 = <&sai3_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_i2c3>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+
+	audio_codec: wm8960@1a {
+		compatible = "wolfson,wm8960";
+		reg = <0x1a>;
+		clocks = <&ccm IMX_CCM_SAI3_CLK 0x0 0x0>;
+		clock-names = "mclk";
+		shared-lrclk;
+	};
+};
