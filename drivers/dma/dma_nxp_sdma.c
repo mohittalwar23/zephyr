@@ -12,6 +12,7 @@
 #include "dma_nxp_sdma_accounting.h"
 #include "dma_nxp_sdma_append.h"
 #include "dma_nxp_sdma_common.h"
+#include "dma_nxp_sdma_clock.h"
 #include "dma_nxp_sdma_irq.h"
 #include "dma_nxp_sdma_lifecycle.h"
 
@@ -32,6 +33,7 @@ struct sdma_dev_cfg {
 	SDMAARM_Type *base;
 	void (*irq_config)(void);
 	uint32_t event_count;
+	struct nxp_clock_dt_spec clock;
 	struct dma_nxp_sdma_context_store contexts;
 };
 
@@ -660,11 +662,28 @@ static DEVICE_API(dma, sdma_api) = {
 	.chan_release = sdma_channel_release,
 };
 
+struct dma_nxp_sdma_hw_init_context {
+	SDMAARM_Type *base;
+	sdma_config_t *config;
+};
+
+static void dma_nxp_sdma_hw_init(void *context)
+{
+	struct dma_nxp_sdma_hw_init_context *init = context;
+
+	SDMA_Init(init->base, init->config);
+}
+
 static int dma_nxp_sdma_init(const struct device *dev)
 {
 	struct sdma_dev_data *data = dev->data;
 	const struct sdma_dev_cfg *cfg = dev->config;
 	sdma_config_t defconfig;
+	struct dma_nxp_sdma_hw_init_context hw_init = {
+		.base = cfg->base,
+		.config = &defconfig,
+	};
+	int ret;
 
 	data->dma_ctx.magic = DMA_MAGIC;
 	data->dma_ctx.dma_channels = FSL_FEATURE_SDMA_MODULE_CHANNEL;
@@ -673,7 +692,10 @@ static int dma_nxp_sdma_init(const struct device *dev)
 	SDMA_GetDefaultConfig(&defconfig);
 	defconfig.ratio = kSDMA_ARMClockFreq;
 
-	SDMA_Init(cfg->base, &defconfig);
+	ret = dma_nxp_sdma_clocked_init(&cfg->clock, dma_nxp_sdma_hw_init, &hw_init);
+	if (ret < 0) {
+		return ret;
+	}
 
 	k_mutex_init(&data->ch0_lock);
 
@@ -682,6 +704,9 @@ static int dma_nxp_sdma_init(const struct device *dev)
 
 	return 0;
 }
+
+#define DMA_NXP_SDMA_CLOCK_SPEC(inst) \
+	NXP_CLOCK_DT_SPEC_GET_BY_IDX_OR(DT_DRV_INST(inst), 0, {})
 
 #define DMA_NXP_SDMA_INIT(inst)						\
 	BUILD_ASSERT(DT_INST_PROP(inst, dma_requests) > 0 &&		\
@@ -699,6 +724,7 @@ static int dma_nxp_sdma_init(const struct device *dev)
 		.base = (SDMAARM_Type *)DT_INST_REG_ADDR(inst),				\
 		.irq_config = dma_nxp_sdma_##inst##_irq_config,		\
 		.event_count = DT_INST_PROP(inst, dma_requests),		\
+		.clock = DMA_NXP_SDMA_CLOCK_SPEC(inst),			\
 		.contexts = {						\
 			.base = sdma_contexts_##inst,			\
 			.stride = sizeof(sdma_contexts_##inst[0]),	\
