@@ -102,6 +102,13 @@ static I2S_Type *get_base(const struct device *dev)
 	return (I2S_Type *)DEVICE_MMIO_NAMED_GET(dev, sai_mmio);
 }
 
+/*
+ * Upper bound on the TX FIFO drain spin in i2s_tx_stream_disable(). Draining a
+ * full FIFO takes a few bit-clock periods; this is far above that and only
+ * exists so a quiesced transmitter cannot wedge the caller forever.
+ */
+#define I2S_MCUX_SAI_FIFO_DRAIN_SPINS 1000000U
+
 static void i2s_tx_stream_disable(const struct device *dev, bool drop)
 {
 	I2S_Type *base = get_base(dev);
@@ -116,9 +123,23 @@ static void i2s_tx_stream_disable(const struct device *dev, bool drop)
 
 	dma_stop(dev_dma, strm->dma.channel);
 
-	/* wait for TX FIFO to drain before disabling */
-	while ((base->TCSR & I2S_TCSR_FWF_MASK) == 0) {
-		;
+	/*
+	 * Wait for the TX FIFO to drain before disabling. A transmitter that is
+	 * already disabled never drains its FIFO, so its warning flag would
+	 * never assert: only wait while TX is still enabled, and bound the wait
+	 * either way. This runs with interrupts locked from i2s_mcux_trigger(),
+	 * so an unbounded spin here takes the whole system down.
+	 */
+	if ((base->TCSR & I2S_TCSR_TE_MASK) != 0U) {
+		uint32_t spins = I2S_MCUX_SAI_FIFO_DRAIN_SPINS;
+
+		while ((base->TCSR & I2S_TCSR_FWF_MASK) == 0U) {
+			if (spins-- == 0U) {
+				LOG_WRN("TX FIFO did not drain, TCSR 0x%08x",
+					(unsigned int)base->TCSR);
+				break;
+			}
+		}
 	}
 
 	/* Disable the channel FIFO */
