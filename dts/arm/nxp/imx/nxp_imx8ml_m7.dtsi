@@ -329,6 +329,8 @@
 		micfil: micfil@30ca0000 {
 			compatible = "nxp,dai-micfil";
 			reg = <0x30ca0000 DT_SIZE_K(64)>;
+			clocks = <&ccm IMX_CCM_PDM_CLK 0x0 0x0>;
+			clock-names = "root";
 			dai-index = <2>;
 			dmas = <&sdma3 24 6>;
 			fifo-depth = <32>;
