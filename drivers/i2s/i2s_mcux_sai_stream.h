@@ -84,6 +84,8 @@ int i2s_mcux_sai_stream_dma_width(uint8_t word_size_bits, uint8_t *width);
 
 uint32_t i2s_mcux_sai_stream_channel_mask(uint32_t channel_mask);
 
+uint8_t i2s_mcux_sai_stream_min_buffers(enum i2s_dir dir);
+
 struct i2s_mcux_sai_tx_fifo_config
 i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
 				   bool is_sdma);
