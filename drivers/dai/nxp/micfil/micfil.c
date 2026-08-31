@@ -29,7 +29,7 @@ LOG_MODULE_REGISTER(nxp_dai_micfil);
 
 struct dai_nxp_micfil_data {
 	struct dai_config cfg;
-	uint32_t clock_rate;
+	struct dai_nxp_micfil_rate rate;
 };
 
 struct dai_nxp_micfil_config {
@@ -44,6 +44,12 @@ struct micfil_bespoke_config {
 	uint32_t pdm_rate;
 	uint32_t pdm_ch;
 };
+
+static int dai_nxp_micfil_set_sample_rate(uintptr_t base, uint32_t root_rate,
+					  uint32_t sample_rate)
+{
+	return PDM_SetSampleRateConfig((PDM_Type *)base, root_rate, sample_rate);
+}
 
 static void dai_nxp_micfil_trigger_start(const struct device *dev)
 {
@@ -142,8 +148,9 @@ static int dai_nxp_micfil_set_config(const struct device *dev,
 		PDM_SetChannelConfig(micfil_cfg->base, i, &chan_config);
 	}
 
-	ret = PDM_SetSampleRateConfig(micfil_cfg->base, micfil_data->clock_rate,
-				      bespoke->pdm_rate);
+	ret = dai_nxp_micfil_apply_sample_rate((uintptr_t)micfil_cfg->base,
+					       &micfil_data->rate, bespoke->pdm_rate,
+					       dai_nxp_micfil_set_sample_rate);
 	if (ret == kStatus_Fail) {
 		LOG_ERR("Failure to set samplerate config rate %d", bespoke->pdm_rate);
 		return -EINVAL;
@@ -186,7 +193,7 @@ static int micfil_init(const struct device *dev)
 	}
 
 	if (cfg->clock.dev != NULL) {
-		ret = dai_nxp_micfil_clock_prepare(&cfg->clock, &data->clock_rate);
+		ret = dai_nxp_micfil_clock_prepare(&cfg->clock, &data->rate.root_rate);
 		if (ret < 0) {
 			return ret;
 		}
@@ -202,7 +209,7 @@ PINCTRL_DT_INST_DEFINE(inst);							\
 static struct dai_nxp_micfil_data dai_nxp_micfil_data_##inst = {		\
 	.cfg.type = DAI_IMX_MICFIL,						\
 	.cfg.dai_index = DT_INST_PROP_OR(inst, dai_index, 0),			\
-	.clock_rate = MICFIL_CLK_ROOT,						\
+	.rate.root_rate = MICFIL_CLK_ROOT,					\
 };										\
 										\
 static const struct dai_properties micfil_rx_props_##inst = {			\
