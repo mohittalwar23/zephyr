@@ -11,6 +11,7 @@
 #include <zephyr/pm/device.h>
 
 #include "sai.h"
+#include "sai_clock.h"
 
 /* used for binding the driver */
 #define DT_DRV_COMPAT nxp_dai_sai
@@ -829,25 +830,22 @@ static DEVICE_API(dai, sai_api) = {
 
 static int sai_clks_enable_disable(const struct device *dev, bool enable)
 {
-	int i, ret;
 	const struct sai_config *cfg;
+	int ret;
 
 	cfg = dev->config;
 
-	for (i = 0; i < cfg->clk_data.clock_num; i++) {
-		if (enable) {
-			ret = nxp_clock_control_on_dt(&cfg->clk_data.clocks[i]);
-		} else {
-			ret = nxp_clock_control_off_dt(&cfg->clk_data.clocks[i]);
-		}
-
-		if (ret < 0) {
-			LOG_ERR("failed to gate/ungate clock %d: %d", i, ret);
-			return ret;
-		}
+	if (enable) {
+		ret = dai_nxp_sai_clocks_enable(cfg->clk_data.clocks, cfg->clk_data.clock_num);
+	} else {
+		ret = dai_nxp_sai_clocks_disable(cfg->clk_data.clocks, cfg->clk_data.clock_num);
 	}
 
-	return 0;
+	if (ret < 0) {
+		LOG_ERR("failed to %s clocks: %d", enable ? "enable" : "disable", ret);
+	}
+
+	return ret;
 }
 
 __maybe_unused static int sai_pm_action(const struct device *dev,
@@ -909,7 +907,13 @@ static int sai_init(const struct device *dev)
 	 */
 	ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
 	if (ret < 0 && ret != -ENOENT) {
+#ifndef CONFIG_PM_DEVICE_RUNTIME
+		/* this initialization acquired the clocks, so it releases them */
+		return dai_nxp_sai_clocks_release(cfg->clk_data.clocks,
+						  cfg->clk_data.clock_num, ret);
+#else
 		return ret;
+#endif /* CONFIG_PM_DEVICE_RUNTIME */
 	}
 
 	/* set TX/RX default states */

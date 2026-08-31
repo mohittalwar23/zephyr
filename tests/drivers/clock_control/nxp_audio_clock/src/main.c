@@ -12,6 +12,7 @@
 
 #include "dma_nxp_sdma_clock.h"
 #include "micfil_clock.h"
+#include "sai_clock.h"
 #include "sai_clock_dt.h"
 
 #define CLOCK_A_NODE       DT_NODELABEL(clock_a)
@@ -27,6 +28,7 @@ struct fake_clock_data {
 	uint32_t off_count;
 	uint32_t get_rate_count;
 	uint32_t sequence;
+	uint32_t off_sequence;
 	clock_control_subsys_t on_subsys;
 	clock_control_subsys_t off_subsys;
 	clock_control_subsys_t get_rate_subsys;
@@ -50,6 +52,7 @@ static int fake_clock_off(const struct device *dev, clock_control_subsys_t subsy
 	struct fake_clock_data *data = dev->data;
 
 	data->off_count++;
+	data->off_sequence = ++sequence;
 	data->off_subsys = subsys;
 
 	return data->off_result;
@@ -224,6 +227,96 @@ ZTEST(nxp_audio_clock, test_micfil_preserves_rate_error_during_rollback)
 	zassert_equal(dai_nxp_micfil_clock_prepare(&clock, &rate), -EIO);
 	zassert_equal(clock_a_data.off_count, 1U);
 	zassert_equal(POINTER_TO_UINT(clock_a_data.off_subsys), 0x77U);
+}
+
+struct fake_micfil_rate_call {
+	uint32_t root_rate;
+	uint32_t sample_rate;
+};
+
+static int fake_micfil_set_rate(uintptr_t base, uint32_t root_rate, uint32_t sample_rate)
+{
+	struct fake_micfil_rate_call *call = (struct fake_micfil_rate_call *)base;
+
+	call->root_rate = root_rate;
+	call->sample_rate = sample_rate;
+
+	return 0;
+}
+
+ZTEST(nxp_audio_clock, test_sai_rolls_back_partial_enable_in_reverse_order)
+{
+	const struct nxp_clock_dt_spec clocks[] = {
+		{.dev = DEVICE_DT_GET(CLOCK_A_NODE), .subsys = UINT_TO_POINTER(0x11U)},
+		{.dev = DEVICE_DT_GET(CLOCK_B_NODE), .subsys = UINT_TO_POINTER(0x22U)},
+		{.dev = DEVICE_DT_GET(CLOCK_UNREADY_NODE), .subsys = UINT_TO_POINTER(0x33U)},
+	};
+
+	zassert_equal(dai_nxp_sai_clocks_enable(clocks, ARRAY_SIZE(clocks)), -ENODEV);
+
+	/* only the clocks this operation acquired are released, in reverse order */
+	zassert_equal(clock_a_data.off_count, 1U);
+	zassert_equal(clock_b_data.off_count, 1U);
+	zassert_equal(clock_unready_data.off_count, 0U);
+	zassert_true(clock_b_data.off_sequence < clock_a_data.off_sequence);
+	zassert_equal(POINTER_TO_UINT(clock_a_data.off_subsys), 0x11U);
+	zassert_equal(POINTER_TO_UINT(clock_b_data.off_subsys), 0x22U);
+}
+
+ZTEST(nxp_audio_clock, test_sai_enable_reports_the_backend_error)
+{
+	const struct nxp_clock_dt_spec clocks[] = {
+		{.dev = DEVICE_DT_GET(CLOCK_A_NODE), .subsys = UINT_TO_POINTER(0x11U)},
+		{.dev = DEVICE_DT_GET(CLOCK_B_NODE), .subsys = UINT_TO_POINTER(0x22U)},
+	};
+
+	clock_b_data.on_result = -EIO;
+	zassert_equal(dai_nxp_sai_clocks_enable(clocks, ARRAY_SIZE(clocks)), -EIO);
+	zassert_equal(clock_a_data.off_count, 1U);
+}
+
+ZTEST(nxp_audio_clock, test_sai_cleanup_preserves_the_original_error)
+{
+	const struct nxp_clock_dt_spec clocks[] = {
+		{.dev = DEVICE_DT_GET(CLOCK_A_NODE), .subsys = UINT_TO_POINTER(0x11U)},
+		{.dev = DEVICE_DT_GET(CLOCK_B_NODE), .subsys = UINT_TO_POINTER(0x22U)},
+	};
+
+	/* a failing release must not replace the error that started the unwind */
+	clock_b_data.off_result = -EPERM;
+	zassert_equal(dai_nxp_sai_clocks_release(clocks, ARRAY_SIZE(clocks), -EIO), -EIO);
+	zassert_equal(clock_a_data.off_count, 1U);
+	zassert_equal(clock_b_data.off_count, 1U);
+	zassert_true(clock_b_data.off_sequence < clock_a_data.off_sequence);
+}
+
+ZTEST(nxp_audio_clock, test_sai_disable_reports_the_first_failure)
+{
+	const struct nxp_clock_dt_spec clocks[] = {
+		{.dev = DEVICE_DT_GET(CLOCK_A_NODE), .subsys = UINT_TO_POINTER(0x11U)},
+		{.dev = DEVICE_DT_GET(CLOCK_B_NODE), .subsys = UINT_TO_POINTER(0x22U)},
+	};
+
+	clock_b_data.off_result = -EPERM;
+	zassert_equal(dai_nxp_sai_clocks_disable(clocks, ARRAY_SIZE(clocks)), -EPERM);
+	zassert_equal(clock_a_data.off_count, 1U);
+	zassert_equal(clock_b_data.off_count, 1U);
+}
+
+ZTEST(nxp_audio_clock, test_micfil_sample_rate_seam_uses_the_queried_root)
+{
+	const struct nxp_clock_dt_spec clock = {
+		.dev = DEVICE_DT_GET(CLOCK_B_NODE),
+		.subsys = UINT_TO_POINTER(0x66U),
+	};
+	struct fake_micfil_rate_call call = {0};
+	struct dai_nxp_micfil_rate rate = {0};
+
+	zassert_ok(dai_nxp_micfil_clock_prepare(&clock, &rate.root_rate));
+	zassert_ok(dai_nxp_micfil_apply_sample_rate((uintptr_t)&call, &rate, 48000U,
+						   fake_micfil_set_rate));
+	zassert_equal(call.root_rate, 196608000U);
+	zassert_equal(call.sample_rate, 48000U);
 }
 
 ZTEST_SUITE(nxp_audio_clock, NULL, NULL, nxp_audio_clock_before, NULL, NULL);
