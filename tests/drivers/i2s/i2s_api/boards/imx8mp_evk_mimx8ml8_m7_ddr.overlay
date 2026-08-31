@@ -31,6 +31,11 @@
 };
 
 &sdma3 {
+	/*
+	 * This fixture keeps the CCM provider disabled, so SDMA3 cannot resolve
+	 * its CCM clock specification here.
+	 */
+	/delete-property/ clocks;
 	status = "okay";
 };
 
