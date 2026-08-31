@@ -553,6 +553,13 @@ ZTEST(mcux_sai_stream, test_fifo_channel_mask_is_preserved)
 	zassert_equal(i2s_mcux_sai_stream_channel_mask(0x5U), 0x5U);
 }
 
+ZTEST(mcux_sai_stream, test_caps_report_directional_buffer_requirements)
+{
+	zassert_equal(i2s_mcux_sai_stream_min_buffers(I2S_DIR_TX), 1U);
+	zassert_equal(i2s_mcux_sai_stream_min_buffers(I2S_DIR_RX),
+		      I2S_MCUX_SAI_RX_PREP_BLOCKS + 1U);
+}
+
 ZTEST(mcux_sai_stream, test_sdma_fifo_request_matches_nxp_transactional_driver)
 {
 	struct i2s_mcux_sai_tx_fifo_config config =

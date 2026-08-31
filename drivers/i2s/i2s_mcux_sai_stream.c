@@ -14,6 +14,11 @@ uint32_t i2s_mcux_sai_stream_channel_mask(uint32_t channel_mask)
 	return channel_mask;
 }
 
+uint8_t i2s_mcux_sai_stream_min_buffers(enum i2s_dir dir)
+{
+	return dir == I2S_DIR_RX ? I2S_MCUX_SAI_RX_PREP_BLOCKS + 1U : 1U;
+}
+
 struct i2s_mcux_sai_tx_fifo_config
 i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
 				   bool is_sdma)
