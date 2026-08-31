@@ -15,6 +15,66 @@
 
 #include <zephyr/dt-bindings/rdc/imx_rdc.h>
 
+/*
+ * AUDIO PLL1 is a fractional PLL:
+ *
+ *   Fout = (mainDiv + dsm / 65536) * refSel / (preDiv * 2^postDiv)
+ *
+ * The coefficients below are the ones handed to CLOCK_InitAudioPll1(), so the
+ * static assertions fail if either a PLL coefficient or a root divider stops
+ * producing the intended audio rates.
+ */
+#define IMX8M_M7_AUDIO_PLL1_REF_SEL kANALOG_PllRefOsc24M
+#define IMX8M_M7_AUDIO_PLL1_REF_RATE 24000000ULL
+#define IMX8M_M7_AUDIO_PLL1_MAIN_DIV 262ULL
+#define IMX8M_M7_AUDIO_PLL1_DSM 9437ULL
+#define IMX8M_M7_AUDIO_PLL1_PRE_DIV 2ULL
+#define IMX8M_M7_AUDIO_PLL1_POST_DIV 3ULL
+#define IMX8M_M7_AUDIO_PLL1_DSM_SCALE 65536ULL
+
+/* Scaled numerator/denominator keep the derivation exact in integer math. */
+#define IMX8M_M7_AUDIO_PLL1_NUM							\
+	((IMX8M_M7_AUDIO_PLL1_MAIN_DIV * IMX8M_M7_AUDIO_PLL1_DSM_SCALE +	\
+	  IMX8M_M7_AUDIO_PLL1_DSM) * IMX8M_M7_AUDIO_PLL1_REF_RATE)
+#define IMX8M_M7_AUDIO_PLL1_DEN							\
+	(IMX8M_M7_AUDIO_PLL1_DSM_SCALE * IMX8M_M7_AUDIO_PLL1_PRE_DIV *		\
+	 BIT64(IMX8M_M7_AUDIO_PLL1_POST_DIV))
+
+#define IMX8M_M7_AUDIO_PLL1_RESIDUE 8ULL
+
+#define IMX8M_M7_SAI3_ROOT_DIVIDER 32ULL
+#define IMX8M_M7_PDM_ROOT_DIVIDER 2ULL
+#define IMX8M_M7_PDM_ROOT_NOMINAL 196608000ULL
+
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_REF_SEL == kANALOG_PllRefOsc24M,
+	     "AUDIO PLL1 rate derivation assumes the 24 MHz reference");
+
+/*
+ * A single-step error in any PLL coefficient moves the rate far more than the
+ * fractional residue, so this catches a coefficient typo without asserting the
+ * PLL lands exactly on the nominal rate, which it cannot.
+ */
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NUM / IMX8M_M7_AUDIO_PLL1_DEN <=
+		     IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE &&
+	     IMX8M_M7_AUDIO_PLL1_NUM / IMX8M_M7_AUDIO_PLL1_DEN >=
+		     IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE - IMX8M_M7_AUDIO_PLL1_RESIDUE,
+	     "AUDIO PLL1 coefficients must produce 393.216 MHz within the fractional residue");
+
+/*
+ * The dividers the roots are programmed with must derive the audio rates
+ * exactly from the nominal PLL rate, since that is what the clock driver
+ * reports. PDM_SetSampleRateConfig() consumes the PDM root rather than the PLL
+ * rate, and MICFIL divides that root again, so the root is left at the
+ * 196.608 MHz that Linux programs on i.MX8MP. A lower root would still divide
+ * exactly, but it leaves the PDM clock divider too small for the lower quality
+ * modes with many channels.
+ */
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / IMX8M_M7_SAI3_ROOT_DIVIDER == 12288000ULL,
+	     "SAI3 MCLK must be 12.288 MHz");
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / IMX8M_M7_PDM_ROOT_DIVIDER ==
+		     IMX8M_M7_PDM_ROOT_NOMINAL,
+	     "PDM root must be 196.608 MHz");
+
 /* OSC/PLL is already initialized by ROM and Cortex-A53 (u-boot) */
 static void SOC_RdcInit(void)
 {
@@ -80,6 +140,19 @@ const ccm_analog_integer_pll_config_t g_sysPll3Config = {
 	.preDiv  = 3U,
 	.postDiv = 2U, /*!< SYSTEM PLL3 frequency  = 600MHZ */
 };
+
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_sdma) || \
+	DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+/* Fractional PLLs: Fout = (mainDiv + dsm / 65536) * refSel / (preDiv * 2^postDiv) */
+/* AUDIO PLL1 configuration */
+const ccm_analog_frac_pll_config_t g_audioPll1Config = {
+	.refSel = IMX8M_M7_AUDIO_PLL1_REF_SEL, /*!< PLL reference OSC24M */
+	.mainDiv = IMX8M_M7_AUDIO_PLL1_MAIN_DIV,
+	.dsm = IMX8M_M7_AUDIO_PLL1_DSM,
+	.preDiv = IMX8M_M7_AUDIO_PLL1_PRE_DIV,
+	.postDiv = IMX8M_M7_AUDIO_PLL1_POST_DIV, /*!< AUDIO PLL1 frequency = 393216000HZ */
+};
+#endif
 
 __weak void SOC_ClockInit(void)
 {
@@ -155,6 +228,45 @@ __weak void SOC_ClockInit(void)
 	/* Set root clock to 800MHZ / 10 = 80MHZ */
 	CLOCK_SetRootDivider(kCLOCK_RootEcspi3, 2U, 5U);
 #endif
+#endif
+
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_sdma) || \
+	DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+	/* Enable the CCGR gate for AudioPLL1 in Domain 1 */
+	CLOCK_ControlGate(kCLOCK_AudioPll1Gate, kCLOCK_ClockNeededAll);
+	/* Init AUDIO PLL1 to 393216000HZ for the 48 kHz sample rate family */
+	CLOCK_InitAudioPll1(&g_audioPll1Config);
+
+	/*
+	 * AUDIO AHB is the bus clock root shared by the AUDIOMIX peripherals
+	 * (SAI, SDMA2/3, MICFIL). Set it to SYSTEM PLL1 800MHZ / 2 = 400MHZ and
+	 * enable the AUDIOMIX CCGR gate. The per-IP gates inside AUDIOMIX are
+	 * managed by the clock control driver.
+	 */
+	CLOCK_SetRootMux(kCLOCK_RootAudioAhb, kCLOCK_AudioAhbRootmuxSysPll1);
+	CLOCK_SetRootDivider(kCLOCK_RootAudioAhb, 1U, 2U);
+	CLOCK_EnableClock(kCLOCK_Audio);
+#endif
+
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+	/* Set SAI3 source to AUDIO PLL1 393216000HZ / 32 = 12288000HZ (MCLK) */
+	CLOCK_SetRootMux(kCLOCK_RootSai3, kCLOCK_SaiRootmuxAudioPll1);
+	CLOCK_SetRootDivider(kCLOCK_RootSai3, 1U, IMX8M_M7_SAI3_ROOT_DIVIDER);
+	/*
+	 * The AUDIOMIX gates don't manage this root (see kCLOCK_Sai3),
+	 * so it must be enabled explicitly.
+	 */
+	CLOCK_EnableRoot(kCLOCK_RootSai3);
+#endif
+
+#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil)
+	/*
+	 * Set PDM source to AUDIO PLL1 393216000HZ / 2 = 196608000HZ,
+	 * matching the rate Linux uses for MICFIL on i.MX8MP.
+	 */
+	CLOCK_SetRootMux(kCLOCK_RootPdm, kCLOCK_PdmRootmuxAudioPll1);
+	CLOCK_SetRootDivider(kCLOCK_RootPdm, 1U, IMX8M_M7_PDM_ROOT_DIVIDER);
+	CLOCK_EnableRoot(kCLOCK_RootPdm);
 #endif
 
 	CLOCK_EnableClock(kCLOCK_Rdc);   /* Enable RDC clock */
