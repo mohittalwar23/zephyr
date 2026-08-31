@@ -1,0 +1,13 @@
+description: Test NXP SAI clock consumer
+
+compatible: "vnd,nxp-sai-clock-consumer"
+
+include: base.yaml
+
+properties:
+  clocks:
+    type: phandle-array
+    required: true
+  clock-names:
+    type: string-array
+    required: true

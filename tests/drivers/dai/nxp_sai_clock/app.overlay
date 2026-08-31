@@ -1,0 +1,12 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&sai3 {
+	/delete-property/ mclk-is-output;
+	clocks = <&ccm IMX_CCM_SAI3_CLK 0 0>, <&sai3_mclk1>;
+	clock-names = "bus", "mclk1";
+	status = "okay";
+};

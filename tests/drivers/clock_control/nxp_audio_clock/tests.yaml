@@ -1,0 +1,9 @@
+tests:
+  drivers.clock_control.nxp_audio_clock:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - clock_control
+      - dai
+      - dma
+      - drivers
