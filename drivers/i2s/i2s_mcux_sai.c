@@ -834,7 +834,6 @@ static int i2s_mcux_write(const struct device *dev, void *mem_block, size_t size
 static int i2s_mcux_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
 {
 	ARG_UNUSED(dev);
-	ARG_UNUSED(dir);
 
 	memset(caps, 0, sizeof(struct audio_caps));
 
@@ -846,7 +845,7 @@ static int i2s_mcux_get_caps(const struct device *dev, struct audio_caps *caps, 
 		AUDIO_SAMPLE_RATE_32000 | AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
 	caps->supported_bit_widths =
 		AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
-	caps->min_num_buffers = 1;
+	caps->min_num_buffers = i2s_mcux_sai_stream_min_buffers(dir);
 	caps->min_frame_interval = 1000;   /* 1ms minimum */
 	caps->max_frame_interval = 100000; /* 100ms maximum */
 	caps->interleaved = true;
