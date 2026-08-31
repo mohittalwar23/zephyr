@@ -11,6 +11,17 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/dt-bindings/clock/imx_ccm.h>
 #include <fsl_clock.h>
+#include <soc.h>
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+BUILD_ASSERT(IMX_CCM_SAI1_CLK == 0x0B00UL);
+BUILD_ASSERT(IMX_CCM_SAI2_CLK == 0x0B01UL);
+BUILD_ASSERT(IMX_CCM_SAI3_CLK == 0x0B02UL);
+BUILD_ASSERT(IMX_CCM_PDM_CLK == 0x1900UL);
+BUILD_ASSERT(IMX_CCM_SDMA1_CLK == 0x1A00UL);
+BUILD_ASSERT(IMX_CCM_SDMA2_CLK == 0x1A01UL);
+BUILD_ASSERT(IMX_CCM_SDMA3_CLK == 0x1A02UL);
+#endif
 
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 #include <main/ipc.h>
@@ -84,7 +95,34 @@ static const clock_ip_name_t sai_clocks[] = {
 	kCLOCK_AUDIO_Sai3,
 };
 #endif
+
 #endif /* CONFIG_DAI_NXP_SAI */
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sai_clocks[] = {
+	kCLOCK_Sai1,
+	kCLOCK_Sai2,
+	kCLOCK_Sai3,
+};
+
+/*
+ * The MCLK1 gates live in AUDIOMIX next to the IPG gates and feed the
+ * SAI bit clock / master clock output, so manage them together.
+ */
+static const clock_ip_name_t sai_mclk_clocks[] = {
+	kCLOCK_Sai1_Mclk1,
+	kCLOCK_Sai2_Mclk1,
+	kCLOCK_Sai3_Mclk1,
+};
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sdma_clocks[] = {
+	kCLOCK_Sdma1,
+	kCLOCK_Sdma2,
+	kCLOCK_Sdma3,
+};
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
 
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QX6_ADSP) || defined(CONFIG_SOC_MIMX8QM6_ADSP)
@@ -168,6 +206,27 @@ static int mcux_ccm_on(const struct device *dev,
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_EnableClock(sai_clocks[instance]);
+		CLOCK_EnableClock(sai_mclk_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_EnableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_EnableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
+
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 	case IMX_CCM_ESAI0_CLK:
@@ -239,6 +298,27 @@ static int mcux_ccm_off(const struct device *dev,
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_DisableClock(sai_mclk_clocks[instance]);
+		CLOCK_DisableClock(sai_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_DisableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_DisableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
+
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 	case IMX_CCM_ESAI0_CLK:
@@ -272,6 +352,28 @@ static int mcux_ccm_off(const struct device *dev,
 		return 0;
 	}
 }
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+/*
+ * The measured audio root rates truncate a Hz below their targets because
+ * AUDIO PLL1 settles just under its nominal rate. Audio consumers match the
+ * MCLK to frame-clock ratio with exact integer division, so report the roots
+ * from the nominal rate instead, the way the i.MX93 SAI roots already do.
+ * Roots that are not on AUDIO PLL1 keep the measured rate.
+ */
+static uint32_t imx8m_audio_root_rate(clock_root_control_t root, uint32_t audio_pll1_mux,
+				      uint32_t measured_rate)
+{
+	uint32_t pre = CLOCK_GetRootPreDivider(root);
+	uint32_t post = CLOCK_GetRootPostDivider(root);
+
+	if (CLOCK_GetRootMux(root) != audio_pll1_mux || pre == 0U || post == 0U) {
+		return measured_rate;
+	}
+
+	return (uint32_t)(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / pre / post);
+}
+#endif /* CONFIG_SOC_MIMX8ML8 */
 
 static int mcux_ccm_get_subsys_rate(const struct device *dev,
 				    clock_control_subsys_t sub_system,
@@ -478,7 +580,11 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 		break;
 #endif
 
-#ifdef CONFIG_I2S_MCUX_SAI
+/*
+ * i.MX8M provides these rates from its own clock roots below; the divider
+ * symbols used here exist only on the RT series.
+ */
+#if defined(CONFIG_I2S_MCUX_SAI) && !defined(CONFIG_SOC_MIMX8ML8)
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai1))
 	case IMX_CCM_SAI1_CLK:
 		*rate = CLOCK_GetFreq(kCLOCK_AudioPllClk)
@@ -608,6 +714,25 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 
 	} break;
 #endif
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai1, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai1ClkRoot));
+		break;
+	case IMX_CCM_SAI2_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai2, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai2ClkRoot));
+		break;
+	case IMX_CCM_SAI3_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai3, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai3ClkRoot));
+		break;
+	case IMX_CCM_PDM_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootPdm, kCLOCK_PdmRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_PdmClkRoot));
+		break;
+#endif /* CONFIG_SOC_MIMX8ML8 */
 	}
 
 	return 0;
