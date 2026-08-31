@@ -1,0 +1,13 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&micfil {
+	status = "okay";
+};
+
+&sdma3 {
+	status = "okay";
+};

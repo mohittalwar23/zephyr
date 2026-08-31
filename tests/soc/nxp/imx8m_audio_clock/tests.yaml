@@ -1,0 +1,31 @@
+common:
+  build_only: true
+  platform_allow:
+    - imx8mp_evk/mimx8ml8/m7/ddr
+  tags:
+    - clock_control
+    - dai
+    - dma
+    - soc
+
+tests:
+  soc.nxp.imx8m_audio_clock.combined.owned:
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE=overlays/combined.overlay
+    extra_configs:
+      - CONFIG_IMX8M_M7_AUDIO_PLL1=y
+  soc.nxp.imx8m_audio_clock.combined.external:
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE=overlays/combined.overlay
+    extra_configs:
+      - CONFIG_IMX8M_M7_AUDIO_PLL1=n
+  soc.nxp.imx8m_audio_clock.sai_only:
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE=overlays/sai_only.overlay
+    extra_configs:
+      - CONFIG_IMX8M_M7_AUDIO_PLL1=y
+  soc.nxp.imx8m_audio_clock.pdm_only:
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE=overlays/pdm_only.overlay
+    extra_configs:
+      - CONFIG_IMX8M_M7_AUDIO_PLL1=y
