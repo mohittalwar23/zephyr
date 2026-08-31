@@ -458,6 +458,7 @@ static void nxp_micfil_isr(const void *arg)
 		/* Allocate next buffer first to avoid using a freed buffer */
 		if (k_mem_slab_alloc(data->mem_slab, &new_buf, K_NO_WAIT) != 0) {
 			/* No memory available: enter error state and stop capturing */
+			LOG_ERR("MICFIL capture stopped: no free slab block");
 			data->active_buf = NULL;
 			data->state = DMIC_STATE_ERROR;
 
@@ -587,7 +588,12 @@ static int nxp_micfil_init(const struct device *dev)
 			return -EINVAL;
 		}
 
-		uint32_t reg_div = clk_rate / micfil_clock_rate;
+		/* The CCM rate may be a few hertz below the nominal audio rate due
+		 * to fractional PLL residue. Flooring here would select the next
+		 * faster divider (95 instead of 96 for 196607997 Hz / 2048000 Hz),
+		 * making capture outrun playback and eventually exhaust the slab.
+		 */
+		uint32_t reg_div = DIV_ROUND_CLOSEST(clk_rate, micfil_clock_rate);
 
 		if (reg_div == 0U) {
 			reg_div = 1U;
