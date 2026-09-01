@@ -7,13 +7,28 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/ztest.h>
+#include <dma_nxp_sdma_lifecycle.h>
 
 #define N  4
 #define SZ 32U
 #define CH 0U
+#define LIFECYCLE_STACK_SIZE 512
 
+#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 static const struct device *const dma = DEVICE_DT_GET(DT_NODELABEL(tst_dma0));
 static K_SEM_DEFINE(done, 0, 1);
+#endif
+
+#if defined(CONFIG_SMP)
+static K_SEM_DEFINE(restart_entered, 0, 1);
+static K_SEM_DEFINE(completion_done, 0, 1);
+static K_THREAD_STACK_DEFINE(completion_stack, LIFECYCLE_STACK_SIZE);
+static struct k_thread completion_thread_data;
+static struct dma_nxp_sdma_lifecycle lifecycle;
+static bool hardware_started;
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 static int cbs;
 static __aligned(32) char src[N][SZ];
 static __aligned(32) char dst[N][SZ];
@@ -51,6 +66,7 @@ ZTEST(dma_reload, test_reload_completes_each_time)
 	struct dma_config c = base_cfg(&blk);
 
 	cbs = 0;
+	k_sem_reset(&done);
 	memset(src[0], 'A', SZ);
 	zassert_ok(dma_config(dma, CH, &c));
 	zassert_ok(dma_start(dma, CH));
@@ -83,9 +99,92 @@ ZTEST(dma_reload, test_get_status_conformance)
 	zassert_equal(st.dir, MEMORY_TO_MEMORY, "dir not reported");
 }
 
+ZTEST(dma_reload, test_get_status_after_stop)
+{
+	struct dma_block_config blk = {
+		.source_address = (uintptr_t)src[0],
+		.dest_address = (uintptr_t)dst[0],
+		.block_size = SZ,
+	};
+	struct dma_config c = base_cfg(&blk);
+	struct dma_status st = {
+		.busy = true,
+		.dir = PERIPHERAL_TO_MEMORY,
+		.pending_length = UINT32_MAX,
+		.free = UINT32_MAX,
+		.write_position = UINT32_MAX,
+		.read_position = UINT32_MAX,
+		.total_copied = UINT64_MAX,
+	};
+
+	zassert_ok(dma_config(dma, CH, &c));
+	zassert_ok(dma_stop(dma, CH));
+	zassert_ok(dma_get_status(dma, CH, &st));
+	zassert_false(st.busy, "channel is still busy after stop");
+	zassert_equal(st.pending_length, 0U, "pending length was not initialized");
+	zassert_equal(st.free, 0U, "free space was not initialized");
+	zassert_equal(st.dir, MEMORY_TO_MEMORY, "direction was not initialized");
+	zassert_equal(st.read_position, 0U, "read position was not initialized");
+	zassert_equal(st.write_position, 0U, "write position was not initialized");
+	zassert_equal(st.total_copied, 0U, "total copied was not initialized");
+}
+#endif
+
+#if defined(CONFIG_SMP)
+static bool complete_transfer(void *context)
+{
+	ARG_UNUSED(context);
+	return true;
+}
+
+static void restart_hardware(void *context)
+{
+	ARG_UNUSED(context);
+	k_sem_give(&restart_entered);
+	k_busy_wait(50000);
+	hardware_started = true;
+}
+
+static void stop_hardware(void *context)
+{
+	ARG_UNUSED(context);
+	hardware_started = false;
+}
+
+static void complete_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+	dma_nxp_sdma_lifecycle_complete(&lifecycle, complete_transfer, NULL,
+					restart_hardware, NULL);
+	k_sem_give(&completion_done);
+}
+
+ZTEST(dma_reload, test_stop_serializes_internal_restart)
+{
+	lifecycle.started = true;
+	hardware_started = false;
+	k_sem_reset(&restart_entered);
+	k_sem_reset(&completion_done);
+	k_thread_create(&completion_thread_data, completion_stack,
+			K_THREAD_STACK_SIZEOF(completion_stack), complete_thread,
+			NULL, NULL, NULL, K_PRIO_PREEMPT(1), 0, K_FOREVER);
+	zassert_ok(k_thread_cpu_pin(&completion_thread_data, 1));
+	k_thread_start(&completion_thread_data);
+	zassert_ok(k_sem_take(&restart_entered, K_MSEC(1000)));
+	dma_nxp_sdma_lifecycle_stop(&lifecycle, stop_hardware, NULL);
+	zassert_ok(k_sem_take(&completion_done, K_MSEC(1000)));
+	zassert_false(lifecycle.started, "channel must remain stopped");
+	zassert_false(hardware_started, "stop must be the final hardware operation");
+}
+#endif
+
 static void *setup(void)
 {
+#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 	zassert_true(device_is_ready(dma), "DMA controller not ready");
+#endif
 	return NULL;
 }
 
@@ -96,7 +195,9 @@ static void *setup(void)
 static void after(void *fixture)
 {
 	ARG_UNUSED(fixture);
+#if DT_NODE_EXISTS(DT_NODELABEL(tst_dma0))
 	(void)dma_stop(dma, CH);
+#endif
 }
 
 ZTEST_SUITE(dma_reload, NULL, setup, NULL, after, NULL);
