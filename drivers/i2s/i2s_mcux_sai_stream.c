@@ -28,11 +28,21 @@ void i2s_mcux_sai_stream_purge(struct i2s_mcux_sai_stream *strm, bool in_drop, b
 
 int i2s_mcux_sai_stream_dma_width(uint8_t word_size_bits, uint8_t *width)
 {
-	if (width == NULL) {
+	if (width == NULL || word_size_bits < 8U || word_size_bits > 32U) {
 		return -EINVAL;
 	}
 
-	*width = word_size_bits / 8U;
+	/* An I2S buffer stores a sample in the smallest power-of-two number of
+	 * bytes that holds it, so a 24-bit sample occupies four bytes. DMA
+	 * controllers only express power-of-two transfer widths.
+	 */
+	if (word_size_bits <= 8U) {
+		*width = 1U;
+	} else if (word_size_bits <= 16U) {
+		*width = 2U;
+	} else {
+		*width = 4U;
+	}
 
 	return 0;
 }
@@ -60,6 +70,8 @@ int i2s_mcux_sai_stream_tx_reload(struct i2s_mcux_sai_stream *strm, const struct
 		ret = dma_reload(dma_dev, strm->dma.channel, (uintptr_t)q_entry.mem_block,
 				 dest_address, q_entry.size);
 		if (ret != 0) {
+			/* the channel never took the block */
+			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
 			break;
 		}
 
@@ -67,6 +79,12 @@ int i2s_mcux_sai_stream_tx_reload(struct i2s_mcux_sai_stream *strm, const struct
 
 		ret = k_msgq_put(&strm->out_queue, &q_entry, K_NO_WAIT);
 		if (ret != 0) {
+			/* the block cannot be tracked, so the channel must not
+			 * transmit it
+			 */
+			dma_stop(dma_dev, strm->dma.channel);
+			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+			(strm->free_tx_dma_blocks)++;
 			break;
 		}
 
@@ -91,7 +109,6 @@ int i2s_mcux_sai_stream_tx_start(struct i2s_mcux_sai_stream *strm, const struct 
 		return -EIO;
 	}
 
-	/* The driver keeps track of how many blocks the controller can take */
 	strm->free_tx_dma_blocks = strm->max_dma_blocks;
 
 	memset(blk_cfg, 0, sizeof(*blk_cfg));
@@ -105,20 +122,44 @@ int i2s_mcux_sai_stream_tx_start(struct i2s_mcux_sai_stream *strm, const struct 
 	strm->dma_cfg.block_count = 1;
 	strm->dma_cfg.head_block = blk_cfg;
 
+	/* A controller drops a failed transfer instead of reporting it when the
+	 * client disables the error callback, which would leave the stream
+	 * running against a stopped channel.
+	 */
+	strm->dma_cfg.error_callback_dis = 0;
+
+	ret = dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
+	if (ret != 0) {
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+		return ret;
+	}
+
 	(strm->free_tx_dma_blocks)--;
-	dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
 
 	ret = k_msgq_put(&strm->out_queue, &q_entry, K_NO_WAIT);
 	if (ret != 0) {
+		dma_stop(dma_dev, strm->dma.channel);
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+		(strm->free_tx_dma_blocks)++;
 		return ret;
 	}
 
 	ret = i2s_mcux_sai_stream_tx_reload(strm, dma_dev, dest_address, &blocks_queued);
 	if (ret != 0) {
-		return ret;
+		goto stop_and_release;
 	}
 
-	return dma_start(dma_dev, strm->dma.channel);
+	ret = dma_start(dma_dev, strm->dma.channel);
+	if (ret == 0) {
+		return 0;
+	}
+
+stop_and_release:
+	dma_stop(dma_dev, strm->dma.channel);
+	i2s_mcux_sai_stream_purge(strm, false, true);
+	strm->free_tx_dma_blocks = strm->max_dma_blocks;
+
+	return ret;
 }
 
 int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct device *dma_dev,
@@ -153,33 +194,56 @@ int i2s_mcux_sai_stream_rx_start(struct i2s_mcux_sai_stream *strm, const struct 
 	strm->dma_cfg.block_count = 1;
 	strm->dma_cfg.head_block = blk_cfg;
 
-	dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
+	/* A controller drops a failed transfer instead of reporting it when the
+	 * client disables the error callback, which would leave the stream
+	 * running against a stopped channel.
+	 */
+	strm->dma_cfg.error_callback_dis = 0;
+
+	ret = dma_config(dma_dev, strm->dma.channel, &strm->dma_cfg);
+	if (ret != 0) {
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+		return ret;
+	}
 
 	ret = k_msgq_put(&strm->in_queue, &q_entry, K_NO_WAIT);
 	if (ret != 0) {
+		dma_stop(dma_dev, strm->dma.channel);
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
 		return ret;
 	}
 
 	for (int i = 0; i < I2S_MCUX_SAI_RX_PREP_BLOCKS - 1; i++) {
 		ret = k_mem_slab_alloc(strm->cfg.mem_slab, &q_entry.mem_block, K_NO_WAIT);
 		if (ret != 0) {
-			return ret;
+			goto stop_and_release;
 		}
 		q_entry.size = blk_cfg->block_size;
 
 		ret = dma_reload(dma_dev, strm->dma.channel, source_address,
 				 (uintptr_t)q_entry.mem_block, q_entry.size);
 		if (ret != 0) {
-			return ret;
+			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+			goto stop_and_release;
 		}
 
 		ret = k_msgq_put(&strm->in_queue, &q_entry, K_NO_WAIT);
 		if (ret != 0) {
-			return ret;
+			k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+			goto stop_and_release;
 		}
 	}
 
-	return dma_start(dma_dev, strm->dma.channel);
+	ret = dma_start(dma_dev, strm->dma.channel);
+	if (ret == 0) {
+		return 0;
+	}
+
+stop_and_release:
+	dma_stop(dma_dev, strm->dma.channel);
+	i2s_mcux_sai_stream_purge(strm, true, false);
+
+	return ret;
 }
 
 enum i2s_mcux_sai_stream_action
@@ -190,7 +254,13 @@ i2s_mcux_sai_stream_tx_complete(struct i2s_mcux_sai_stream *strm, const struct d
 	uint8_t blocks_queued;
 	int ret;
 
-	ARG_UNUSED(status);
+	if (status < 0) {
+		/* the controller reported a failed transfer, so the block it
+		 * was working on is not a completed audio block
+		 */
+		strm->state = I2S_STATE_ERROR;
+		return I2S_MCUX_SAI_STREAM_STOP;
+	}
 
 	ret = k_msgq_get(&strm->out_queue, &q_entry, K_NO_WAIT);
 	if (ret == 0) {
@@ -251,21 +321,31 @@ i2s_mcux_sai_stream_rx_complete(struct i2s_mcux_sai_stream *strm, const struct d
 	struct i2s_mcux_sai_q_entry q_entry;
 	int ret;
 
-	ARG_UNUSED(status);
+	if (status < 0) {
+		/* the controller reported a failed transfer, so the block it
+		 * was working on is not a received audio block
+		 */
+		strm->state = I2S_STATE_ERROR;
+		return I2S_MCUX_SAI_STREAM_STOP;
+	}
 
 	if (strm->state == I2S_STATE_ERROR) {
 		return I2S_MCUX_SAI_STREAM_STOP_DROP;
 	}
 
 	if (strm->state != I2S_STATE_STOPPING && strm->state != I2S_STATE_RUNNING) {
-		return I2S_MCUX_SAI_STREAM_RUN;
+		return I2S_MCUX_SAI_STREAM_IGNORE;
 	}
 
 	ret = k_msgq_get(&strm->in_queue, &q_entry, K_NO_WAIT);
-	__ASSERT_NO_MSG(ret == 0);
+	if (ret != 0) {
+		strm->state = I2S_STATE_ERROR;
+		return I2S_MCUX_SAI_STREAM_STOP;
+	}
 
 	ret = k_msgq_put(&strm->out_queue, &q_entry, K_NO_WAIT);
 	if (ret != 0) {
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
 		strm->state = I2S_STATE_ERROR;
 		return I2S_MCUX_SAI_STREAM_STOP;
 	}
@@ -287,13 +367,18 @@ i2s_mcux_sai_stream_rx_complete(struct i2s_mcux_sai_stream *strm, const struct d
 	ret = dma_reload(dma_dev, strm->dma.channel, source_address, (uintptr_t)q_entry.mem_block,
 			 q_entry.size);
 	if (ret != 0) {
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
 		strm->state = I2S_STATE_ERROR;
 		return I2S_MCUX_SAI_STREAM_STOP;
 	}
 
 	ret = k_msgq_put(&strm->in_queue, &q_entry, K_NO_WAIT);
 	if (ret != 0) {
-		return I2S_MCUX_SAI_STREAM_RUN;
+		/* the block cannot be tracked, so the channel must not fill it */
+		dma_stop(dma_dev, strm->dma.channel);
+		k_mem_slab_free(strm->cfg.mem_slab, q_entry.mem_block);
+		strm->state = I2S_STATE_ERROR;
+		return I2S_MCUX_SAI_STREAM_STOP;
 	}
 
 	return I2S_MCUX_SAI_STREAM_RUN;
