@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/ztest.h>
+#include <dma_nxp_sdma_accounting.h>
 #include <dma_nxp_sdma_lifecycle.h>
 
 #define N  4
@@ -127,6 +128,159 @@ ZTEST(dma_reload, test_get_status_after_stop)
 	zassert_equal(st.read_position, 0U, "read position was not initialized");
 	zassert_equal(st.write_position, 0U, "write position was not initialized");
 	zassert_equal(st.total_copied, 0U, "total copied was not initialized");
+}
+
+struct sdma_mock_descriptor {
+	uintptr_t source_address;
+	uintptr_t dest_address;
+	uint32_t count;
+};
+
+struct sdma_mock_ring {
+	struct sdma_mock_descriptor descriptor[DMA_NXP_SDMA_BD_COUNT];
+	uint32_t rearmed_index;
+};
+
+static void sdma_mock_rearm(void *context, uint32_t index, uint32_t size)
+{
+	struct sdma_mock_ring *ring = context;
+
+	ring->descriptor[index].count = size;
+	ring->rearmed_index = index;
+}
+
+static void test_sdma_cyclic_descriptor_accounting(uint32_t direction)
+{
+	struct dma_block_config blocks[] = {
+		{
+			.source_address = 0x1000U,
+			.dest_address = 0x2000U,
+			.block_size = 16U,
+		},
+		{
+			.source_address = 0x3000U,
+			.dest_address = 0x4000U,
+			.block_size = 24U,
+		},
+	};
+	struct dma_nxp_sdma_descriptor_state state;
+	struct dma_config config = base_cfg(&blocks[0]);
+	struct sdma_mock_ring ring;
+	const uint32_t next_bd[] = { 1U, 0U, 1U };
+	const uint32_t expected_bd[] = { 0U, 1U, 0U };
+	const uint32_t expected_size[] = { 16U, 24U, 16U };
+	const uint64_t expected_total[] = { 16U, 40U, 56U };
+	uintptr_t source_address[DMA_NXP_SDMA_BD_COUNT];
+	uintptr_t dest_address[DMA_NXP_SDMA_BD_COUNT];
+
+	blocks[0].next_block = &blocks[1];
+	config.block_count = ARRAY_SIZE(blocks);
+	config.channel_direction = direction;
+	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
+	zassert_ok(dma_nxp_sdma_descriptor_init_stat(&state, direction));
+	for (size_t i = 0; i < DMA_NXP_SDMA_BD_COUNT; i++) {
+		ring.descriptor[i].source_address = state.source_address[i];
+		ring.descriptor[i].dest_address = state.dest_address[i];
+		ring.descriptor[i].count = 0U;
+		source_address[i] = ring.descriptor[i].source_address;
+		dest_address[i] = ring.descriptor[i].dest_address;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(next_bd); i++) {
+		zassert_ok(dma_nxp_sdma_descriptor_complete(&state, direction, next_bd[i],
+						      sdma_mock_rearm, &ring));
+		zassert_equal(ring.rearmed_index, expected_bd[i],
+			      "completion %zu rearmed wrong BD", i);
+		zassert_equal(ring.descriptor[expected_bd[i]].count, expected_size[i],
+			      "completion %zu rearmed wrong size", i);
+		zassert_equal(state.stat.total_copied, expected_total[i],
+			      "completion %zu accounted wrong total", i);
+		zassert_ok(dma_nxp_sdma_descriptor_reload(&state, direction, 0U, 0U,
+						   expected_size[i]));
+		zassert_equal(state.stat.total_copied, expected_total[i],
+			      "reload %zu was counted as hardware progress", i);
+	}
+
+	for (size_t i = 0; i < DMA_NXP_SDMA_BD_COUNT; i++) {
+		zassert_equal(ring.descriptor[i].source_address, source_address[i],
+			      "reload changed source address %zu", i);
+		zassert_equal(ring.descriptor[i].dest_address, dest_address[i],
+			      "reload changed destination address %zu", i);
+	}
+}
+
+ZTEST(dma_reload, test_sdma_cyclic_descriptor_accounting)
+{
+	test_sdma_cyclic_descriptor_accounting(PERIPHERAL_TO_MEMORY);
+	test_sdma_cyclic_descriptor_accounting(MEMORY_TO_PERIPHERAL);
+}
+
+ZTEST(dma_reload, test_sdma_descriptor_prepare_validates_ring)
+{
+	struct dma_block_config blocks[] = {
+		{
+			.source_address = 0x1000U,
+			.dest_address = 0x2000U,
+			.block_size = UINT16_MAX,
+		},
+		{
+			.source_address = 0x3000U,
+			.dest_address = 0x4000U,
+			.block_size = UINT16_MAX,
+		},
+	};
+	struct dma_nxp_sdma_descriptor_state state;
+	struct dma_config config = base_cfg(&blocks[0]);
+	struct sdma_mock_ring ring;
+
+	blocks[0].next_block = &blocks[1];
+	config.block_count = ARRAY_SIZE(blocks);
+	config.channel_direction = PERIPHERAL_TO_MEMORY;
+	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config));
+	zassert_equal(state.capacity, 2U * UINT16_MAX, "largest ring capacity was wrong");
+	zassert_equal(dma_nxp_sdma_descriptor_complete(&state, MEMORY_TO_MEMORY, 1U,
+			      sdma_mock_rearm, &ring), -EINVAL,
+		      "completion accepted an unsupported direction");
+	zassert_equal(dma_nxp_sdma_descriptor_reload(&state, MEMORY_TO_MEMORY, 0U, 0U,
+			      UINT16_MAX), -EINVAL, "reload accepted an unsupported direction");
+
+	config.block_count = 0U;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "zero descriptor count was accepted");
+
+	config.block_count = DMA_NXP_SDMA_BD_COUNT + 1U;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "oversized descriptor count was accepted");
+
+	config.block_count = ARRAY_SIZE(blocks);
+	blocks[0].next_block = NULL;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "short descriptor chain was accepted");
+
+	blocks[0].next_block = &blocks[1];
+
+	/*
+	 * A cyclic list is circular: the last block links back to the head.
+	 * Consumers build their rings this way, so it must be accepted.
+	 */
+	blocks[1].next_block = &blocks[0];
+	zassert_ok(dma_nxp_sdma_descriptor_prepare(&state, &config),
+		   "circular block list was rejected");
+	zassert_equal(state.capacity, 2U * UINT16_MAX, "circular ring capacity was wrong");
+	blocks[1].next_block = NULL;
+
+	blocks[1].block_size = 0U;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "zero descriptor size was accepted");
+
+	blocks[1].block_size = UINT16_MAX + 1U;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "unrepresentable descriptor size was accepted");
+
+	blocks[1].block_size = UINT16_MAX;
+	config.channel_direction = MEMORY_TO_MEMORY;
+	zassert_equal(dma_nxp_sdma_descriptor_prepare(&state, &config), -EINVAL,
+		      "unsupported direction was accepted");
 }
 #endif
 
