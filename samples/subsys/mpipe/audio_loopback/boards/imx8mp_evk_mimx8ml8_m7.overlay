@@ -13,6 +13,8 @@
 
 / {
 	aliases {
+		audio-codec-capture = &audio_codec;
+		i2s-codec-rx = &sai3;
 		i2s-codec-tx = &sai3;
 	};
 
@@ -69,6 +71,8 @@
 		reg = <0x1a>;
 		clocks = <&ccm IMX_CCM_SAI3_CLK 0x0 0x0>;
 		clock-names = "mclk";
+		left-input = "WM8960_IN_MIC_DE_13";
+		right-input = "WM8960_IN_MIC_DE_13";
 		shared-lrclk;
 	};
 };
