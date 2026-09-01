@@ -8,6 +8,12 @@ mainmenu "I2S Loopback Test"
 
 source "Kconfig.zephyr"
 
+config I2S_MCUX_SAI_HOST_SEAM_TEST
+	bool "Build the MCUX SAI host seam tests"
+	help
+	  Build the MCUX SAI and NXP SDMA host seam tests. This is intended for
+	  the dedicated native_sim test scenario.
+
 config I2S_TEST_SEPARATE_DEVICES
 	bool "Use two separate I2S ports for loopback"
 	help

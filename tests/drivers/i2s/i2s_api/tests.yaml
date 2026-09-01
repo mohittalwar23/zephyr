@@ -52,6 +52,8 @@ tests:
     tags:
       - drivers
       - i2s
+    extra_configs:
+      - CONFIG_I2S_MCUX_SAI_HOST_SEAM_TEST=y
     platform_allow:
       - frdm_mcxe31b
       - imx8mp_evk/mimx8ml8/m7/ddr
@@ -65,6 +67,8 @@ tests:
     tags:
       - drivers
       - i2s
+    extra_configs:
+      - CONFIG_I2S_MCUX_SAI_HOST_SEAM_TEST=y
     extra_args:
       - DTC_OVERLAY_FILE=boards/frdm_mcxa577_edma_v3.overlay
       - EXTRA_CONF_FILE=boards/frdm_mcxa577_edma_v3.conf
@@ -77,9 +81,25 @@ tests:
     tags:
       - drivers
       - i2s
+    extra_configs:
+      - CONFIG_I2S_MCUX_SAI_HOST_SEAM_TEST=y
     extra_args:
       - DTC_OVERLAY_FILE=boards/native_sim_mcux_mixed.overlay
       - EXTRA_CONF_FILE=boards/native_sim_mcux_mixed.conf
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+  drivers.i2s.mcux_host_seam:
+    tags:
+      - drivers
+      - i2s
+    harness: ztest
+    extra_args:
+      - DTC_OVERLAY_FILE=boards/native_sim_mcux_mixed.overlay
+      - EXTRA_CONF_FILE=boards/native_sim_mcux_mixed.conf
+    extra_configs:
+      - CONFIG_I2S_MCUX_SAI_HOST_SEAM_TEST=y
     platform_allow:
       - native_sim
     integration_platforms:
