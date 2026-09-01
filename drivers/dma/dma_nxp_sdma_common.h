@@ -27,6 +27,7 @@ struct dma_nxp_sdma_context_store {
 struct dma_nxp_sdma_ram_script_state {
 	struct k_spinlock lock;
 	const void *owner;
+	uint32_t claim_count;
 };
 
 static inline int dma_nxp_sdma_encode_width(uint32_t width, uint32_t *encoded_width)
@@ -59,7 +60,9 @@ void dma_nxp_sdma_request_release(struct dma_nxp_sdma_request_state *state);
 void *dma_nxp_sdma_context_at(const struct dma_nxp_sdma_context_store *store,
 			      uint32_t channel);
 int dma_nxp_sdma_ram_script_claim(struct dma_nxp_sdma_ram_script_state *state,
-				  const void *controller, bool required);
+				  const void *controller, bool required, bool *claimed);
+void dma_nxp_sdma_ram_script_release(struct dma_nxp_sdma_ram_script_state *state,
+				     const void *controller, bool *claimed);
 int dma_nxp_sdma_validate_slot(const struct dma_config *config, uint32_t *peripheral,
 			       bool *append_mode);
 
