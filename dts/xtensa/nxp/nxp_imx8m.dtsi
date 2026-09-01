@@ -94,6 +94,7 @@
 			interrupt-parent = <&master1>;
 			interrupts = <2 0>;
 			#dma-cells = <2>;
+			dma-requests = <48>;
 			status = "disabled";
 		};
 

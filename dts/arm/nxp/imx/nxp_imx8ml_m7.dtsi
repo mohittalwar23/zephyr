@@ -308,6 +308,7 @@
 			reg = <0x30e00000 DT_SIZE_K(64)>;
 			interrupts = <34 3>;
 			#dma-cells = <2>;
+			dma-requests = <48>;
 			status = "disabled";
 		};
 

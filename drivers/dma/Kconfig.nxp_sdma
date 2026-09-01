@@ -7,3 +7,19 @@ config DMA_NXP_SDMA
 	depends on DT_HAS_NXP_SDMA_ENABLED
 	help
 		Enable driver for NXP's SDMA IP.
+
+config DMA_NXP_SDMA_BD_COUNT
+	int "Number of buffer descriptors per SDMA channel"
+	depends on DMA_NXP_SDMA
+	default 4
+	range 2 64
+	help
+	  Depth of the per-channel buffer-descriptor pool. For append-mode
+	  consumers (I2S/SAI) this bounds how many blocks dma_reload() can
+	  queue ahead of the engine; it must exceed the block_count passed to
+	  dma_config() so reload() has room to append.
+
+	  SOF's fixed-ring behaviour is unaffected, since it configures its own
+	  block count, but this does size a static per-channel descriptor pool
+	  for every consumer of the controller, so raising it costs memory even
+	  where append mode is unused.
