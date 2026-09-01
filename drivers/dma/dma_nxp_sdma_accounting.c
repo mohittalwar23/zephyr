@@ -93,6 +93,7 @@ int dma_nxp_sdma_descriptor_init_stat(struct dma_nxp_sdma_descriptor_state *stat
 	state->stat.read_position = 0;
 	state->stat.write_position = 0;
 	state->stat.total_copied = 0;
+	state->next_bd = 0;
 
 	switch (direction) {
 	case MEMORY_TO_PERIPHERAL:
@@ -144,35 +145,47 @@ int dma_nxp_sdma_descriptor_prepare(struct dma_nxp_sdma_descriptor_state *state,
 }
 
 int dma_nxp_sdma_descriptor_complete(struct dma_nxp_sdma_descriptor_state *state,
-				     uint32_t direction, uint32_t next_bd,
-				     dma_nxp_sdma_descriptor_rearm_t rearm, void *context)
+				     uint32_t direction, dma_nxp_sdma_descriptor_owned_t owned,
+				     dma_nxp_sdma_descriptor_rearm_t rearm, void *context,
+				     uint32_t *completed)
 {
-	uint32_t completed_bd;
-	uint32_t size;
-	int ret;
+	uint32_t count = 0U;
+	int ret = 0;
 
 	if (!dma_nxp_sdma_descriptor_state_valid(state) ||
 	    !dma_nxp_sdma_direction_valid(direction) ||
-	    next_bd >= state->bd_count || rearm == NULL) {
+	    owned == NULL || rearm == NULL || completed == NULL) {
 		return -EINVAL;
 	}
 
-	/* MCUX reports the next BD after a completion. */
-	completed_bd = (next_bd + state->bd_count - 1U) % state->bd_count;
-	size = state->bd_size[completed_bd];
+	/*
+	 * One IRQ can coalesce several finished descriptors, so walk forward
+	 * from the software consumer until hardware still owns the next BD.
+	 * The bd_count bound caps a full lap of the ring in one call.
+	 */
+	while (count < state->bd_count && !owned(context, state->next_bd)) {
+		uint32_t completed_bd = state->next_bd;
+		uint32_t size = state->bd_size[completed_bd];
 
-	switch (direction) {
-	case MEMORY_TO_PERIPHERAL:
-		ret = dma_nxp_sdma_consume(state, size, true);
-		break;
-	case PERIPHERAL_TO_MEMORY:
-		ret = dma_nxp_sdma_produce(state, size, true);
-		break;
-	}
+		switch (direction) {
+		case MEMORY_TO_PERIPHERAL:
+			ret = dma_nxp_sdma_consume(state, size, true);
+			break;
+		case PERIPHERAL_TO_MEMORY:
+			ret = dma_nxp_sdma_produce(state, size, true);
+			break;
+		}
 
-	if (ret == 0) {
+		if (ret != 0) {
+			break;
+		}
+
 		rearm(context, completed_bd, size);
+		state->next_bd = (state->next_bd + 1U) % state->bd_count;
+		count++;
 	}
+
+	*completed = count;
 
 	return ret;
 }
