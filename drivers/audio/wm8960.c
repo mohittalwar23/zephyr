@@ -3,9 +3,9 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
 #include <string.h>
 
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/audio/codec.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree/clocks.h>
@@ -2087,8 +2087,30 @@ static int wm8960_set_property(const struct device *dev,
 	}
 }
 
+static int wm8960_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	ARG_UNUSED(dev);
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	/* 256/384/512 * fs dividers from a 48 kHz-family MCLK */
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_32000 | AUDIO_SAMPLE_RATE_48000;
+	caps->supported_bit_widths =
+		AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
+	/* the codec holds no buffers of its own */
+	caps->min_num_buffers = 0U;
+	caps->min_frame_interval = 1U;
+	caps->max_frame_interval = UINT32_MAX;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(audio_codec, wm8960_drv_api) = {
 	.configure = wm8960_configure,
+	.get_caps = wm8960_get_caps,
 	.start_output = wm8960_start_output,
 	.stop_output = wm8960_stop_output,
 	.clear_errors = wm8960_clear_errors,
