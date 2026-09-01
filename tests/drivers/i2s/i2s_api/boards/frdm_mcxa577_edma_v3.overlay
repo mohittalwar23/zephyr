@@ -1,0 +1,20 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	/* MCXA577 has eDMA v3 but no SAI; this node tests SAI's DT selection seam. */
+	mcux_sai_edma_v3_fixture: i2s@f0000 {
+		compatible = "nxp,mcux-i2s";
+		reg = <0xf0000 0x100>;
+		interrupt-parent = <&nvic>;
+		interrupts = <120 0>;
+		dmas = <&edma0 10 100>, <&edma0 11 101>;
+		dma-names = "rx", "tx";
+		nxp,rx-dma-channel = <10>;
+		nxp,tx-dma-channel = <11>;
+		status = "okay";
+	};
+};

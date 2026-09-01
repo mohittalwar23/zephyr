@@ -1,0 +1,37 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	aliases {
+		i2s-node0 = &sai3;
+		i2s-node1 = &sai3;
+	};
+
+	sdma1_fixture: dma@30bd0000 {
+		compatible = "nxp,sdma";
+		reg = <0x30bd0000 DT_SIZE_K(64)>;
+		interrupt-parent = <&nvic>;
+		interrupts = <2 3>;
+		#dma-cells = <2>;
+		dma-requests = <48>;
+		status = "okay";
+	};
+};
+
+&sdma3 {
+	status = "okay";
+};
+
+&sai3 {
+	/delete-property/ dai-index;
+	/delete-property/ mclk-is-output;
+	compatible = "nxp,mcux-i2s";
+	nxp,tx-channel = <1>;
+	mclk-output;
+	pinctrl-0 = <&sai3_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
