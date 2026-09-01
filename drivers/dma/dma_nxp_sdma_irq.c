@@ -34,7 +34,7 @@ bool dma_nxp_sdma_irq_take(struct dma_nxp_sdma_irq_state *state,
 	if (state->pending_error) {
 		state->pending_error = false;
 		*status = state->error_status;
-		return *status >= 0 || !error_callback_dis;
+		return !error_callback_dis;
 	}
 
 	return false;

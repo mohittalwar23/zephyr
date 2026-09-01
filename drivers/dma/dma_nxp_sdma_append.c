@@ -98,6 +98,7 @@ int dma_nxp_sdma_append_reload(struct dma_nxp_sdma_append_state *state, bool ena
 	}
 
 	slot->index = state->write_index;
+	slot->last = true;
 	slot->wrap = state->write_index == DMA_NXP_SDMA_BD_COUNT - 1U;
 	state->size[state->write_index] = size;
 	state->write_index = (state->write_index + 1U) % DMA_NXP_SDMA_BD_COUNT;
