@@ -201,19 +201,25 @@ static void i2s_dma_tx_callback(const struct device *dma_dev, void *arg, uint32_
 	enum i2s_mcux_sai_stream_action action;
 
 	ARG_UNUSED(dma_dev);
-	ARG_UNUSED(channel);
 
 	action = i2s_mcux_sai_stream_tx_complete(&dev_data->tx, dev_data->dev_dma,
 						 i2s_tx_data_address(dev), status);
 
 	switch (action) {
 	case I2S_MCUX_SAI_STREAM_PAUSE:
+		LOG_WRN("TX channel %u paused, no block queued", channel);
 		SAI_TxEnable(get_base(dev), false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP:
+		if (dev_data->tx.state == I2S_STATE_ERROR) {
+			LOG_ERR("TX channel %u error, DMA status %d", channel, status);
+		} else {
+			LOG_DBG("TX channel %u stopped", channel);
+		}
 		i2s_tx_stream_disable(dev, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DROP:
+		LOG_ERR("TX channel %u completed in state %d", channel, dev_data->tx.state);
 		i2s_tx_stream_disable(dev, true);
 		break;
 	default:
@@ -229,19 +235,24 @@ static void i2s_dma_rx_callback(const struct device *dma_dev, void *arg, uint32_
 	enum i2s_mcux_sai_stream_action action;
 
 	ARG_UNUSED(dma_dev);
-	ARG_UNUSED(channel);
 
 	action = i2s_mcux_sai_stream_rx_complete(&dev_data->rx, dev_data->dev_dma,
 						 i2s_rx_data_address(dev), status);
 
 	switch (action) {
+	case I2S_MCUX_SAI_STREAM_IGNORE:
+		LOG_ERR("RX channel %u completed in state %d", channel, dev_data->rx.state);
+		break;
 	case I2S_MCUX_SAI_STREAM_STOP:
+		LOG_ERR("RX channel %u error, DMA status %d", channel, status);
 		i2s_rx_stream_disable(dev, false, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DRAIN:
+		LOG_DBG("RX channel %u stopped", channel);
 		i2s_rx_stream_disable(dev, true, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DROP:
+		LOG_ERR("RX channel %u completed while in error state", channel);
 		i2s_rx_stream_disable(dev, true, true);
 		break;
 	default:
@@ -873,24 +884,6 @@ static void audio_clock_settings(const struct device *dev)
 #endif
 }
 
-static int i2s_mcux_acquire_dma_channel(const struct device *dma_dev,
-					struct i2s_mcux_sai_stream *strm)
-{
-	struct i2s_mcux_sai_dma_channel spec = {
-		.channel = strm->dma.channel,
-		.request = strm->dma.request,
-		.request_channel = strm->dma.request_channel,
-	};
-	int ret;
-
-	ret = i2s_mcux_sai_dma_acquire_channel(dma_dev, &spec);
-	if (ret == 0) {
-		strm->dma.channel = spec.channel;
-	}
-
-	return ret;
-}
-
 static int i2s_mcux_initialize(const struct device *dev)
 {
 	const struct i2s_mcux_config *dev_cfg = dev->config;
@@ -899,20 +892,10 @@ static int i2s_mcux_initialize(const struct device *dev)
 	uint32_t mclk;
 	int err;
 
-	if (!dev_data->dev_dma) {
-		LOG_ERR("DMA device not found");
-		return -ENODEV;
-	}
-
-	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->tx);
+	err = i2s_mcux_sai_dma_acquire_pair(dev_data->dev_dma, &dev_data->tx.dma,
+					    &dev_data->rx.dma);
 	if (err < 0) {
-		LOG_ERR("Failed to acquire TX DMA channel (%d)", err);
-		return err;
-	}
-
-	err = i2s_mcux_acquire_dma_channel(dev_data->dev_dma, &dev_data->rx);
-	if (err < 0) {
-		LOG_ERR("Failed to acquire RX DMA channel (%d)", err);
+		LOG_ERR("Failed to acquire the DMA channels (%d)", err);
 		return err;
 	}
 
@@ -929,19 +912,17 @@ static int i2s_mcux_initialize(const struct device *dev)
 	k_msgq_init(&dev_data->rx.out_queue, (char *)dev_data->rx_out_msgs,
 		    sizeof(struct i2s_mcux_sai_q_entry), CONFIG_I2S_RX_BLOCK_COUNT);
 
-	/* register ISR */
-	dev_cfg->irq_connect(dev);
-
 	if (dev_cfg->reset.dev != NULL) {
 		if (!device_is_ready(dev_cfg->reset.dev)) {
 			LOG_ERR("reset controller not ready");
-			return -ENODEV;
+			err = -ENODEV;
+			goto release_dma;
 		}
 
 		err = reset_line_deassert_dt(&dev_cfg->reset);
 		if (err != 0) {
 			LOG_ERR("Failed to deassert reset line (%d)", err);
-			return err;
+			goto release_dma;
 		}
 	}
 
@@ -949,8 +930,11 @@ static int i2s_mcux_initialize(const struct device *dev)
 	err = pinctrl_apply_state(dev_cfg->pinctrl, PINCTRL_STATE_DEFAULT);
 	if (err) {
 		LOG_ERR("mclk pinctrl setup failed (%d)", err);
-		return err;
+		goto release_dma;
 	}
+
+	/* register the ISR only once the device cannot fail to initialize */
+	dev_cfg->irq_connect(dev);
 
 	/*clock configuration*/
 	audio_clock_settings(dev);
@@ -991,6 +975,11 @@ static int i2s_mcux_initialize(const struct device *dev)
 	LOG_INF("Device %s initialized", dev->name);
 
 	return 0;
+
+release_dma:
+	i2s_mcux_sai_dma_release_pair(dev_data->dev_dma, &dev_data->tx.dma, &dev_data->rx.dma);
+
+	return err;
 }
 
 static DEVICE_API(i2s, i2s_mcux_driver_api) = {
@@ -1077,7 +1066,6 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.dest_burst_length = CONFIG_I2S_EDMA_BURST_SIZE,   \
 						.dma_callback = i2s_dma_tx_callback,               \
 						.complete_callback_en = 1,                         \
-						.error_callback_dis = 1,                           \
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.tx.dma_block,   \
 						.channel_direction = MEMORY_TO_PERIPHERAL,         \
@@ -1102,7 +1090,6 @@ static DEVICE_API(i2s, i2s_mcux_driver_api) = {
 						.dest_burst_length = CONFIG_I2S_EDMA_BURST_SIZE,   \
 						.dma_callback = i2s_dma_rx_callback,               \
 						.complete_callback_en = 1,                         \
-						.error_callback_dis = 1,                           \
 						.block_count = 1,                                  \
 						.head_block = &i2s_##i2s_id##_data.rx.dma_block,   \
 						.channel_direction = PERIPHERAL_TO_MEMORY,         \
