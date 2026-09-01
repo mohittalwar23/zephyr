@@ -9,7 +9,11 @@
 
 #include <zephyr/drivers/dma.h>
 
+#ifdef CONFIG_DMA_NXP_SDMA_BD_COUNT
+#define DMA_NXP_SDMA_BD_COUNT CONFIG_DMA_NXP_SDMA_BD_COUNT
+#else
 #define DMA_NXP_SDMA_BD_COUNT 2
+#endif
 
 struct dma_nxp_sdma_descriptor_state {
 	struct dma_status stat;
