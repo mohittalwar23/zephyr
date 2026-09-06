@@ -560,13 +560,28 @@ ZTEST(mcux_sai_stream, test_caps_report_directional_buffer_requirements)
 		      I2S_MCUX_SAI_RX_PREP_BLOCKS + 1U);
 }
 
-ZTEST(mcux_sai_stream, test_sdma_fifo_request_matches_nxp_transactional_driver)
+/*
+ * Linux's fsl_sai picks the burst first (FSL_SAI_MAXBURST_TX is 6 words) and
+ * derives the watermark as depth - maxburst. Deriving it the other way round,
+ * from a half-full watermark, asks for 64 words per request instead of 6.
+ */
+ZTEST(mcux_sai_stream, test_sdma_fifo_request_derives_watermark_from_a_small_burst)
 {
 	struct i2s_mcux_sai_tx_fifo_config config =
 		i2s_mcux_sai_stream_tx_fifo_config(128U, 4U, true);
 
-	zassert_equal(config.watermark, 64U);
-	zassert_equal(config.burst_length, 256U);
+	zassert_equal(config.burst_length, 6U * 4U, "burst must stay a few words");
+	zassert_equal(config.watermark, 128U - 6U, "watermark follows from the burst");
+}
+
+/* A FIFO smaller than the burst must not underflow the watermark. */
+ZTEST(mcux_sai_stream, test_sdma_fifo_request_handles_a_tiny_fifo)
+{
+	struct i2s_mcux_sai_tx_fifo_config config =
+		i2s_mcux_sai_stream_tx_fifo_config(4U, 4U, true);
+
+	zassert_equal(config.burst_length, 4U * 4U);
+	zassert_equal(config.watermark, 0U);
 }
 
 ZTEST(mcux_sai_stream, test_edma_fifo_request_preserves_single_word_burst)

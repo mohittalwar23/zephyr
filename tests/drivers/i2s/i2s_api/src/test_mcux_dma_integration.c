@@ -108,11 +108,20 @@ ZTEST(mcux_dma_integration, test_sdma_widths_use_mcux_command_encoding)
 	}
 }
 
+/*
+ * The MCUX HAL asserts srcWidth/destWidth of 1, 2, 3 or 4, and defines
+ * kSDMA_TransferSize3Bytes, so a 3 byte width is supported. Anything outside
+ * that range is not.
+ */
 ZTEST(mcux_dma_integration, test_sdma_rejects_unsupported_width)
 {
 	uint32_t encoded = UINT32_MAX;
 
-	zassert_equal(dma_nxp_sdma_encode_width(3U, &encoded), -EINVAL);
+	zassert_ok(dma_nxp_sdma_encode_width(3U, &encoded));
+	zassert_equal(encoded, 3U);
+
+	zassert_equal(dma_nxp_sdma_encode_width(0U, &encoded), -EINVAL);
+	zassert_equal(dma_nxp_sdma_encode_width(5U, &encoded), -EINVAL);
 }
 
 ZTEST(mcux_dma_integration, test_sdma_append_mode_is_explicit)
