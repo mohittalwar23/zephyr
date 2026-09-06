@@ -7,12 +7,25 @@
 #include <errno.h>
 #include <string.h>
 
+#include <zephyr/sys/util.h>
+
 #include "i2s_mcux_sai_stream.h"
 
 uint32_t i2s_mcux_sai_stream_channel_mask(uint32_t channel_mask)
 {
 	return channel_mask;
 }
+
+/*
+ * Words the DMA moves per SAI request when the transmitter is driven by SDMA.
+ *
+ * Linux's fsl_sai chooses this first (FSL_SAI_MAXBURST_TX is 6) and derives the
+ * FIFO watermark from it as depth - maxburst; imx-sdma then moves
+ * maxburst * word size per request. Deriving it the other way round - fixing the
+ * watermark at half the FIFO and asking for everything above it - requests an
+ * order of magnitude more per burst and leaves the FIFO to coast between them.
+ */
+#define I2S_MCUX_SAI_SDMA_MAXBURST_WORDS 6U
 
 struct i2s_mcux_sai_tx_fifo_config
 i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
@@ -21,8 +34,10 @@ i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
 	struct i2s_mcux_sai_tx_fifo_config config;
 
 	if (is_sdma) {
-		config.watermark = fifo_count / 2U;
-		config.burst_length = (fifo_count - config.watermark) * word_size_bytes;
+		uint32_t maxburst = MIN((uint32_t)I2S_MCUX_SAI_SDMA_MAXBURST_WORDS, fifo_count);
+
+		config.watermark = fifo_count - maxburst;
+		config.burst_length = maxburst * word_size_bytes;
 	} else {
 		config.watermark = fifo_count - 1U;
 		config.burst_length = word_size_bytes;
