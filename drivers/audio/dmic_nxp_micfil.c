@@ -587,7 +587,12 @@ static int nxp_micfil_init(const struct device *dev)
 			return -EINVAL;
 		}
 
-		uint32_t reg_div = clk_rate / micfil_clock_rate;
+		/* The CCM rate may be a few hertz below the nominal audio rate due
+		 * to fractional PLL residue. Flooring here would select the next
+		 * faster divider (95 instead of 96 for 196607997 Hz / 2048000 Hz),
+		 * making capture outrun playback and eventually exhaust the slab.
+		 */
+		uint32_t reg_div = DIV_ROUND_CLOSEST(clk_rate, micfil_clock_rate);
 
 		if (reg_div == 0U) {
 			reg_div = 1U;
