@@ -135,7 +135,8 @@ int dma_nxp_sdma_descriptor_prepare(struct dma_nxp_sdma_descriptor_state *state,
 		prepared.capacity += block->block_size;
 		block = block->next_block;
 	}
-	if (block != NULL) {
+	/* A cyclic list is circular: the last block links back to the head. */
+	if (block != NULL && block != config->head_block) {
 		return -EINVAL;
 	}
 

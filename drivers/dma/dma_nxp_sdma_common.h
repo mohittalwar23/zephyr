@@ -40,6 +40,7 @@ static inline int dma_nxp_sdma_encode_width(uint32_t width, uint32_t *encoded_wi
 	switch (width) {
 	case 1U:
 	case 2U:
+	case 3U:
 		*encoded_width = width;
 		return 0;
 	case 4U:
