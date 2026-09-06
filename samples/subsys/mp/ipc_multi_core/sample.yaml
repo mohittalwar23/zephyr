@@ -1,0 +1,19 @@
+sample:
+  name: MP IPC multi-core pipeline sample
+
+tests:
+  sample.mp.ipc_multi_core:
+    sysbuild: true
+    tags:
+      - mp
+      - ipc
+      - samples
+    platform_allow:
+      - mps2/an521/cpu0
+    integration_platforms:
+      - mps2/an521/cpu0
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "Received Frame .* over Real IPC"
