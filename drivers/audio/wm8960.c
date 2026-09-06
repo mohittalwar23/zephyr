@@ -785,20 +785,6 @@ static int wm8960_configure_pll(const struct device *dev, struct audio_codec_cfg
 
 	LOG_DBG("sys_out_freq is %d", data->sysclk_out_freq);
 
-	/*
-	 * Boards that route a single frame clock to the codec leave ADCLRC
-	 * unconnected, so the ADC has to take its frame clock from DACLRC.
-	 * That is what ALRCGPIO selects; without it the ADC is never clocked
-	 * and capture reads as silence.
-	 */
-	if (((const struct wm8960_config *)dev->config)->shared_lrclk) {
-		ret = wm8960_reg_update(dev, WM8960_IFACE2, WM8960_IFACE2_ALRCGPIO,
-					WM8960_IFACE2_ALRCGPIO);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
 	/* if in controller mode */
 	if ((cfg->dai_cfg.i2s.options & I2S_OPT_FRAME_CLK_TARGET) == I2S_OPT_FRAME_CLK_CONTROLLER) {
 		const struct wm8960_config *config = dev->config;
@@ -842,7 +828,9 @@ static int wm8960_configure_pll(const struct device *dev, struct audio_codec_cfg
 
 static int wm8960_configure_audio_interface(const struct device *dev, struct audio_codec_cfg *cfg)
 {
+	const struct wm8960_config *config = dev->config;
 	uint16_t iface1_val = 0;
+	int ret;
 
 	/* Configure audio format based on dai_type */
 	switch (cfg->dai_type) {
@@ -885,7 +873,27 @@ static int wm8960_configure_audio_interface(const struct device *dev, struct aud
 	}
 
 	/* Write audio interface configuration */
-	return wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	ret = wm8960_reg_write(dev, WM8960_IFACE1, iface1_val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/*
+	 * Boards that route a single frame clock leave ADCLRC unconnected, so
+	 * the ADC has to take its frame clock from DACLRC. Without it the ADC
+	 * is never clocked and capture reads as silence.
+	 *
+	 * Linux sets LRCM in ADDCTL2 for its wlf,shared-lrclk property. That
+	 * alone was measured to be insufficient on i.MX8MP: capture produced
+	 * only the noise floor until the ADCLRC pin function was reassigned as
+	 * well, which is what ALRCGPIO does.
+	 */
+	if (config->shared_lrclk) {
+		return wm8960_reg_update(dev, WM8960_IFACE2, WM8960_IFACE2_ALRCGPIO,
+					 WM8960_IFACE2_ALRCGPIO);
+	}
+
+	return 0;
 }
 
 static int wm8960_route_input(const struct device *dev, audio_channel_t channel, uint32_t input)
