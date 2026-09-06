@@ -20,6 +20,16 @@ LOG_MODULE_REGISTER(nxp_sdma);
 
 #define DMA_NXP_SDMA_CHAN_DEFAULT_PRIO 4
 
+/*
+ * Upper bound on the bytes the engine moves per peripheral DMA request.
+ * Consumers disagree on what dma_config's burst length means: i2s_mcux_sai
+ * reports the per-request burst (one word), while SOF's dai-zephyr reports the
+ * DAI FIFO depth (512 B for SAI). Honouring the larger reading makes the engine
+ * ask for more than the FIFO holds when it raises the request; the excess is
+ * discarded, draining the ring faster than real time while starving the FIFO.
+ */
+#define DMA_NXP_SDMA_MAX_WATERMARK 64U
+
 #define DT_DRV_COMPAT nxp_sdma
 
 BUILD_ASSERT(kSDMA_PeripheralNormal_SP == DMA_NXP_SDMA_PERIPHERAL_NORMAL_SP);
@@ -203,6 +213,10 @@ static bool dma_nxp_sdma_bd_owned(void *context, uint32_t index)
 {
 	struct sdma_channel_data *chan_data = context;
 
+	/* The engine clears Done from outside the DSP; the cached copy is stale. */
+	sys_cache_data_invd_range(&chan_data->bd_pool[index],
+				  sizeof(chan_data->bd_pool[index]));
+
 	return (chan_data->bd_pool[index].status & (uint8_t)kSDMA_BDStatusDone) != 0U;
 }
 
@@ -325,10 +339,6 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 			is_last, true, is_wrap, chan_data->transfer_cfg.type);
 		crt_bd++;
 	}
-
-	if (chan_data->append_mode) {
-		chan_data->bd_pool[bd_count - 1U].status |= (uint8_t)kSDMA_BDStatusWrap;
-	}
 }
 
 static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
@@ -447,15 +457,18 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	}
 
 	/*
-	 * The watermark is how many bytes the engine moves per peripheral DMA
-	 * request; it must match the consumer's burst length (e.g. the SAI word
-	 * size), not a fixed value, or the channel waits for data that never
-	 * arrives.
+	 * Take the caller's burst length, but never more than the FIFO is
+	 * guaranteed to hold when it raises the request.
 	 */
 	watermark = chan_data->direction == PERIPHERAL_TO_MEMORY ? config->source_burst_length
 								 : config->dest_burst_length;
-	if (watermark == 0) {
-		watermark = 64;
+	if (watermark > DMA_NXP_SDMA_MAX_WATERMARK) {
+		LOG_WRN("burst length %u exceeds the %u byte watermark bound; a burst "
+			"length is bytes per request, not the peripheral FIFO depth",
+			watermark, DMA_NXP_SDMA_MAX_WATERMARK);
+		watermark = DMA_NXP_SDMA_MAX_WATERMARK;
+	} else if (watermark == 0U) {
+		watermark = DMA_NXP_SDMA_MAX_WATERMARK;
 	}
 
 	/* prepare first block for transfer ...*/
