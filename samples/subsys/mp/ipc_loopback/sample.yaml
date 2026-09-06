@@ -1,0 +1,19 @@
+sample:
+  name: MP IPC loopback pipeline sample
+
+tests:
+  sample.mp.ipc_loopback:
+    tags:
+      - mp
+      - ipc
+      - samples
+    platform_allow:
+      - qemu_cortex_a53
+      - native_sim/native/64
+    integration_platforms:
+      - qemu_cortex_a53
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "Received Frame"
