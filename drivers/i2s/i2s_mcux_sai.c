@@ -401,6 +401,29 @@ static int i2s_mcux_config(const struct device *dev, enum i2s_dir dir,
 		enable_mclk_direction(dev, dev_cfg->mclk_output);
 	}
 
+#ifndef CONFIG_I2S_HAS_PLL_SETTING
+	/*
+	 * The MCLK is programmed once at init to 12.288 MHz, which is the
+	 * 48 kHz sample-rate family. It cannot produce a 44.1 kHz frame clock
+	 * by any integer divider, so a 44.1 kHz stream left on it comes out as
+	 * noise rather than silence. Ask for the MCLK of the family the
+	 * requested rate belongs to and let the CCM driver source it.
+	 *
+	 * Taken from upstream PR #114882 by Ryan Erickson <ryan.erickson@ezurio.com>,
+	 * which adds the same selection for i.MX93.
+	 */
+	{
+		uint32_t desired_mclk;
+
+		if ((i2s_cfg->frame_clk_freq % 11025U) == 0U) {
+			desired_mclk = 11289600U;   /* 44.1 kHz family */
+		} else {
+			desired_mclk = 12288000U;   /* 48 kHz family (default) */
+		}
+		set_mclk_rate(dev, desired_mclk);
+	}
+#endif
+
 	get_mclk_rate(dev, &mclk);
 	LOG_DBG("mclk is %d", mclk);
 
