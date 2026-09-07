@@ -5,6 +5,7 @@
  */
 
 #include <zephyr/device.h>
+#include <fsl_audiomix.h>
 #include <fsl_clock.h>
 #include <fsl_common.h>
 #include <fsl_rdc.h>
@@ -14,6 +15,58 @@
 #include <zephyr/cache.h>
 
 #include <zephyr/dt-bindings/rdc/imx_rdc.h>
+
+/*
+ * The audio peripherals all live behind the AUDIOMIX power domain, which only
+ * boot firmware can power up and hand to the M7. Enabling any of them without
+ * that handoff faults on the first AUDIOMIX access, so it is refused here.
+ */
+#define IMX8M_M7_SAI3_ACTIVE DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai3))
+#define IMX8M_M7_SDMA3_ACTIVE DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sdma3))
+#define IMX8M_M7_MICFIL_ACTIVE DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(micfil))
+#define IMX8M_M7_AUDIOMIX_ACTIVE                                                \
+	(IMX8M_M7_SAI3_ACTIVE || IMX8M_M7_SDMA3_ACTIVE || IMX8M_M7_MICFIL_ACTIVE)
+
+BUILD_ASSERT(!IMX8M_M7_AUDIOMIX_ACTIVE ||
+	     IS_ENABLED(CONFIG_IMX8M_M7_AUDIOMIX_BOOT_HANDOFF),
+	     "SAI3, SDMA3, and MICFIL require boot-firmware AUDIOMIX power handoff");
+
+/*
+ * Each AUDIOMIX attachment identity encodes one (register, field, value)
+ * triple, and AUDIOMIX_AttachClk() writes that field. Two identities sharing a
+ * field would make the second call silently replace the first, which is how
+ * SAI3 MCLK1 previously ended up on the SAI3 MCLK pin instead of the CCM root.
+ * Name each identity once, so the identity asserted below is the one emitted.
+ */
+#define IMX8M_M7_SAI3_MCLK1_ATTACH kAUDIOMIX_Attach_SAI3_MCLK1_To_SAI3_ROOT
+#define IMX8M_M7_PDM_ROOT_ATTACH   kAUDIOMIX_Attach_PDM_Root_to_CCM_PDM
+
+#define IMX8M_M7_ATTACH_FIELD(id, offset, mask)                                 \
+	(GET_AUDIOMIX_ATTACH_ID_OFFSET(id) == (offset) &&                       \
+	 GET_AUDIOMIX_ATTACH_ID_MASK(id) == (mask))
+
+#if IMX8M_M7_SAI3_ACTIVE
+/* AUDIOMIX 0x308 bit 0 = 0: SAI3 MCLK1 follows the CCM SAI3 root. */
+BUILD_ASSERT(IMX8M_M7_ATTACH_FIELD(IMX8M_M7_SAI3_MCLK1_ATTACH, 0x308U, 0x1U) &&
+	     GET_AUDIOMIX_ATTACH_ID_value(IMX8M_M7_SAI3_MCLK1_ATTACH) == 0U,
+	     "SAI3 MCLK1 must follow the CCM SAI3 root, not the SAI3 MCLK pin");
+#endif
+
+#if IMX8M_M7_MICFIL_ACTIVE
+/* AUDIOMIX 0x318 bits 1:0 = 0: the PDM root follows the CCM PDM clock. */
+BUILD_ASSERT(IMX8M_M7_ATTACH_FIELD(IMX8M_M7_PDM_ROOT_ATTACH, 0x318U, 0x3U) &&
+	     GET_AUDIOMIX_ATTACH_ID_value(IMX8M_M7_PDM_ROOT_ATTACH) == 0U,
+	     "the PDM root must follow the CCM PDM clock");
+#endif
+
+#if IMX8M_M7_SAI3_ACTIVE && IMX8M_M7_MICFIL_ACTIVE
+BUILD_ASSERT(GET_AUDIOMIX_ATTACH_ID_OFFSET(IMX8M_M7_SAI3_MCLK1_ATTACH) !=
+		     GET_AUDIOMIX_ATTACH_ID_OFFSET(IMX8M_M7_PDM_ROOT_ATTACH) ||
+	     (GET_AUDIOMIX_ATTACH_ID_MASK(IMX8M_M7_SAI3_MCLK1_ATTACH) &
+	      GET_AUDIOMIX_ATTACH_ID_MASK(IMX8M_M7_PDM_ROOT_ATTACH)) == 0U,
+	     "the AUDIOMIX attachments must not write the same register field");
+#endif
+
 
 /*
  * AUDIO PLL1 is a fractional PLL:
@@ -140,8 +193,7 @@ const ccm_analog_integer_pll_config_t g_sysPll3Config = {
 	.postDiv = 2U, /*!< SYSTEM PLL3 frequency  = 600MHZ */
 };
 
-#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_sdma) || \
-	DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+#if defined(CONFIG_IMX8M_M7_AUDIO_PLL1) && IMX8M_M7_AUDIOMIX_ACTIVE
 /* Fractional PLLs: Fout = (mainDiv + dsm / 65536) * refSel / (preDiv * 2^postDiv) */
 /* AUDIO PLL1 configuration */
 const ccm_analog_frac_pll_config_t g_audioPll1Config = {
@@ -229,8 +281,7 @@ __weak void SOC_ClockInit(void)
 #endif
 #endif
 
-#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_sdma) || \
-	DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+#if defined(CONFIG_IMX8M_M7_AUDIO_PLL1) && IMX8M_M7_AUDIOMIX_ACTIVE
 	/* Enable the CCGR gate for AudioPLL1 in Domain 1 */
 	CLOCK_ControlGate(kCLOCK_AudioPll1Gate, kCLOCK_ClockNeededAll);
 	/* Init AUDIO PLL1 to 393216000HZ for the 48 kHz sample rate family */
@@ -238,16 +289,15 @@ __weak void SOC_ClockInit(void)
 
 	/*
 	 * AUDIO AHB is the bus clock root shared by the AUDIOMIX peripherals
-	 * (SAI, SDMA2/3, MICFIL). Set it to SYSTEM PLL1 800MHZ / 2 = 400MHZ and
-	 * enable the AUDIOMIX CCGR gate. The per-IP gates inside AUDIOMIX are
-	 * managed by the clock control driver.
+	 * (SAI, SDMA2/3, MICFIL). Set it to SYSTEM PLL1 800MHZ / 2 = 400MHZ.
+	 * The AUDIOMIX CCGR gate is enabled below whoever owns the PLL, and the
+	 * per-IP gates inside AUDIOMIX are managed by the clock control driver.
 	 */
 	CLOCK_SetRootMux(kCLOCK_RootAudioAhb, kCLOCK_AudioAhbRootmuxSysPll1);
 	CLOCK_SetRootDivider(kCLOCK_RootAudioAhb, 1U, 2U);
-	CLOCK_EnableClock(kCLOCK_Audio);
 #endif
 
-#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_sai) || DT_HAS_COMPAT_STATUS_OKAY(nxp_mcux_i2s)
+#if defined(CONFIG_IMX8M_M7_AUDIO_PLL1) && IMX8M_M7_SAI3_ACTIVE
 	/* Set SAI3 source to AUDIO PLL1 393216000HZ / 32 = 12288000HZ (MCLK) */
 	CLOCK_SetRootMux(kCLOCK_RootSai3, kCLOCK_SaiRootmuxAudioPll1);
 	CLOCK_SetRootDivider(kCLOCK_RootSai3, 1U, IMX8M_M7_SAI3_ROOT_DIVIDER);
@@ -258,14 +308,34 @@ __weak void SOC_ClockInit(void)
 	CLOCK_EnableRoot(kCLOCK_RootSai3);
 #endif
 
-#if DT_HAS_COMPAT_STATUS_OKAY(nxp_dai_micfil)
+#if defined(CONFIG_IMX8M_M7_AUDIO_PLL1) && IMX8M_M7_MICFIL_ACTIVE
 	/*
-	 * Set PDM source to AUDIO PLL1 393216000HZ / 2 = 196608000HZ,
-	 * matching the rate Linux uses for MICFIL on i.MX8MP.
+	 * Set PDM source to AUDIO PLL1 393216000HZ / 2 = 196608000HZ, the rate
+	 * Linux uses for MICFIL on i.MX8MP. PDM_SetSampleRateConfig() divides
+	 * this root, not the PLL.
 	 */
 	CLOCK_SetRootMux(kCLOCK_RootPdm, kCLOCK_PdmRootmuxAudioPll1);
 	CLOCK_SetRootDivider(kCLOCK_RootPdm, 1U, IMX8M_M7_PDM_ROOT_DIVIDER);
 	CLOCK_EnableRoot(kCLOCK_RootPdm);
+#endif
+
+#if IMX8M_M7_AUDIOMIX_ACTIVE
+	/*
+	 * The AUDIOMIX CCGR gate and the clock attachments are needed whoever
+	 * owns Audio PLL1: without them the M7 cannot reach the roots that boot
+	 * firmware handed over. Each attachment identity is one register field,
+	 * so exactly one identity per field is written; a second call to the
+	 * same field would silently replace the first.
+	 */
+	CLOCK_EnableClock(kCLOCK_Audio);
+#endif
+
+#if IMX8M_M7_SAI3_ACTIVE
+	AUDIOMIX_AttachClk(AUDIOMIX, IMX8M_M7_SAI3_MCLK1_ATTACH);
+#endif
+
+#if IMX8M_M7_MICFIL_ACTIVE
+	AUDIOMIX_AttachClk(AUDIOMIX, IMX8M_M7_PDM_ROOT_ATTACH);
 #endif
 
 	CLOCK_EnableClock(kCLOCK_Rdc);   /* Enable RDC clock */

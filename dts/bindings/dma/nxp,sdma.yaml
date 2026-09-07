@@ -17,6 +17,8 @@ include: [dma-controller.yaml, base.yaml]
 properties:
   reg:
     required: true
+  clocks:
+    description: SDMA peripheral clock
   "#dma-cells":
     const: 2
   dma-requests:
