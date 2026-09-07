@@ -11,6 +11,9 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/dt-bindings/clock/imx_ccm.h>
 #include <fsl_clock.h>
+#if defined(CONFIG_SOC_MIMX8ML8_M7)
+#include <soc.h>
+#endif
 
 #if defined(CONFIG_SOC_MIMX8ML8)
 BUILD_ASSERT(IMX_CCM_SAI1_CLK == 0x0B00UL);
@@ -352,6 +355,44 @@ static int mcux_ccm_off(const struct device *dev,
 	}
 }
 
+#if defined(CONFIG_SOC_MIMX8ML8_M7)
+/*
+ * The measured audio root rates truncate a Hz below their targets because
+ * AUDIO PLL1 settles just under its nominal rate. Audio consumers match the
+ * MCLK to frame-clock ratio with exact integer division, so report the roots
+ * from the nominal rate instead, the way the i.MX93 SAI roots already do.
+ * Roots that are not on AUDIO PLL1 keep the measured rate.
+ */
+static uint32_t imx8m_audio_root_rate(clock_root_control_t root, uint32_t audio_pll1_mux,
+				      uint32_t measured_rate)
+{
+	uint32_t pre = CLOCK_GetRootPreDivider(root);
+	uint32_t post = CLOCK_GetRootPostDivider(root);
+	uint32_t pll;
+
+	if (CLOCK_GetRootMux(root) != audio_pll1_mux || pre == 0U || post == 0U) {
+		return measured_rate;
+	}
+
+	/*
+	 * Selecting the AUDIO PLL1 mux says nothing about the rate the PLL is
+	 * running at. With CONFIG_IMX8M_M7_AUDIO_PLL1=n the boot firmware owns
+	 * it and may have programmed another family - 361.2672 MHz for the
+	 * 44.1 kHz rates, say - in which case the nominal rate would be a
+	 * number with no relation to the hardware. Substitute it only when the
+	 * PLL is within its own fractional residue of nominal, and report what
+	 * was measured otherwise.
+	 */
+	pll = CLOCK_GetPllFreq(kCLOCK_AudioPll1Ctrl);
+	if (pll > IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE ||
+	    pll + IMX8M_M7_AUDIO_PLL1_RESIDUE < IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE) {
+		return measured_rate;
+	}
+
+	return (uint32_t)(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / pre / post);
+}
+#endif /* CONFIG_SOC_MIMX8ML8_M7 */
+
 static int mcux_ccm_get_subsys_rate(const struct device *dev,
 				    clock_control_subsys_t sub_system,
 				    uint32_t *rate)
@@ -692,6 +733,24 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 	} break;
 #endif
 
+#if defined(CONFIG_SOC_MIMX8ML8_M7)
+	case IMX_CCM_SAI1_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai1, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai1ClkRoot));
+		break;
+	case IMX_CCM_SAI2_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai2, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai2ClkRoot));
+		break;
+	case IMX_CCM_SAI3_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootSai3, kCLOCK_SaiRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_Sai3ClkRoot));
+		break;
+	case IMX_CCM_PDM_CLK:
+		*rate = imx8m_audio_root_rate(kCLOCK_RootPdm, kCLOCK_PdmRootmuxAudioPll1,
+					      CLOCK_GetClockRootFreq(kCLOCK_PdmClkRoot));
+		break;
+#endif /* CONFIG_SOC_MIMX8ML8_M7 */
 	}
 
 	return 0;
