@@ -789,33 +789,82 @@ static int CCM_SET_FUNC_ATTR mcux_ccm_set_subsys_rate(const struct device *dev,
 #if defined(CONFIG_SOC_MIMX8ML8_M7)
 	case IMX_CCM_SAI1_CLK:
 	case IMX_CCM_SAI2_CLK:
-	case IMX_CCM_SAI3_CLK:
+	case IMX_CCM_SAI3_CLK: {
+		static const clock_root_control_t sai_roots[] = {
+			kCLOCK_RootSai1, kCLOCK_RootSai2, kCLOCK_RootSai3,
+		};
+		uint32_t instance = clock_name & IMX_CCM_INSTANCE_MASK;
+		clock_root_control_t root;
+		uint32_t nominal, mux, div, current;
+		int ret;
+
+		if (instance >= ARRAY_SIZE(sai_roots) || clock_rate == 0U) {
+			return -EINVAL;
+		}
+		root = sai_roots[instance];
+
+		/*
+		 * i.MX8MP has two audio PLLs. Pick the one whose family the
+		 * requested rate belongs to and move the root's mux, rather
+		 * than reprogramming a PLL: AUDIO PLL1 also feeds the PDM root,
+		 * so retuning it would move MICFIL underneath a running
+		 * capture. This is what Linux does in
+		 * fsl_asoc_reparent_pll_clocks(), including the % 8000 rule.
+		 */
+		if ((clock_rate % 8000U) == 0U) {
+			nominal = (uint32_t)IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE;
+			mux = kCLOCK_SaiRootmuxAudioPll1;
+		} else {
+			nominal = (uint32_t)IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE;
+			mux = kCLOCK_SaiRootmuxAudioPll2;
+		}
+
+		if ((nominal % clock_rate) != 0U) {
+			LOG_WRN("audio clock 0x%x: %u Hz does not divide %u Hz exactly",
+				clock_name, clock_rate, nominal);
+			return -ENOTSUP;
+		}
+
+		div = nominal / clock_rate;
+
+		CLOCK_SetRootMux(root, mux);
+		CLOCK_SetRootDivider(root, 1U, div);
+		CLOCK_EnableRoot(root);
+
+		ret = mcux_ccm_get_subsys_rate(dev, subsys, &current);
+		if (ret < 0) {
+			return ret;
+		}
+		if (current != clock_rate) {
+			LOG_ERR("audio clock 0x%x: asked %u Hz, root reads %u Hz",
+				clock_name, clock_rate, current);
+			return -EIO;
+		}
+
+		return 0;
+	}
+
 	case IMX_CCM_PDM_CLK: {
 		uint32_t current;
 		int ret;
 
 		/*
-		 * The audio roots are programmed once from AUDIO PLL1 at boot,
-		 * so the only rate that can be served is the one already
-		 * running. Reaching another sample-rate family needs the PLL
-		 * reprogrammed, which this driver does not do. Refuse rather than
-		 * return success and leave the root where it was: the callers
-		 * of clock_control_set_rate() in the SAI drivers discard the
-		 * return value, and a silently wrong MCLK reaches the user as
-		 * silence from the codec.
+		 * The PDM root stays on AUDIO PLL1. 361267200/2 is not a rate
+		 * MICFIL wants, so only the rate it is already running can be
+		 * served. Refuse anything else rather than returning success
+		 * and leaving the root where it was: the SAI drivers discard
+		 * this return value and a silently wrong clock reaches the user
+		 * as silence.
 		 */
 		ret = mcux_ccm_get_subsys_rate(dev, subsys, &current);
 		if (ret < 0) {
 			return ret;
 		}
-
 		if (current != clock_rate) {
-			LOG_WRN("cannot set audio clock 0x%x to %u Hz; the root "
-				"is at %u Hz and reprogramming AUDIO PLL1 is not supported",
-				clock_name, clock_rate, current);
+			LOG_WRN("cannot set the PDM clock to %u Hz; the root is at %u Hz",
+				clock_rate, current);
 			return -ENOTSUP;
 		}
-
 		return 0;
 	}
 #endif /* CONFIG_SOC_MIMX8ML8_M7 */
