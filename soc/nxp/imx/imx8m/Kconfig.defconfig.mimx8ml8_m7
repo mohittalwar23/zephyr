@@ -40,4 +40,12 @@ config NUM_IRQS
 	# must be >= the highest interrupt number used
 	default 159
 
+if DAI_NXP_SAI
+
+config SAI_HAS_MCLK_CONFIG_OPTION
+	# the i.MX8MP SAI IP has the MCR register (FSL_FEATURE_SAI_HAS_MCR)
+	default y
+
+endif # DAI_NXP_SAI
+
 endif # SOC_MIMX8ML8_M7
