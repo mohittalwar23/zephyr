@@ -36,6 +36,15 @@ extern "C" {
  */
 #define IMX8M_M7_AUDIO_PLL1_RESIDUE 8ULL
 
+/*
+ * Nominal AUDIO PLL2 rate. i.MX8MP has two audio PLLs; Linux pins PLL1 to the
+ * 8 kHz sample-rate family and PLL2 to the 11.025 kHz family and reparents the
+ * SAI clock between them rather than reprogramming either. We do the same, so
+ * a 44.1 kHz stream never disturbs the PDM root, which stays on PLL1.
+ * The same residue applies: the coefficients settle 4 Hz below this.
+ */
+#define IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE 361267200ULL
+
 #endif /* !_ASMLANGUAGE */
 
 #ifdef __cplusplus
