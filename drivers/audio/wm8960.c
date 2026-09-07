@@ -2158,8 +2158,17 @@ static int wm8960_get_caps(const struct device *dev, struct audio_caps *caps)
 	caps->min_total_channels = 1U;
 	caps->max_total_channels = 2U;
 	/* 256/384/512 * fs dividers from a 48 kHz-family MCLK */
-	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
-				       AUDIO_SAMPLE_RATE_32000 | AUDIO_SAMPLE_RATE_48000;
+	/*
+	 * Every rate the driver's clock table can reach, via the SYSCLK
+	 * dividers or the PLL. 44.1 kHz and its family come from the PLL path,
+	 * which wm8960_configure_pll() implements; omitting them made a
+	 * negotiating consumer refuse a stream the hardware can carry.
+	 */
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_11025 |
+				       AUDIO_SAMPLE_RATE_12000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_22050 | AUDIO_SAMPLE_RATE_24000 |
+				       AUDIO_SAMPLE_RATE_32000 | AUDIO_SAMPLE_RATE_44100 |
+				       AUDIO_SAMPLE_RATE_48000;
 	caps->supported_bit_widths =
 		AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
 	/* the codec holds no buffers of its own */

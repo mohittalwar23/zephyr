@@ -89,10 +89,19 @@ int main(void)
 		goto err;
 	}
 
+#if CONFIG_SAMPLE_AUDIO_RATE > 0
+	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM,
+					  MPIPE_CAPS_FRAME_INTERVAL, MPIPE_TYPE_UINT, 10000,
+					  MPIPE_CAPS_NUM_OF_CHANNEL, MPIPE_TYPE_UINT, 2,
+					  MPIPE_CAPS_SAMPLE_RATE, MPIPE_TYPE_UINT,
+					  CONFIG_SAMPLE_AUDIO_RATE,
+					  MPIPE_CAPS_END);
+#else
 	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM,
 					  MPIPE_CAPS_FRAME_INTERVAL, MPIPE_TYPE_UINT, 10000,
 					  MPIPE_CAPS_NUM_OF_CHANNEL, MPIPE_TYPE_UINT, 2,
 					  MPIPE_CAPS_END);
+#endif
 	if (ret < 0) {
 		goto err;
 	}
