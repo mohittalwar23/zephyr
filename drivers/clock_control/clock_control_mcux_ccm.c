@@ -774,6 +774,40 @@ static int CCM_SET_FUNC_ATTR mcux_ccm_set_subsys_rate(const struct device *dev,
 	uint32_t clock_rate = (uintptr_t)rate;
 
 	switch (clock_name) {
+#if defined(CONFIG_SOC_MIMX8ML8_M7)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+	case IMX_CCM_PDM_CLK: {
+		uint32_t current;
+		int ret;
+
+		/*
+		 * The audio roots are programmed once from AUDIO PLL1 at boot,
+		 * so the only rate that can be served is the one already
+		 * running. Reaching another sample-rate family needs the PLL
+		 * reprogrammed, which this driver does not do. Refuse rather than
+		 * return success and leave the root where it was: the callers
+		 * of clock_control_set_rate() in the SAI drivers discard the
+		 * return value, and a silently wrong MCLK reaches the user as
+		 * silence from the codec.
+		 */
+		ret = mcux_ccm_get_subsys_rate(dev, subsys, &current);
+		if (ret < 0) {
+			return ret;
+		}
+
+		if (current != clock_rate) {
+			LOG_WRN("cannot set audio clock 0x%x to %u Hz; the root "
+				"is at %u Hz and reprogramming AUDIO PLL1 is not supported",
+				clock_name, clock_rate, current);
+			return -ENOTSUP;
+		}
+
+		return 0;
+	}
+#endif /* CONFIG_SOC_MIMX8ML8_M7 */
+
 	case IMX_CCM_FLEXSPI_CLK:
 		__fallthrough;
 	case IMX_CCM_FLEXSPI2_CLK:
