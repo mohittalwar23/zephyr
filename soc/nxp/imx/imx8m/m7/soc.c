@@ -94,6 +94,19 @@ BUILD_ASSERT(GET_AUDIOMIX_ATTACH_ID_OFFSET(IMX8M_M7_SAI3_MCLK1_ATTACH) !=
 	 BIT64(IMX8M_M7_AUDIO_PLL1_POST_DIV))
 
 
+/* AUDIO PLL2 carries the 11.025 kHz sample-rate family. Same reference. */
+#define IMX8M_M7_AUDIO_PLL2_MAIN_DIV 361ULL
+#define IMX8M_M7_AUDIO_PLL2_DSM 17511ULL
+#define IMX8M_M7_AUDIO_PLL2_PRE_DIV 3ULL
+#define IMX8M_M7_AUDIO_PLL2_POST_DIV 3ULL
+
+#define IMX8M_M7_AUDIO_PLL2_NUM							\
+	((IMX8M_M7_AUDIO_PLL2_MAIN_DIV * IMX8M_M7_AUDIO_PLL1_DSM_SCALE +	\
+	  IMX8M_M7_AUDIO_PLL2_DSM) * IMX8M_M7_AUDIO_PLL1_REF_RATE)
+#define IMX8M_M7_AUDIO_PLL2_DEN							\
+	(IMX8M_M7_AUDIO_PLL1_DSM_SCALE * IMX8M_M7_AUDIO_PLL2_PRE_DIV *		\
+	 BIT64(IMX8M_M7_AUDIO_PLL2_POST_DIV))
+
 #define IMX8M_M7_SAI3_ROOT_DIVIDER 32ULL
 #define IMX8M_M7_PDM_ROOT_DIVIDER 2ULL
 #define IMX8M_M7_PDM_ROOT_NOMINAL 196608000ULL
@@ -123,6 +136,14 @@ BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NUM / IMX8M_M7_AUDIO_PLL1_DEN <=
  */
 BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / IMX8M_M7_SAI3_ROOT_DIVIDER == 12288000ULL,
 	     "SAI3 MCLK must be 12.288 MHz");
+
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL2_NUM / IMX8M_M7_AUDIO_PLL2_DEN <=
+		     IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE &&
+	     IMX8M_M7_AUDIO_PLL2_NUM / IMX8M_M7_AUDIO_PLL2_DEN >=
+		     IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE - IMX8M_M7_AUDIO_PLL1_RESIDUE,
+	     "AUDIO PLL2 coefficients must produce 361.2672 MHz within the residue");
+BUILD_ASSERT(IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE / IMX8M_M7_SAI3_ROOT_DIVIDER == 11289600ULL,
+	     "the 44.1 kHz family MCLK must be 11.2896 MHz");
 BUILD_ASSERT(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / IMX8M_M7_PDM_ROOT_DIVIDER ==
 		     IMX8M_M7_PDM_ROOT_NOMINAL,
 	     "PDM root must be 196.608 MHz");
@@ -202,6 +223,15 @@ const ccm_analog_frac_pll_config_t g_audioPll1Config = {
 	.dsm = IMX8M_M7_AUDIO_PLL1_DSM,
 	.preDiv = IMX8M_M7_AUDIO_PLL1_PRE_DIV,
 	.postDiv = IMX8M_M7_AUDIO_PLL1_POST_DIV, /*!< AUDIO PLL1 frequency = 393216000HZ */
+};
+
+/* AUDIO PLL2 configuration, 11.025 kHz sample-rate family */
+const ccm_analog_frac_pll_config_t g_audioPll2Config = {
+	.refSel = IMX8M_M7_AUDIO_PLL1_REF_SEL, /*!< PLL reference OSC24M */
+	.mainDiv = IMX8M_M7_AUDIO_PLL2_MAIN_DIV,
+	.dsm = IMX8M_M7_AUDIO_PLL2_DSM,
+	.preDiv = IMX8M_M7_AUDIO_PLL2_PRE_DIV,
+	.postDiv = IMX8M_M7_AUDIO_PLL2_POST_DIV, /*!< AUDIO PLL2 frequency = 361267200HZ */
 };
 #endif
 
@@ -286,6 +316,14 @@ __weak void SOC_ClockInit(void)
 	CLOCK_ControlGate(kCLOCK_AudioPll1Gate, kCLOCK_ClockNeededAll);
 	/* Init AUDIO PLL1 to 393216000HZ for the 48 kHz sample rate family */
 	CLOCK_InitAudioPll1(&g_audioPll1Config);
+
+	/*
+	 * AUDIO PLL2 is the 11.025 kHz family source. Bring it up alongside
+	 * PLL1 so a 44.1 kHz stream is a root-mux write rather than a PLL
+	 * reprogram; PLL1 also feeds the PDM root and must not move.
+	 */
+	CLOCK_ControlGate(kCLOCK_AudioPll2Gate, kCLOCK_ClockNeededAll);
+	CLOCK_InitAudioPll2(&g_audioPll2Config);
 
 	/*
 	 * AUDIO AHB is the bus clock root shared by the AUDIOMIX peripherals
