@@ -10,6 +10,11 @@
 		i2s-node1 = &sai3;
 	};
 
+	chosen {
+		/delete-property/ zephyr,console;
+		/delete-property/ zephyr,shell-uart;
+	};
+
 	sdma1_fixture: dma@30bd0000 {
 		compatible = "nxp,sdma";
 		reg = <0x30bd0000 DT_SIZE_K(64)>;
@@ -21,7 +26,16 @@
 	};
 };
 
+&ccm {
+	status = "disabled";
+};
+
 &sdma3 {
+	/*
+	 * This fixture keeps the CCM provider disabled, so SDMA3 cannot resolve
+	 * its CCM clock specification here.
+	 */
+	/delete-property/ clocks;
 	status = "okay";
 };
 
@@ -29,9 +43,15 @@
 	/delete-property/ dai-index;
 	/delete-property/ mclk-is-output;
 	compatible = "nxp,mcux-i2s";
-	nxp,tx-channel = <1>;
+	clocks = <&sai3_mclk1>;
+	clock-names = "mclk1";
+	nxp,tx-channel = <0>;
 	mclk-output;
 	pinctrl-0 = <&sai3_default>;
 	pinctrl-names = "default";
 	status = "okay";
+};
+
+&uart4 {
+	status = "disabled";
 };
