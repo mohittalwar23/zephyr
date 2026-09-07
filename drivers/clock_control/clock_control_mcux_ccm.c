@@ -12,6 +12,16 @@
 #include <zephyr/dt-bindings/clock/imx_ccm.h>
 #include <fsl_clock.h>
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+BUILD_ASSERT(IMX_CCM_SAI1_CLK == 0x0B00UL);
+BUILD_ASSERT(IMX_CCM_SAI2_CLK == 0x0B01UL);
+BUILD_ASSERT(IMX_CCM_SAI3_CLK == 0x0B02UL);
+BUILD_ASSERT(IMX_CCM_PDM_CLK == 0x1900UL);
+BUILD_ASSERT(IMX_CCM_SDMA1_CLK == 0x1A00UL);
+BUILD_ASSERT(IMX_CCM_SDMA2_CLK == 0x1A01UL);
+BUILD_ASSERT(IMX_CCM_SDMA3_CLK == 0x1A02UL);
+#endif
+
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 #include <main/ipc.h>
 #endif
@@ -84,7 +94,34 @@ static const clock_ip_name_t sai_clocks[] = {
 	kCLOCK_AUDIO_Sai3,
 };
 #endif
+
 #endif /* CONFIG_DAI_NXP_SAI */
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sai_clocks[] = {
+	kCLOCK_Sai1,
+	kCLOCK_Sai2,
+	kCLOCK_Sai3,
+};
+
+/*
+ * The MCLK1 gates live in AUDIOMIX next to the IPG gates and feed the
+ * SAI bit clock / master clock output, so manage them together.
+ */
+static const clock_ip_name_t sai_mclk_clocks[] = {
+	kCLOCK_Sai1_Mclk1,
+	kCLOCK_Sai2_Mclk1,
+	kCLOCK_Sai3_Mclk1,
+};
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+static const clock_ip_name_t sdma_clocks[] = {
+	kCLOCK_Sdma1,
+	kCLOCK_Sdma2,
+	kCLOCK_Sdma3,
+};
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
 
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QX6_ADSP) || defined(CONFIG_SOC_MIMX8QM6_ADSP)
@@ -168,6 +205,27 @@ static int mcux_ccm_on(const struct device *dev,
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_EnableClock(sai_clocks[instance]);
+		CLOCK_EnableClock(sai_mclk_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_EnableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_EnableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
+
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
 	case IMX_CCM_ESAI0_CLK:
@@ -238,6 +296,27 @@ static int mcux_ccm_off(const struct device *dev,
 		return 0;
 #endif
 #endif /* CONFIG_DAI_NXP_SAI */
+
+#if defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SAI1_CLK:
+	case IMX_CCM_SAI2_CLK:
+	case IMX_CCM_SAI3_CLK:
+		CLOCK_DisableClock(sai_mclk_clocks[instance]);
+		CLOCK_DisableClock(sai_clocks[instance]);
+		return 0;
+
+	case IMX_CCM_PDM_CLK:
+		CLOCK_DisableClock(kCLOCK_Pdm);
+		return 0;
+#endif /* CONFIG_SOC_MIMX8ML8 */
+
+#if defined(CONFIG_DMA_NXP_SDMA) && defined(CONFIG_SOC_MIMX8ML8)
+	case IMX_CCM_SDMA1_CLK:
+	case IMX_CCM_SDMA2_CLK:
+	case IMX_CCM_SDMA3_CLK:
+		CLOCK_DisableClock(sdma_clocks[instance]);
+		return 0;
+#endif /* CONFIG_DMA_NXP_SDMA && CONFIG_SOC_MIMX8ML8 */
 
 #ifdef CONFIG_DAI_NXP_ESAI
 #if defined(CONFIG_SOC_MIMX8QM6_ADSP) || defined(CONFIG_SOC_MIMX8QX6_ADSP)
@@ -479,9 +558,8 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 #endif
 
 /*
- * These rates are derived from the RT-series SAI root dividers. i.MX8M has no
- * such roots and the divider symbols do not exist for it, so the block must not
- * be compiled there.
+ * i.MX8M provides these rates from its own clock roots below; the divider
+ * symbols used here exist only on the RT series.
  */
 #if defined(CONFIG_I2S_MCUX_SAI) && !defined(CONFIG_SOC_MIMX8ML8)
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai1))
@@ -613,6 +691,7 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 
 	} break;
 #endif
+
 	}
 
 	return 0;
