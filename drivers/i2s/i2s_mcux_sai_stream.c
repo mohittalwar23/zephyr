@@ -51,6 +51,25 @@ i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
 	return config;
 }
 
+struct i2s_mcux_sai_rx_fifo_config
+i2s_mcux_sai_stream_rx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
+				   bool is_sdma)
+{
+	struct i2s_mcux_sai_rx_fifo_config config;
+
+	if (is_sdma) {
+		uint32_t maxburst = MIN((uint32_t)I2S_MCUX_SAI_SDMA_MAXBURST_WORDS, fifo_count);
+
+		config.watermark = maxburst - 1U;
+		config.burst_length = maxburst * word_size_bytes;
+	} else {
+		config.watermark = 0U;
+		config.burst_length = word_size_bytes;
+	}
+
+	return config;
+}
+
 void i2s_mcux_sai_stream_purge(struct i2s_mcux_sai_stream *strm, bool in_drop, bool out_drop)
 {
 	struct i2s_mcux_sai_q_entry q_entry;

@@ -27,6 +27,11 @@ struct i2s_mcux_sai_tx_fifo_config {
 	uint32_t burst_length;
 };
 
+struct i2s_mcux_sai_rx_fifo_config {
+	uint32_t watermark;
+	uint32_t burst_length;
+};
+
 /*
  * The SAI driver relies on the DMA controller managing a circular queue of
  * blocks. eDMA expresses this with gather/scatter; SDMA uses a driver-specific
@@ -88,6 +93,10 @@ uint8_t i2s_mcux_sai_stream_min_buffers(enum i2s_dir dir);
 
 struct i2s_mcux_sai_tx_fifo_config
 i2s_mcux_sai_stream_tx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
+				   bool is_sdma);
+
+struct i2s_mcux_sai_rx_fifo_config
+i2s_mcux_sai_stream_rx_fifo_config(uint32_t fifo_count, uint8_t word_size_bytes,
 				   bool is_sdma);
 
 int i2s_mcux_sai_stream_tx_reload(struct i2s_mcux_sai_stream *strm, const struct device *dma_dev,

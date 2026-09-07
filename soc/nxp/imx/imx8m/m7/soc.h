@@ -28,6 +28,14 @@ extern "C" {
  */
 #define IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE 393216000ULL
 
+/*
+ * How far below nominal the fractional PLL is allowed to settle. The
+ * coefficients in soc.c produce 393,215,995.79 Hz, and the CCM driver uses
+ * this to tell "the M7 programmed the 48 kHz family" apart from "boot firmware
+ * put AUDIO PLL1 somewhere else entirely".
+ */
+#define IMX8M_M7_AUDIO_PLL1_RESIDUE 8ULL
+
 #endif /* !_ASMLANGUAGE */
 
 #ifdef __cplusplus

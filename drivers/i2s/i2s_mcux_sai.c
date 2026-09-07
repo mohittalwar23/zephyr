@@ -265,7 +265,11 @@ static void i2s_dma_rx_callback(const struct device *dma_dev, void *arg, uint32_
 		LOG_ERR("RX channel %u completed in state %d", channel, dev_data->rx.state);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP:
-		LOG_ERR("RX channel %u error, DMA status %d", channel, status);
+		if (dev_data->rx.state == I2S_STATE_ERROR) {
+			LOG_ERR("RX channel %u error, DMA status %d", channel, status);
+		} else {
+			LOG_DBG("RX channel %u stopped", channel);
+		}
 		i2s_rx_stream_disable(dev, false, false);
 		break;
 	case I2S_MCUX_SAI_STREAM_STOP_DRAIN:
@@ -545,8 +549,12 @@ static int i2s_mcux_config(const struct device *dev, enum i2s_dir dir,
 		dev_data->tx.dma_cfg.user_data = (void *)dev;
 		dev_data->tx.state = I2S_STATE_READY;
 	} else {
-		/* For RX, DMA reads from FIFO whenever data present */
-		config.fifo.fifoWatermark = 0;
+		struct i2s_mcux_sai_rx_fifo_config rx_fifo_config =
+			i2s_mcux_sai_stream_rx_fifo_config(
+				(uint32_t)FSL_FEATURE_SAI_FIFO_COUNTn(base), word_size_bytes,
+				dev_data->rx.dma.is_sdma);
+
+		config.fifo.fifoWatermark = rx_fifo_config.watermark;
 #if defined(FSL_FEATURE_SAI_HAS_FIFO_COMBINE_MODE) && FSL_FEATURE_SAI_HAS_FIFO_COMBINE_MODE
 		config.fifo.fifoCombine = kSAI_RXFifoCombineModeEnabledOnRead;
 #endif
@@ -566,7 +574,7 @@ static int i2s_mcux_config(const struct device *dev, enum i2s_dir dir,
 		/*set up dma settings*/
 		dev_data->rx.dma_cfg.source_data_size = word_size_bytes;
 		dev_data->rx.dma_cfg.dest_data_size = word_size_bytes;
-		dev_data->rx.dma_cfg.source_burst_length = word_size_bytes;
+		dev_data->rx.dma_cfg.source_burst_length = rx_fifo_config.burst_length;
 		dev_data->rx.dma_cfg.dest_burst_length = word_size_bytes;
 		dev_data->rx.dma_cfg.user_data = (void *)dev;
 		dev_data->rx.state = I2S_STATE_READY;
