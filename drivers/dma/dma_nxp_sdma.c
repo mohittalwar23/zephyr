@@ -12,29 +12,13 @@
 #include "dma_nxp_sdma_accounting.h"
 #include "dma_nxp_sdma_append.h"
 #include "dma_nxp_sdma_common.h"
+#include "dma_nxp_sdma_clock.h"
 #include "dma_nxp_sdma_irq.h"
 #include "dma_nxp_sdma_lifecycle.h"
 
 LOG_MODULE_REGISTER(nxp_sdma);
 
 #define DMA_NXP_SDMA_CHAN_DEFAULT_PRIO 4
-
-/*
- * Upper bound on the bytes the engine moves per peripheral DMA request.
- *
- * Linux picks this number first and derives the peripheral watermark from it:
- * fsl_sai uses a maxburst of 6 words and programs the SAI watermark as
- * depth - maxburst, and imx-sdma then moves maxburst * addr_width per request
- * without clamping. Small, frequent bursts keep the FIFO evenly topped up.
- *
- * The callers here go the other way. i2s_mcux_sai fixes its watermark at half
- * the FIFO and asks for the remaining 64 words, and SOF's dai-zephyr reports
- * the whole FIFO depth. Both ask for far more per request than Linux does.
- * Bound it near the Linux figure: raising this to the full 256 byte half-FIFO
- * was measured to play audibly worse on the MICFIL to SAI path, and the whole
- * depth starves the FIFO outright.
- */
-#define DMA_NXP_SDMA_MAX_WATERMARK 64U
 
 #define DT_DRV_COMPAT nxp_sdma
 
@@ -49,6 +33,7 @@ struct sdma_dev_cfg {
 	SDMAARM_Type *base;
 	void (*irq_config)(void);
 	uint32_t event_count;
+	struct nxp_clock_dt_spec clock;
 	struct dma_nxp_sdma_context_store contexts;
 };
 
@@ -218,10 +203,6 @@ static bool dma_nxp_sdma_bd_owned(void *context, uint32_t index)
 {
 	struct sdma_channel_data *chan_data = context;
 
-	/* The engine clears Done from outside the DSP; the cached copy is stale. */
-	sys_cache_data_invd_range(&chan_data->bd_pool[index],
-				  sizeof(chan_data->bd_pool[index]));
-
 	return (chan_data->bd_pool[index].status & (uint8_t)kSDMA_BDStatusDone) != 0U;
 }
 
@@ -344,6 +325,10 @@ static void dma_nxp_sdma_setup_bd(const struct device *dev, uint32_t channel,
 			is_last, true, is_wrap, chan_data->transfer_cfg.type);
 		crt_bd++;
 	}
+
+	if (chan_data->append_mode) {
+		chan_data->bd_pool[bd_count - 1U].status |= (uint8_t)kSDMA_BDStatusWrap;
+	}
 }
 
 static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
@@ -462,18 +447,15 @@ static int dma_nxp_sdma_config(const struct device *dev, uint32_t channel,
 	}
 
 	/*
-	 * Take the caller's burst length, but never more than the FIFO is
-	 * guaranteed to hold when it raises the request.
+	 * The watermark is how many bytes the engine moves per peripheral DMA
+	 * request; it must match the consumer's burst length (e.g. the SAI word
+	 * size), not a fixed value, or the channel waits for data that never
+	 * arrives.
 	 */
 	watermark = chan_data->direction == PERIPHERAL_TO_MEMORY ? config->source_burst_length
 								 : config->dest_burst_length;
-	if (watermark > DMA_NXP_SDMA_MAX_WATERMARK) {
-		LOG_WRN("burst length %u exceeds %u bytes per request; a burst length "
-			"is what the FIFO can take when it raises its request, not the "
-			"whole FIFO depth", watermark, DMA_NXP_SDMA_MAX_WATERMARK);
-		watermark = DMA_NXP_SDMA_MAX_WATERMARK;
-	} else if (watermark == 0U) {
-		watermark = DMA_NXP_SDMA_MAX_WATERMARK;
+	if (watermark == 0) {
+		watermark = 64;
 	}
 
 	/* prepare first block for transfer ...*/
@@ -680,11 +662,28 @@ static DEVICE_API(dma, sdma_api) = {
 	.chan_release = sdma_channel_release,
 };
 
+struct dma_nxp_sdma_hw_init_context {
+	SDMAARM_Type *base;
+	sdma_config_t *config;
+};
+
+static void dma_nxp_sdma_hw_init(void *context)
+{
+	struct dma_nxp_sdma_hw_init_context *init = context;
+
+	SDMA_Init(init->base, init->config);
+}
+
 static int dma_nxp_sdma_init(const struct device *dev)
 {
 	struct sdma_dev_data *data = dev->data;
 	const struct sdma_dev_cfg *cfg = dev->config;
 	sdma_config_t defconfig;
+	struct dma_nxp_sdma_hw_init_context hw_init = {
+		.base = cfg->base,
+		.config = &defconfig,
+	};
+	int ret;
 
 	data->dma_ctx.magic = DMA_MAGIC;
 	data->dma_ctx.dma_channels = FSL_FEATURE_SDMA_MODULE_CHANNEL;
@@ -693,7 +692,10 @@ static int dma_nxp_sdma_init(const struct device *dev)
 	SDMA_GetDefaultConfig(&defconfig);
 	defconfig.ratio = kSDMA_ARMClockFreq;
 
-	SDMA_Init(cfg->base, &defconfig);
+	ret = dma_nxp_sdma_clocked_init(&cfg->clock, dma_nxp_sdma_hw_init, &hw_init);
+	if (ret < 0) {
+		return ret;
+	}
 
 	k_mutex_init(&data->ch0_lock);
 
@@ -702,6 +704,9 @@ static int dma_nxp_sdma_init(const struct device *dev)
 
 	return 0;
 }
+
+#define DMA_NXP_SDMA_CLOCK_SPEC(inst) \
+	NXP_CLOCK_DT_SPEC_GET_BY_IDX_OR(DT_DRV_INST(inst), 0, {})
 
 #define DMA_NXP_SDMA_INIT(inst)						\
 	BUILD_ASSERT(DT_INST_PROP(inst, dma_requests) > 0 &&		\
@@ -719,6 +724,7 @@ static int dma_nxp_sdma_init(const struct device *dev)
 		.base = (SDMAARM_Type *)DT_INST_REG_ADDR(inst),				\
 		.irq_config = dma_nxp_sdma_##inst##_irq_config,		\
 		.event_count = DT_INST_PROP(inst, dma_requests),		\
+		.clock = DMA_NXP_SDMA_CLOCK_SPEC(inst),			\
 		.contexts = {						\
 			.base = sdma_contexts_##inst,			\
 			.stride = sizeof(sdma_contexts_##inst[0]),	\
