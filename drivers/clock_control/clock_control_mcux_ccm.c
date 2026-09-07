@@ -357,39 +357,47 @@ static int mcux_ccm_off(const struct device *dev,
 
 #if defined(CONFIG_SOC_MIMX8ML8_M7)
 /*
- * The measured audio root rates truncate a Hz below their targets because
- * AUDIO PLL1 settles just under its nominal rate. Audio consumers match the
- * MCLK to frame-clock ratio with exact integer division, so report the roots
- * from the nominal rate instead, the way the i.MX93 SAI roots already do.
- * Roots that are not on AUDIO PLL1 keep the measured rate.
+ * The measured audio root rates truncate a Hz below their targets because the
+ * fractional PLLs settle just under nominal. Audio consumers match the MCLK to
+ * frame-clock ratio with exact integer division, so report the roots from the
+ * nominal rate of whichever audio PLL the root is actually muxed to. Roots on
+ * neither audio PLL, and PLLs that do not read back near their nominal, keep
+ * the measured rate.
  */
-static uint32_t imx8m_audio_root_rate(clock_root_control_t root, uint32_t audio_pll1_mux,
-				      uint32_t measured_rate)
+static uint32_t imx8m_audio_root_rate(clock_root_control_t root, uint32_t pll1_mux,
+				      uint32_t pll2_mux, uint32_t measured_rate)
 {
 	uint32_t pre = CLOCK_GetRootPreDivider(root);
 	uint32_t post = CLOCK_GetRootPostDivider(root);
+	uint32_t mux = CLOCK_GetRootMux(root);
+	uint32_t nominal;
 	uint32_t pll;
 
-	if (CLOCK_GetRootMux(root) != audio_pll1_mux || pre == 0U || post == 0U) {
+	if (pre == 0U || post == 0U) {
+		return measured_rate;
+	}
+
+	if (mux == pll1_mux) {
+		nominal = (uint32_t)IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE;
+		pll = CLOCK_GetPllFreq(kCLOCK_AudioPll1Ctrl);
+	} else if (mux == pll2_mux) {
+		nominal = (uint32_t)IMX8M_M7_AUDIO_PLL2_NOMINAL_RATE;
+		pll = CLOCK_GetPllFreq(kCLOCK_AudioPll2Ctrl);
+	} else {
 		return measured_rate;
 	}
 
 	/*
-	 * Selecting the AUDIO PLL1 mux says nothing about the rate the PLL is
-	 * running at. With CONFIG_IMX8M_M7_AUDIO_PLL1=n the boot firmware owns
-	 * it and may have programmed another family - 361.2672 MHz for the
-	 * 44.1 kHz rates, say - in which case the nominal rate would be a
-	 * number with no relation to the hardware. Substitute it only when the
-	 * PLL is within its own fractional residue of nominal, and report what
-	 * was measured otherwise.
+	 * Selecting the mux says nothing about the rate the PLL is running at.
+	 * With CONFIG_IMX8M_M7_AUDIO_PLL1=n the boot firmware owns these PLLs
+	 * and may have programmed anything. Substitute the nominal rate only
+	 * when the PLL reads back within its own fractional residue of it.
 	 */
-	pll = CLOCK_GetPllFreq(kCLOCK_AudioPll1Ctrl);
-	if (pll > IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE ||
-	    pll + IMX8M_M7_AUDIO_PLL1_RESIDUE < IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE) {
+	if (pll > nominal || pll + IMX8M_M7_AUDIO_PLL1_RESIDUE < nominal) {
 		return measured_rate;
 	}
 
-	return (uint32_t)(IMX8M_M7_AUDIO_PLL1_NOMINAL_RATE / pre / post);
+	return nominal / pre / post;
 }
 #endif /* CONFIG_SOC_MIMX8ML8_M7 */
 
@@ -736,18 +744,22 @@ static int mcux_ccm_get_subsys_rate(const struct device *dev,
 #if defined(CONFIG_SOC_MIMX8ML8_M7)
 	case IMX_CCM_SAI1_CLK:
 		*rate = imx8m_audio_root_rate(kCLOCK_RootSai1, kCLOCK_SaiRootmuxAudioPll1,
+					      kCLOCK_SaiRootmuxAudioPll2,
 					      CLOCK_GetClockRootFreq(kCLOCK_Sai1ClkRoot));
 		break;
 	case IMX_CCM_SAI2_CLK:
 		*rate = imx8m_audio_root_rate(kCLOCK_RootSai2, kCLOCK_SaiRootmuxAudioPll1,
+					      kCLOCK_SaiRootmuxAudioPll2,
 					      CLOCK_GetClockRootFreq(kCLOCK_Sai2ClkRoot));
 		break;
 	case IMX_CCM_SAI3_CLK:
 		*rate = imx8m_audio_root_rate(kCLOCK_RootSai3, kCLOCK_SaiRootmuxAudioPll1,
+					      kCLOCK_SaiRootmuxAudioPll2,
 					      CLOCK_GetClockRootFreq(kCLOCK_Sai3ClkRoot));
 		break;
 	case IMX_CCM_PDM_CLK:
 		*rate = imx8m_audio_root_rate(kCLOCK_RootPdm, kCLOCK_PdmRootmuxAudioPll1,
+					      kCLOCK_PdmRootmuxAudioPll2,
 					      CLOCK_GetClockRootFreq(kCLOCK_PdmClkRoot));
 		break;
 #endif /* CONFIG_SOC_MIMX8ML8_M7 */
