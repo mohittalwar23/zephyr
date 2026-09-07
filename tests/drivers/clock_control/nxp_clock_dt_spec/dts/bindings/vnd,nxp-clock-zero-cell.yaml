@@ -1,0 +1,11 @@
+description: |
+  Test clock controller with no cells. A consumer of this provider has no
+  identifier to pass, so its clock subsystem is zero.
+
+compatible: "vnd,nxp-clock-zero-cell"
+
+include: clock-controller.yaml
+
+properties:
+  "#clock-cells":
+    const: 0

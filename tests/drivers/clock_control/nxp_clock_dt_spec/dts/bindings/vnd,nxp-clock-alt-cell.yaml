@@ -1,0 +1,17 @@
+description: |
+  Test clock controller that names its cell something other than `name`, as
+  nxp,lpc11u6x-syscon does with `clkid`. NXP_CLOCK_DT_SPEC_GET_BY_IDX() does
+  not accept such a provider; it fails to build rather than resolving the
+  subsystem to zero.
+
+compatible: "vnd,nxp-clock-alt-cell"
+
+include: clock-controller.yaml
+
+properties:
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  # Provider-defined clock identifier under a name the NXP helper cannot read.
+  - clkid

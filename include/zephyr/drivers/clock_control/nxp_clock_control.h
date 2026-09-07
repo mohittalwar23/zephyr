@@ -13,13 +13,189 @@
 #ifndef ZEPHYR_INCLUDE_DRIVERS_CLOCK_CONTROL_NXP_CLOCK_CONTROL_H_
 #define ZEPHYR_INCLUDE_DRIVERS_CLOCK_CONTROL_NXP_CLOCK_CONTROL_H_
 
+#include <zephyr/device.h>
+#include <zephyr/devicetree/clocks.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/sys/util.h>
 
 /**
  * @defgroup clock_control_nxp NXP
  * @ingroup clock_control_interface_ext
  * @{
  */
+
+/** Clock controller and NXP `name` subsystem from one devicetree clock specifier. */
+struct nxp_clock_dt_spec {
+	/** Clock controller device. */
+	const struct device *dev;
+	/** NXP clock subsystem identifier. */
+	clock_control_subsys_t subsys;
+};
+
+/**
+ * @cond INTERNAL_HIDDEN
+ *
+ * Resolve the subsystem value of one `clocks` entry.
+ *
+ * A provider that names its identifying cell `name` supplies it directly. A
+ * provider with no cells at all is subsystem zero. Anything else - a provider
+ * with cells under a different name, such as `nxp,lpc11u6x-syscon`'s `clkid` -
+ * would silently resolve to zero and gate the wrong clock, so it fails to
+ * build instead.
+ */
+#define _NXP_CLOCK_DT_SUBSYS_BY_IDX(node_id, idx) \
+	COND_CODE_1(DT_PHA_HAS_CELL_AT_IDX(node_id, clocks, idx, name), \
+		    (DT_PHA_BY_IDX(node_id, clocks, idx, name)), \
+		    (ZERO_OR_COMPILE_ERROR( \
+			     DT_PHA_NUM_CELLS_BY_IDX(node_id, clocks, idx) == 0)))
+/** @endcond */
+
+/**
+ * @brief Initialize an NXP clock specification from a devicetree clock index.
+ *
+ * NXP clock-control consumers represent the provider's `name` cell as the
+ * opaque clock subsystem. Providers with no clock cells use subsystem zero.
+ * A provider whose cells are named something other than `name` is a build
+ * error rather than a silent subsystem zero.
+ *
+ * @param node_id Devicetree node identifier.
+ * @param idx Logical index in the node's `clocks` property.
+ */
+#define NXP_CLOCK_DT_SPEC_GET_BY_IDX(node_id, idx) \
+	{ \
+		.dev = DEVICE_DT_GET(DT_CLOCKS_CTLR_BY_IDX(node_id, idx)), \
+		.subsys = UINT_TO_POINTER(_NXP_CLOCK_DT_SUBSYS_BY_IDX(node_id, idx)), \
+	}
+
+/** @brief Initialize the first NXP clock specification for a devicetree node. */
+#define NXP_CLOCK_DT_SPEC_GET(node_id) NXP_CLOCK_DT_SPEC_GET_BY_IDX(node_id, 0)
+
+/** @brief Instance form of NXP_CLOCK_DT_SPEC_GET_BY_IDX(). */
+#define NXP_CLOCK_DT_SPEC_INST_GET_BY_IDX(inst, idx) \
+	NXP_CLOCK_DT_SPEC_GET_BY_IDX(DT_DRV_INST(inst), idx)
+
+/** @brief Instance form of NXP_CLOCK_DT_SPEC_GET(). */
+#define NXP_CLOCK_DT_SPEC_INST_GET(inst) NXP_CLOCK_DT_SPEC_GET(DT_DRV_INST(inst))
+
+/**
+ * @brief Initialize an NXP clock specification or use a default value.
+ *
+ * @param node_id Devicetree node identifier.
+ * @param idx Logical index in the node's `clocks` property.
+ * @param default_value Value used when the index does not exist.
+ */
+#define NXP_CLOCK_DT_SPEC_GET_BY_IDX_OR(node_id, idx, default_value) \
+	COND_CODE_1(DT_CLOCKS_HAS_IDX(node_id, idx), \
+		    (NXP_CLOCK_DT_SPEC_GET_BY_IDX(node_id, idx)), (default_value))
+
+/**
+ * @brief Check whether an NXP clock specification's provider is ready.
+ *
+ * @param spec NXP clock specification to check.
+ *
+ * @retval true The specification has a ready provider.
+ * @retval false The specification is NULL, has no provider, or its provider
+ *               is not ready.
+ */
+static inline bool nxp_clock_is_ready_dt(const struct nxp_clock_dt_spec *spec)
+{
+	return spec != NULL && spec->dev != NULL && device_is_ready(spec->dev);
+}
+
+/**
+ * @brief Enable an NXP clock described by a devicetree specification.
+ *
+ * @param spec NXP clock specification to enable.
+ *
+ * @retval 0 The clock was enabled.
+ * @retval -ENODEV @p spec is NULL, has no provider, or its provider is not ready.
+ * @return A nonzero backend error unchanged.
+ */
+static inline int nxp_clock_control_on_dt(const struct nxp_clock_dt_spec *spec)
+{
+	if (!nxp_clock_is_ready_dt(spec)) {
+		return -ENODEV;
+	}
+
+	return clock_control_on(spec->dev, spec->subsys);
+}
+
+/**
+ * @brief Disable an NXP clock described by a devicetree specification.
+ *
+ * @param spec NXP clock specification to disable.
+ *
+ * @retval 0 The clock was disabled.
+ * @retval -ENODEV @p spec is NULL, has no provider, or its provider is not ready.
+ * @return A nonzero backend error unchanged.
+ */
+static inline int nxp_clock_control_off_dt(const struct nxp_clock_dt_spec *spec)
+{
+	if (!nxp_clock_is_ready_dt(spec)) {
+		return -ENODEV;
+	}
+
+	return clock_control_off(spec->dev, spec->subsys);
+}
+
+/**
+ * @brief Read the rate of an NXP clock described by a devicetree specification.
+ *
+ * @param spec NXP clock specification to query.
+ * @param rate Where to store the clock rate on backend success.
+ *
+ * @retval 0 The backend stored the clock rate in @p rate.
+ * @retval -ENODEV @p spec is NULL, has no provider, or its provider is not ready.
+ * @return A nonzero backend error unchanged; @p rate is then as left by the backend.
+ */
+static inline int nxp_clock_control_get_rate_dt(const struct nxp_clock_dt_spec *spec,
+						uint32_t *rate)
+{
+	if (!nxp_clock_is_ready_dt(spec)) {
+		return -ENODEV;
+	}
+
+	return clock_control_get_rate(spec->dev, spec->subsys, rate);
+}
+
+/**
+ * @brief Read the status of an NXP clock described by a devicetree specification.
+ *
+ * @param spec NXP clock specification to query.
+ *
+ * @retval CLOCK_CONTROL_STATUS_UNKNOWN @p spec is NULL, has no provider, or its
+ *                                      provider is not ready.
+ * @return The backend status otherwise.
+ */
+static inline enum clock_control_status
+nxp_clock_control_get_status_dt(const struct nxp_clock_dt_spec *spec)
+{
+	if (!nxp_clock_is_ready_dt(spec)) {
+		return CLOCK_CONTROL_STATUS_UNKNOWN;
+	}
+
+	return clock_control_get_status(spec->dev, spec->subsys);
+}
+
+/**
+ * @brief Set the rate of an NXP clock described by a devicetree specification.
+ *
+ * @param spec NXP clock specification to program.
+ * @param rate Provider-specific rate value.
+ *
+ * @retval 0 The backend accepted the rate.
+ * @retval -ENODEV @p spec is NULL, has no provider, or its provider is not ready.
+ * @return A nonzero backend error unchanged.
+ */
+static inline int nxp_clock_control_set_rate_dt(const struct nxp_clock_dt_spec *spec,
+						clock_control_subsys_rate_t rate)
+{
+	if (!nxp_clock_is_ready_dt(spec)) {
+		return -ENODEV;
+	}
+
+	return clock_control_set_rate(spec->dev, spec->subsys, rate);
+}
 
 #if DT_NODE_HAS_COMPAT_STATUS(DT_NODELABEL(mc_cgm), nxp_mc_cgm, okay)
 #include <zephyr/dt-bindings/clock/nxp_mc_cgm.h>

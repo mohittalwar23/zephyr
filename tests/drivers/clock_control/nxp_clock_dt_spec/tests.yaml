@@ -1,0 +1,10 @@
+tests:
+  drivers.clock_control.nxp_clock_dt_spec:
+    platform_allow:
+      # UINT_TO_POINTER round-trips a devicetree cell through a void *; every
+      # NXP target that uses this helper is ILP32, so cover both widths.
+      - native_sim
+      - native_sim/native/64
+    tags:
+      - clock_control
+      - drivers

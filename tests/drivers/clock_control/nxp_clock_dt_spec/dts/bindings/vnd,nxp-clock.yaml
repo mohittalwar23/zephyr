@@ -1,0 +1,14 @@
+description: Test NXP-style clock controller
+
+compatible: "vnd,nxp-clock"
+
+include: clock-controller.yaml
+
+properties:
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  # Provider-defined clock identifier. NXP consumers pass this cell through
+  # unchanged as the opaque clock_control_subsys_t.
+  - name
