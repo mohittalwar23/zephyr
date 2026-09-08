@@ -1,5 +1,7 @@
 tests:
   mpipe.aud.latency:
+    extra_configs:
+      - CONFIG_MPIPE_AUD_LOOPBACK_PROBE=y
     tags:
       - mpipe
       - audio

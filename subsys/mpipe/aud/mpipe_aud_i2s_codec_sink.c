@@ -15,6 +15,7 @@
 
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
+#include <zephyr/mpipe/aud/mpipe_aud_loopback_probe.h>
 
 LOG_MODULE_REGISTER(mpipe_aud_i2s_codec_sink, CONFIG_MPIPE_LOG_LEVEL);
 
@@ -313,6 +314,8 @@ int mpipe_aud_i2s_codec_sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_
 	uint32_t bytes_used = mpipe_buffer_get_meta(in_buf)->bytes_used;
 	int ret = -1;
 
+	/* Offer the outgoing buffer to the round-trip probe before it leaves. */
+	mpipe_aud_loopback_emit(in_buf->data, bytes_used);
 	ret = i2s_write(aud_i2s_codec_sink->i2s_dev, in_buf->data, bytes_used);
 	if (ret < 0) {
 		/* DROP recovers both a latched ERROR and a stalled-but-RUNNING TX

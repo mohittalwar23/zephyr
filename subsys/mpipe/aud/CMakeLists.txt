@@ -14,4 +14,7 @@ if(CONFIG_MPIPE_AUD)
     mpipe_aud_src.c
     mpipe_aud.c
   )
+  zephyr_library_sources_ifdef(CONFIG_MPIPE_AUD_LOOPBACK_PROBE
+    mpipe_aud_loopback_probe.c
+  )
 endif()

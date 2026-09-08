@@ -18,6 +18,14 @@ config MPIPE_AUD
 
 if MPIPE_AUD
 
+config MPIPE_AUD_LOOPBACK_PROBE
+	bool "Acoustic round-trip probe"
+	depends on MPIPE_LATENCY
+	help
+	  Inject a diagnostic burst into an audio sink and scan captured PCM for
+	  its physical return. This modifies live audio and adds work to capture,
+	  so it is disabled by default and must not be enabled in production.
+
 config MPIPE_AUD_BUFFER_POOL_SZ_MAX
 	int "Size of the largest buffer in the buffer pool"
 	default 98304

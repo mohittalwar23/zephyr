@@ -15,6 +15,7 @@
 #include <zephyr/mpipe/aud/mpipe_aud.h>
 #include <zephyr/mpipe/aud/mpipe_aud_buffer_pool.h>
 #include <zephyr/mpipe/aud/mpipe_aud_dmic_src.h>
+#include <zephyr/mpipe/aud/mpipe_aud_loopback_probe.h>
 
 LOG_MODULE_REGISTER(mpipe_aud_dmic_src, CONFIG_MPIPE_LOG_LEVEL);
 
@@ -143,6 +144,9 @@ static int mpipe_aud_dmic_src_acquire_buffer(struct mpipe_buffer_pool *pool,
 			}
 
 			(*buffer)->len = bytes_used;
+
+			/* Offer the captured buffer to the round-trip probe. */
+			mpipe_aud_loopback_detect(mem_block, bytes_used);
 
 			meta = mpipe_buffer_get_meta(*buffer);
 			meta->pool = pool;
