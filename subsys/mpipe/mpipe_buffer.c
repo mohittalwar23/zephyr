@@ -71,6 +71,20 @@ int mpipe_buffer_pool_set_config(struct mpipe_buffer_pool *pool,
 	return 0;
 }
 
+int mpipe_buffer_pool_get_occupancy(struct mpipe_buffer_pool *pool, uint32_t *in_flight,
+				    uint32_t *capacity)
+{
+	if (pool == NULL || in_flight == NULL || capacity == NULL) {
+		return -EINVAL;
+	}
+
+	if (pool->get_occupancy == NULL) {
+		return -ENOSYS;
+	}
+
+	return pool->get_occupancy(pool, in_flight, capacity);
+}
+
 int mpipe_buffer_pool_start(struct mpipe_buffer_pool *pool)
 {
 	int ret;

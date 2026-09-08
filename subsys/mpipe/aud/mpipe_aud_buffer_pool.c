@@ -97,6 +97,20 @@ static int mpipe_aud_buffer_pool_config(struct mpipe_buffer_pool *pool,
 	return 0;
 }
 
+static int mpipe_aud_buffer_pool_get_occupancy(struct mpipe_buffer_pool *pool,
+					      uint32_t *in_flight, uint32_t *capacity)
+{
+	struct mpipe_aud_buffer_pool *aud_pool = (struct mpipe_aud_buffer_pool *)pool;
+
+	if (aud_pool->mem_slab == NULL || aud_pool->mem_slab->buffer == NULL) {
+		return -ENODEV;
+	}
+
+	*in_flight = k_mem_slab_num_used_get(aud_pool->mem_slab);
+	*capacity = *in_flight + k_mem_slab_num_free_get(aud_pool->mem_slab);
+
+	return 0;
+}
 void mpipe_aud_buffer_pool_init(struct mpipe_buffer_pool *pool)
 {
 	__ASSERT_NO_MSG(pool != NULL);
@@ -110,4 +124,5 @@ void mpipe_aud_buffer_pool_init(struct mpipe_buffer_pool *pool)
 	mpipe_buffer_pool_init(pool);
 
 	pool->configure = mpipe_aud_buffer_pool_config;
+	pool->get_occupancy = mpipe_aud_buffer_pool_get_occupancy;
 }

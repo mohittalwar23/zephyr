@@ -17,6 +17,7 @@
 #include <zephyr/mpipe/mpipe_element.h>
 #include <zephyr/mpipe/mpipe_message.h>
 #include <zephyr/mpipe/mpipe_object.h>
+#include <zephyr/mpipe/mpipe_latency.h>
 #include <zephyr/mpipe/mpipe_pad.h>
 #include <zephyr/mpipe/mpipe_pipeline.h>
 #include <zephyr/mpipe/mpipe_src.h>
@@ -199,6 +200,14 @@ int mpipe_push_buffer(struct mpipe_pad *src_pad, struct net_buf *buffer)
 		if (next_sink_pad->chain_fn != NULL) {
 			out_buf = NULL;
 
+			/*
+			 * Measure before the element runs: a sink's chain
+			 * function consumes the buffer, so afterwards there is
+			 * nothing left to read the stamp from.
+			 */
+			mpipe_latency_measure(
+				(struct mpipe_element *)next_sink_pad->object.container, buffer);
+
 			ret = next_sink_pad->chain_fn(next_sink_pad, buffer, &out_buf);
 			if (ret != 0) {
 				struct mpipe_element *elem =
@@ -328,6 +337,7 @@ static void mpipe_pipeline_thread_func(void *p1, void *p2, void *p3)
 			continue;
 		}
 		count++;
+		mpipe_latency_mark(&src->element, buffer);
 		if (mpipe_push_buffer(&src->src_pad, buffer) != 0) {
 			LOG_ERR("Failed to push buffer downstream");
 			/* Fatal to the stream: stop producing so one error, not a flood */

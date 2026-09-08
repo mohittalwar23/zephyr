@@ -1,0 +1,15 @@
+tests:
+  mpipe.aud.latency:
+    tags:
+      - mpipe
+      - audio
+    platform_allow:
+      - native_sim/native/64
+  mpipe.aud.latency.disabled:
+    extra_configs:
+      - CONFIG_MPIPE_LATENCY=n
+    tags:
+      - mpipe
+      - audio
+    platform_allow:
+      - native_sim/native/64

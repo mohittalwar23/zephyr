@@ -112,6 +112,14 @@ struct mpipe_buffer_pool {
 	 * buffer refcount reaches 0.
 	 */
 	int (*release_buffer)(struct mpipe_buffer_pool *pool, struct net_buf *buf);
+	/**
+	 * Report how many blocks are allocated from the pool and its capacity.
+	 * Optional: a pool that cannot answer leaves this NULL and is not sampled.
+	 * Allocation does not imply that a block contains queued media; drivers may
+	 * own empty receive blocks. Consumers must not convert this value to latency.
+	 */
+	int (*get_occupancy)(struct mpipe_buffer_pool *pool, uint32_t *in_flight,
+			     uint32_t *capacity);
 
 	/** Flag indicating if the pool has been started */
 	bool started;
@@ -131,6 +139,19 @@ struct mpipe_buffer_meta {
 	void *driver_buf;
 	/** Opaque pointer for plugin-specific usage. */
 	void *priv;
+#if defined(CONFIG_MPIPE_LATENCY) || defined(__DOXYGEN__)
+	/**
+	 * Cycle count at which the source pushed this buffer, 0 when never
+	 * stamped.
+	 *
+	 * Separate from @ref timestamp, which is a presentation timestamp in
+	 * milliseconds that an element may set; this one is raw hardware
+	 * cycles owned by the latency instrumentation.
+	 *
+	 * @kconfig_dep{CONFIG_MPIPE_LATENCY}
+	 */
+	uint32_t latency_ingress_cyc;
+#endif
 };
 
 /**
@@ -219,6 +240,15 @@ int mpipe_buffer_pool_set_config(struct mpipe_buffer_pool *pool,
  *
  * @return 0 on success, negative errno on failure
  */
+/**
+ * @brief Ask a pool how many buffers it currently has handed out.
+ *
+ * @retval 0 on success, -ENOSYS if the pool does not report occupancy,
+ *         -EINVAL on a NULL argument.
+ */
+int mpipe_buffer_pool_get_occupancy(struct mpipe_buffer_pool *pool, uint32_t *in_flight,
+				    uint32_t *capacity);
+
 int mpipe_buffer_pool_start(struct mpipe_buffer_pool *pool);
 
 /**
