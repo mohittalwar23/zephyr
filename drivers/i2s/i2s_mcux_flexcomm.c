@@ -910,8 +910,10 @@ static int i2s_mcux_get_caps(const struct device *dev, struct audio_caps *caps, 
 		AUDIO_BIT_WIDTH_8 | AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
 	if (dir == I2S_DIR_TX) {
 		caps->min_num_buffers = CONFIG_I2S_MCUX_FLEXCOMM_DMA_TX_BLOCKS;
+		caps->max_num_buffers = CONFIG_I2S_MCUX_FLEXCOMM_DMA_TX_BLOCKS;
 	} else {
 		caps->min_num_buffers = CONFIG_I2S_MCUX_FLEXCOMM_DMA_RX_BLOCKS;
+		caps->max_num_buffers = CONFIG_I2S_MCUX_FLEXCOMM_DMA_RX_BLOCKS;
 	}
 	caps->min_frame_interval = 1000;   /* 1ms minimum */
 	caps->max_frame_interval = 100000; /* 100ms maximum */

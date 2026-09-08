@@ -729,6 +729,7 @@ static int ns_i2s_get_caps(const struct device *dev, struct audio_caps *caps, en
 		AUDIO_BIT_WIDTH_8 | AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_18 |
 		AUDIO_BIT_WIDTH_20 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
 	caps->min_num_buffers = CONFIG_I2S_NATIVE_SIM_QUEUE_SIZE;
+	caps->max_num_buffers = CONFIG_I2S_NATIVE_SIM_QUEUE_SIZE;
 	caps->min_frame_interval = 1U;
 	caps->max_frame_interval = UINT32_MAX;
 	caps->interleaved = true;

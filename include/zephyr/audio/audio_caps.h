@@ -122,6 +122,8 @@ struct audio_caps {
 	uint32_t supported_bit_widths;
 	/** Minimum number of data buffers required */
 	uint8_t min_num_buffers;
+	/** Maximum number of data buffers the device queue accepts; 0 if unknown. */
+	uint8_t max_num_buffers;
 	/** Minimum supported frame interval in microseconds */
 	uint32_t min_frame_interval;
 	/** Maximum supported frame interval in microseconds */

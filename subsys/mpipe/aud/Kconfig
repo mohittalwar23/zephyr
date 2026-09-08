@@ -64,7 +64,7 @@ config MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME
 config MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME_COUNT
 	int "Number of silence buffers used to start I2S TX"
 	default 3
-	range 1 255
+	range 2 255
 	depends on MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME
 	help
 	  Number of zero-filled buffers queued before TX starts. This must fit in

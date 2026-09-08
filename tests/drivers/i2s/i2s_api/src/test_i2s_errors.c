@@ -205,6 +205,10 @@ ZTEST_USER(i2s_errors, test_i2s_get_caps)
 
 	zassert_true(caps.min_num_buffers >= 1, "min_num_buffers should be >= 1, got %u",
 		     caps.min_num_buffers);
+	zassert_true(caps.max_num_buffers == 0U ||
+		     caps.max_num_buffers >= caps.min_num_buffers,
+		     "max_num_buffers (%u) is below min_num_buffers (%u)",
+		     caps.max_num_buffers, caps.min_num_buffers);
 
 	zassert_true(caps.max_frame_interval >= caps.min_frame_interval,
 		     "max_frame_interval (%u) should be >= min_frame_interval (%u)",

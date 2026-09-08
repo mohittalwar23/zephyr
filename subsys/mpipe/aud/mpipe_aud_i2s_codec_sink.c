@@ -17,6 +17,8 @@
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_codec_sink.h>
 #include <zephyr/mpipe/aud/mpipe_aud_loopback_probe.h>
 
+#include "mpipe_aud_i2s_codec_sink_internal.h"
+
 LOG_MODULE_REGISTER(mpipe_aud_i2s_codec_sink, CONFIG_MPIPE_LOG_LEVEL);
 
 #define DEFAULT_PROP_I2S_DEVICE   DEVICE_DT_GET(DT_ALIAS(i2s_codec_tx))
@@ -101,6 +103,9 @@ static int mpipe_aud_i2s_codec_sink_propose_buffer_pool(struct mpipe_sink *sink,
 	struct mpipe_buffer_pool_config cfg = {0};
 	struct audio_caps i2s_caps;
 	struct audio_caps codec_caps;
+#ifdef CONFIG_MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME
+	int ret;
+#endif
 
 	if (i2s_get_caps(aud->i2s_dev, &i2s_caps, I2S_DIR_TX) != 0) {
 		LOG_ERR("Failed to get I2S capabilities");
@@ -116,6 +121,16 @@ static int mpipe_aud_i2s_codec_sink_propose_buffer_pool(struct mpipe_sink *sink,
 			      AUD_I2S_SINK_START_PRIME);
 
 #ifdef CONFIG_MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME
+	ret = mpipe_aud_i2s_codec_sink_validate_prime(
+		CONFIG_MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME_COUNT,
+		i2s_caps.max_num_buffers);
+	if (ret != 0) {
+		LOG_ERR("Silence prime %u exceeds I2S TX queue capacity %u",
+			CONFIG_MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME_COUNT,
+			i2s_caps.max_num_buffers);
+		return ret;
+	}
+
 	/* The silence prime coexists with the normal startup queue until the
 	 * synchronized receiver returns its first captured block.
 	 */
@@ -405,9 +420,14 @@ static int mpipe_aud_i2s_codec_sink_prime_silence(struct mpipe_aud_i2s_codec_sin
 		return 0;
 	}
 
+	if (ret == 0) {
+		ret = -ENOBUFS;
+	}
+	LOG_ERR("Unable to queue silence prime: requested %u, queued %u (%d)",
+		prime_count, sink->count, ret);
 	(void)i2s_trigger(sink->i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
 	sink->count = 0U;
-	return ret != 0 ? ret : -ENOBUFS;
+	return ret;
 }
 #endif
 

@@ -877,6 +877,8 @@ static int i2s_mcux_get_caps(const struct device *dev, struct audio_caps *caps, 
 	caps->supported_bit_widths =
 		AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
 	caps->min_num_buffers = i2s_mcux_sai_stream_min_buffers(dir);
+	caps->max_num_buffers =
+		(dir == I2S_DIR_RX) ? CONFIG_I2S_RX_BLOCK_COUNT : CONFIG_I2S_TX_BLOCK_COUNT;
 	caps->min_frame_interval = 1000;   /* 1ms minimum */
 	caps->max_frame_interval = 100000; /* 100ms maximum */
 	caps->interleaved = true;

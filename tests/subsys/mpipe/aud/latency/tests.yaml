@@ -15,3 +15,13 @@ tests:
       - audio
     platform_allow:
       - native_sim/native/64
+  mpipe.aud.latency.prime_too_deep:
+    extra_configs:
+      - CONFIG_TEST_MPIPE_PRIME_TOO_DEEP=y
+      - CONFIG_I2S_NATIVE_SIM_QUEUE_SIZE=3
+      - CONFIG_MPIPE_AUD_I2S_CODEC_SINK_SILENCE_PRIME_COUNT=4
+    tags:
+      - mpipe
+      - audio
+    platform_allow:
+      - native_sim/native/64

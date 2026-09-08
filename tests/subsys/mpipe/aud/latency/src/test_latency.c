@@ -42,6 +42,7 @@ static struct mpipe_latency_occupancy_stats g_occ;
 static void run_pipeline(void)
 {
 	struct mpipe_structure caps;
+	enum mpipe_state_change_return state_ret;
 
 	zassert_ok(mpipe_pipeline_init(&pipe, 0));
 	zassert_ok(mpipe_aud_i2s_src_init(&src, 1));
@@ -72,8 +73,14 @@ static void run_pipeline(void)
 
 	mpipe_latency_reset();
 
-	zassert_equal(mpipe_element_set_state((struct mpipe_element *)&pipe, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+	state_ret = mpipe_element_set_state((struct mpipe_element *)&pipe, MPIPE_STATE_PLAYING);
+#if defined(CONFIG_TEST_MPIPE_PRIME_TOO_DEEP)
+	zassert_equal(state_ret, MPIPE_STATE_CHANGE_FAILURE,
+		      "oversized silence prime was accepted");
+	return;
+#else
+	zassert_equal(state_ret, MPIPE_STATE_CHANGE_SUCCESS, "pipeline did not enter PLAYING");
+#endif
 	k_msleep(RUN_MS);
 	/*
 	 * Keep the pool intact while stopping capture. READY teardown and its
@@ -93,6 +100,8 @@ static void *latency_suite_setup(void)
 }
 
 #if defined(CONFIG_MPIPE_LATENCY)
+
+#if !defined(CONFIG_TEST_MPIPE_PRIME_TOO_DEEP)
 
 ZTEST(mpipe_aud_latency, test_transit_and_occupancy_are_measured)
 {
@@ -152,6 +161,16 @@ ZTEST(mpipe_aud_latency, test_reset_clears_every_accumulator)
 	zassert_equal(occ.min_blocks, 0U, "an empty accumulator must read 0, not UINT32_MAX");
 	zassert_equal(occ.period_us, 0U, "period survived a reset");
 }
+
+#else
+
+ZTEST(mpipe_aud_latency, test_oversized_prime_prevents_measurement)
+{
+	zassert_equal(g_transit.count, 0U, "failed graph reported transit");
+	zassert_equal(g_occ.count, 0U, "failed graph reported pool utilisation");
+}
+
+#endif /* CONFIG_TEST_MPIPE_PRIME_TOO_DEEP */
 
 #else /* CONFIG_MPIPE_LATENCY */
 

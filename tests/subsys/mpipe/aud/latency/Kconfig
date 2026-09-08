@@ -1,0 +1,9 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "mpipe audio latency tests"
+
+source "Kconfig.zephyr"
+
+config TEST_MPIPE_PRIME_TOO_DEEP
+	bool "Expect silence-prime negotiation rejection"
