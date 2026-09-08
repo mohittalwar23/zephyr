@@ -516,6 +516,21 @@ Configuration Options
 * :kconfig:option:`CONFIG_MPIPE_FAKE_SRC` provides a source of synthetic data,
   used to exercise a graph where a real source would need hardware.
 
+Latency diagnostics
+*******************
+
+``CONFIG_MPIPE_LATENCY`` measures software transit from a source push to a sink
+chain function. It also samples allocated pool blocks at that handoff as a pool-pressure
+diagnostic. Allocated blocks can include empty driver-owned buffers, so pool utilisation
+is not buffering latency and must not be converted to time.
+
+``CONFIG_MPIPE_AUD_LOOPBACK_PROBE`` is an opt-in diagnostic that modifies playback PCM
+and scans capture PCM for a returned burst. It is disabled by default, has a finite
+timeout, and reports physical round trip only after detection.
+
+.. doxygengroup:: mpipe_latency
+.. doxygengroup:: mpipe_aud_loopback_probe
+
 API Reference
 *************
 
