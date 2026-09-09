@@ -53,6 +53,42 @@ ZTEST(mpipe_aud_latency, test_probe_detects_returned_burst)
 	zassert_false(after_done.timed_out, "rearm invented timeout");
 }
 
+ZTEST(mpipe_aud_latency, test_probe_ignores_settling_transient_when_measuring_floor)
+{
+	int16_t capture[32];
+	int16_t output[32] = {0};
+	struct mpipe_aud_loopback_result result;
+
+	zassert_ok(mpipe_aud_loopback_arm(16U, 0U));
+
+	/* Feedback already in flight when output muting begins may be full scale. */
+	for (size_t i = 0U; i < ARRAY_SIZE(capture); i++) {
+		capture[i] = INT16_MIN;
+	}
+	mpipe_aud_loopback_detect(capture, sizeof(capture));
+	mpipe_aud_loopback_emit(output, sizeof(output));
+
+	/* Once silence reaches the input, the actual floor is eight. */
+	for (uint32_t call = 1U; call < QUIET_CALLS; call++) {
+		for (size_t i = 0U; i < ARRAY_SIZE(capture); i++) {
+			capture[i] = 8;
+		}
+		mpipe_aud_loopback_detect(capture, sizeof(capture));
+		mpipe_aud_loopback_emit(output, sizeof(output));
+	}
+
+	/* Emit the probe burst, then return a signal above the settled floor. */
+	mpipe_aud_loopback_emit(output, sizeof(output));
+	for (size_t i = 0U; i < ARRAY_SIZE(capture); i++) {
+		capture[i] = 64;
+	}
+	mpipe_aud_loopback_detect(capture, sizeof(capture));
+	mpipe_aud_loopback_get(&result);
+
+	zassert_equal(result.quiet_floor, 8U, "settling transient poisoned quiet floor");
+	zassert_true(result.valid, "signal above settled floor was not detected");
+}
+
 ZTEST(mpipe_aud_latency, test_probe_timeout_restores_audio)
 {
 	int16_t buffer[32];

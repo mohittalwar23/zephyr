@@ -41,6 +41,7 @@ enum probe_state {
  * loop howling.
  */
 #define PROBE_QUIET_BUFFERS 100U
+#define PROBE_FLOOR_BUFFERS 10U
 #define PROBE_PENDING_BUFFERS 100U
 
 static struct k_spinlock lock;
@@ -264,7 +265,14 @@ void mpipe_aud_loopback_detect(const void *data, size_t len)
 	K_SPINLOCK(&lock) {
 		noise_floor = MAX(noise_floor, peak);
 
-		if (state == PROBE_QUIET) {
+		/*
+		 * The first quiet buffers still contain audio that was already in
+		 * the converters and acoustic feedback path when muting began.  A
+		 * maximum over that settling transient can stay at full scale and
+		 * make the adaptive threshold unreachable.  Measure the floor only
+		 * over the settled tail of the quiet interval.
+		 */
+		if (state == PROBE_QUIET && quiet_left <= PROBE_FLOOR_BUFFERS) {
 			quiet_floor = MAX(quiet_floor, peak);
 		}
 
