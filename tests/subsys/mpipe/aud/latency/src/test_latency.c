@@ -45,7 +45,7 @@ static void run_pipeline(void)
 	enum mpipe_state_change_return state_ret;
 
 	zassert_ok(mpipe_pipeline_init(&pipe, 0));
-	zassert_ok(mpipe_aud_i2s_src_init(&src, 1));
+	zassert_ok(mpipe_aud_i2s_src_init(&src, 1, DEVICE_DT_GET(DT_ALIAS(i2s_codec_rx))));
 	zassert_ok(mpipe_caps_filter_init(&caps_filter, 2));
 	zassert_ok(mpipe_aud_i2s_codec_sink_init(&sink, 3));
 
