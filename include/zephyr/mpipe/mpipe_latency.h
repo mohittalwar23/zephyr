@@ -77,10 +77,9 @@ struct mpipe_latency_occupancy_stats {
 	 * Mean interval between buffers, in microseconds, 0 until at least two
 	 * have been seen.
 	 *
-	 * Compare it against the negotiated frame interval before converting
-	 * occupancy into time: if they disagree, the stream is not running at
-	 * the rate it negotiated and the negotiated figure is the wrong
-	 * multiplier.
+	 * Compare it against the negotiated frame interval to check whether the
+	 * stream is running at the rate it negotiated. This stream-health value
+	 * does not make pool occupancy convertible into time.
 	 */
 	uint32_t period_us;
 };

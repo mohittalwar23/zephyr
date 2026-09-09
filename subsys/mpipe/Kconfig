@@ -121,9 +121,10 @@ config MPIPE_LATENCY
 	bool "Pipeline latency measurement"
 	help
 	  Measure how long a buffer takes to travel from source to sink, and
-	  how many of the pool's buffers are in flight while it does. The
-	  first is the cost of the software path; the second is the buffering
-	  delay, which is what dominates the latency a user perceives.
+	  how many of the pool's buffers are allocated at that handoff. The
+	  first is the cost of the software path. The second diagnoses pool
+	  pressure and starvation; it can include driver-owned buffers and is
+	  neither queue depth nor buffering delay.
 
 	  This is a debug aid: it adds a cycle read and a spinlock to every
 	  buffer that reaches a sink. Leave it off in production.
