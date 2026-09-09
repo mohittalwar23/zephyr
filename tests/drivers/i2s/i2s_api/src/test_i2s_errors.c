@@ -210,6 +210,20 @@ ZTEST_USER(i2s_errors, test_i2s_get_caps)
 		     "max_num_buffers (%u) is below min_num_buffers (%u)",
 		     caps.max_num_buffers, caps.min_num_buffers);
 
+#if defined(CONFIG_I2S_MCUX_FLEXCOMM)
+	zassert_equal(caps.min_num_buffers, CONFIG_I2S_MCUX_FLEXCOMM_DMA_TX_BLOCKS,
+		      "TX minimum does not describe DMA startup");
+	zassert_equal(caps.max_num_buffers, CONFIG_I2S_MCUX_FLEXCOMM_TX_BLOCK_COUNT,
+		      "TX maximum does not describe the write queue");
+
+	ret = i2s_get_caps(dev_i2s, &caps, I2S_DIR_RX);
+	zassert_ok(ret, "RX i2s_get_caps failed");
+	zassert_equal(caps.min_num_buffers, CONFIG_I2S_MCUX_FLEXCOMM_DMA_RX_BLOCKS,
+		      "RX minimum does not describe DMA startup");
+	zassert_equal(caps.max_num_buffers, CONFIG_I2S_MCUX_FLEXCOMM_RX_BLOCK_COUNT,
+		      "RX maximum does not describe the receive queue");
+#endif
+
 	zassert_true(caps.max_frame_interval >= caps.min_frame_interval,
 		     "max_frame_interval (%u) should be >= min_frame_interval (%u)",
 		     caps.max_frame_interval, caps.min_frame_interval);
