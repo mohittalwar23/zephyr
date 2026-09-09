@@ -118,11 +118,21 @@ static int cmd_latency_reset(const struct shell *sh, size_t argc, char **argv)
 static int cmd_latency_loopback(const struct shell *sh, size_t argc, char **argv)
 {
 	struct mpipe_aud_loopback_result res;
-	uint8_t width = (argc > 1) ? (uint8_t)atoi(argv[1]) : 16U;
-	int ret = mpipe_aud_loopback_arm(width, 0U);
+	uint32_t width = gain.bit_width;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (width != 16U && width != 32U) {
+		shell_error(sh, "negotiated %u-bit PCM is not supported by the probe", width);
+		return -ENOTSUP;
+	}
+
+	ret = mpipe_aud_loopback_arm(width, 0U);
 
 	if (ret != 0) {
-		shell_error(sh, "arm failed (%d); width must be 16 or 32", ret);
+		shell_error(sh, "arm failed (%d)", ret);
 		return ret;
 	}
 
@@ -177,8 +187,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(latency_cmds,
 			       SHELL_CMD(reset, NULL, "Clear the statistics", cmd_latency_reset),
 #if defined(CONFIG_MPIPE_AUD_LOOPBACK_PROBE)
 			       SHELL_CMD_ARG(loopback, NULL,
-					     "Measure the round trip through the converters [16|32]",
-					     cmd_latency_loopback, 1, 1),
+					     "Measure the round trip through the converters",
+					     cmd_latency_loopback, 1, 0),
 #endif
 			       SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(latency, &latency_cmds, "Pipeline latency", NULL);
