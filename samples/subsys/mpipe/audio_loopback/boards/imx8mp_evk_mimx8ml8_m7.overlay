@@ -54,6 +54,7 @@
 	/delete-property/ mclk-is-output;
 	compatible = "nxp,mcux-i2s";
 	nxp,tx-channel = <1>;
+	nxp,rx-sync-mode;
 	mclk-output;
 	pinctrl-0 = <&sai3_default>;
 	pinctrl-names = "default";
