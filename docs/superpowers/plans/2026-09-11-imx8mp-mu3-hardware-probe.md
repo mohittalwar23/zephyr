@@ -195,11 +195,11 @@ if test -e build/probe-m7 || test -e build/probe-dsp; then
   exit 1
 fi
 ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
-  /home/mt/zephyrproject/.venv/bin/west build -p always \
+  /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe build -p always \
   -d build/probe-m7 -b imx8mp_evk/mimx8ml8/m7 \
   samples/subsys/ipc/ipc_service/imx8mp_mu3_probe
 ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
-  /home/mt/zephyrproject/.venv/bin/west build -p always \
+  /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe build -p always \
   -d build/probe-dsp -b imx8mp_evk/mimx8ml8/adsp \
   samples/subsys/ipc/ipc_service/imx8mp_mu3_probe
 ```

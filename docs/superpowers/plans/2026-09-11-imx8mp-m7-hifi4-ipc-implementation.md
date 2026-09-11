@@ -13,7 +13,9 @@
 ## Global Constraints
 
 - Zephyr implementation base is exactly `a730906a1f6d986a159966f5a488560e7ba4dd03` plus the approved design/plan commits; NXP HAL remains `1123e43d6350489036f5a14d296c2c18cbd39478`.
-- Use `/home/mt/zephyrproject/.venv/bin/west` and Zephyr SDK `/home/mt/zephyr-sdk-1.0.1`; do not run `west update`.
+- Use `/home/mt/zephyrproject/.venv/bin/west` with `-z` set to the active
+  execution worktree and Zephyr SDK `/home/mt/zephyr-sdk-1.0.1`; otherwise west
+  silently selects the main checkout. Do not run `west update`.
 - Preserve `gsoc/evk-imx8mp-integration-final`, all tested worktrees, SOF `dai-burst-fix`, and every existing untracked file.
 - Never copy from `gsoc/mp-ipc-plugin` or commit `69cb3b08a12a`; recover attributable work from its original commits or implement independently.
 - Preserve Thong Phan as author for reused PR #96657 model/preprocessing content and retain TensorFlow Authors/Apache-2.0 notices.
@@ -126,9 +128,9 @@ approval.
 - [ ] **Step 2: Complete protocol/transport through native and build-only gates**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T tests/subsys/mpipe/ipc_protocol -p native_sim/native/64 -p qemu_cortex_m3
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T tests/subsys/mpipe/ipc_transport -p native_sim/native/64
 ```
 
@@ -167,7 +169,7 @@ ipc_plan_commit=$(git merge-base HEAD codex/imx8mp-m7-hifi4-ipc-design)
 git diff --check "$ipc_plan_commit"..HEAD
 git log --format='%h %an <%ae> %s%n%b' "$ipc_plan_commit"..HEAD
 git status --short
-/home/mt/zephyrproject/.venv/bin/west twister -T tests/subsys/mpipe
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister -T tests/subsys/mpipe
 ```
 
 - [ ] **Step 2: Prove only intended files and authorship are present**
