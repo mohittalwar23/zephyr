@@ -2,7 +2,7 @@
 
 Date: 2026-09-11
 
-Status: Design approved; implementation not authorized
+Status: Revised after independent review; approval required; implementation not authorized
 
 Target board: NXP i.MX8M Plus EVK
 
@@ -29,6 +29,13 @@ The authoritative inputs are:
 This document is a design artifact only. It does not authorize source changes,
 firmware installation, remote-processor starts, device-tree replacement, or a
 push. Tested branches and commit attribution must remain intact.
+
+Independent review of commit `761aee5a7b4f4d328223b9811f2211c5e2b8891c`
+returned a no-go for planning. This revision addresses its lifecycle,
+persistent-vring reset, buffer sizing, wire protocol, bootstrap, restart-test,
+attribution, and approval-state findings. Because those changes are material,
+the revised specification requires explicit approval before implementation
+planning.
 
 ## Goals
 
@@ -64,9 +71,10 @@ differences or refinements:
 | --- | --- | --- | --- |
 | Linux DT topology | Prior M7 and DSP images were described as mutually exclusive | The running `imx8mp-evk-rpmsg.dtb` exposes both remoteproc nodes simultaneously; both are currently offline | A combined remoteproc base already exists. SOF remains a mutually exclusive runtime stack, but generic M7 and DSP remoteproc coexistence does not need to be invented |
 | Kernel identity | Short BSP identity was known | Running kernel is `6.6.52-lts-next-g90192c5d29cb`; exact commit is `90192c5d29cb650fd7f7dd9094af14eefb38837d` | Design must accommodate the exact 6.6 DSP driver's firmware-ready wait behavior |
-| Shared DDR placement | Address was open | Live memory has an unreserved 19 MiB gap at `0x91100000-0x923fffff` | Reserve a provisional 128 KiB window at `0x91100000`; final acceptance remains gated on clean firmware ELF checks and a hardware probe |
+| Shared DDR placement | Address was open | `0x91100000` is free but write-through cached by the HiFi4 reset cache attributes; live Linux also reports unreserved System RAM at `0xa0000000` | Move the provisional window to a 256 KiB cache-bypass-aligned region at `0xa0000000`; final acceptance remains gated on a clean probe and final DT/ELF checks |
 | Linux audio nodes | Not fully inventoried | RPMsg audio and RPMsg MICFIL nodes are enabled; physical MICFIL, SAI3, SDMA3, and sound nodes are disabled | The direct-MU3 production overlay must disable both Linux RPMsg audio nodes to avoid stale ownership and misleading devices |
 | MU3 runtime state | Register permissions and clock state were unknown | With both remotes offline, `mu3_cg` is disabled and AudioMix is powered off; strict `/dev/mem` prevents read-only RDC inspection | MU3 clock/power and RDC permissions require a provenance-clean probe; no conclusion may be inferred from offline state |
+| DSP clock ownership | MU3 clock owner was open | The active DSP node lists only `ocram`, `core`, and `debug`; the exact driver supports optional `per_clk1`...`per_clk18`, and the clock provider exposes MU3 root | Add MU3 root as `per_clk1`, making Linux DSP runtime PM the sole gate owner; verify on hardware |
 | Installed experiments | Old binaries were known to exist | `mu3-*`, `xcore-*`, and related Zephyr artifacts identify prohibited commit `69cb3b08a12a`; none was run | Installed experiments are quarantined and cannot serve as evidence or implementation input |
 | Upstream Zephyr | Moving baseline was expected | `origin/main` advanced to `3860b8cb663...`; scoped IPC/MBOX/i.MX/mpipe review found no relevant replacement for the tested integration | Continue from the exact tested integration, not a moving rebase |
 
@@ -93,6 +101,10 @@ differences or refinements:
 - Both are offline in the audited state.
 - The running DSP driver requests MU2 transmit, receive, and receive-doorbell
   channels and waits for a firmware-ready notification during start.
+- Its firmware parser explicitly treats a missing ELF resource table as a
+  warning and returns success. With no advertised vdev, remoteproc creates no
+  Linux-to-DSP RPMsg transport and therefore has no normal virtqueue kick to
+  send after boot.
 - The exact 6.6 driver has a `no_mailboxes` diagnostic module parameter, but
   its suspend path assumes a transmit channel. It is not a production solution.
 - A later NXP driver supports the vendor `DONT_WAIT` resource-table flag, but
@@ -137,7 +149,7 @@ The system has a Linux lifecycle plane and a remote-to-remote data plane:
                                       <----- one-shot FW_READY
 
                                real-time data plane
-                     MU3 notifications + 128 KiB shared DDR
+                     MU3 notifications + 256 KiB shared DDR
                   M7 host  <==========================>  HiFi4 remote
                        one static-vrings physical instance
                          control endpoint + audio endpoint
@@ -149,16 +161,66 @@ remote. MU3 is dedicated to this direct transport.
 
 ## Linux lifecycle and the MU2 bootstrap exception
 
-The normal start order is HiFi4 first, then M7. This allows the DSP to complete
-its Linux remoteproc handshake and bind the direct endpoint before capture can
-start. The normal stop order is M7 capture stop and drain, M7 stop, then HiFi4
-stop.
+Linux userspace runs a pair supervisor, provisionally named `mpipe-paird`. It
+is the only component permitted to write either remoteproc `state` attribute.
+It also opens an M7 management RPMsg character endpoint on the existing MU1
+link, named `imx8mp.mpipe.mgmt.v1`. That endpoint carries pair commands,
+state, counters, and faults; normal audio and direct-link credits never traverse
+Linux.
 
-On the exact 6.6 BSP, the HiFi4 firmware sends exactly one raw, transmit-only
-MU2 firmware-ready doorbell during boot. It does not instantiate a Zephyr MU2
-mailbox interrupt device and does not use MU2 for application data. This narrow
-exception satisfies the Linux driver's existing boot contract without creating
-the shared-IRQ collision between Zephyr MU2 and MU3 devices.
+The production start order remains HiFi4 first, then M7:
+
+1. Discover the remotes by their `name` attributes rather than assuming stable
+   enumeration. Verify both are offline, the expected firmware names and hashes
+   are selected, and no conflicting audio service is active.
+2. Start the HiFi4; require its state to become `running` within 5 seconds. On
+   the exact 6.6 BSP this includes its MU2 ready handshake.
+3. Start the M7; require its state to become `running` and the MU1
+   management endpoint to appear within 5 seconds.
+4. Require an M7 `PAIR_STATE` report with state `PAUSED` within another 5
+   seconds. It proves a new direct-link session is ready; it does not start
+   capture.
+5. Send an idempotent `PAIR_START` with a nonzero transaction ID. Require
+   `PAIR_START_ACK` within 2 seconds before reporting the service active.
+
+Any start failure rolls back everything started by that transaction: stop the
+M7 if it reached running, then stop the HiFi4, verify both state attributes are
+offline, and mark the pair faulted. A repeated start request returns the
+current state and never starts either core twice.
+
+For an orderly stop, the supervisor sends `PAIR_QUIESCE` over MU1. The M7 stops
+new capture, completes the direct `STOP` transaction, accounts for all credits
+and held buffers, then returns `PAIR_QUIESCED`. The supervisor allows 2 seconds,
+then stops the M7 and the HiFi4 in that order, verifying each becomes offline
+within 5 seconds. If quiesce or a normal stop times out, it force-writes `stop`
+to the M7 first and then the HiFi4, records an unclean shutdown, and requires a
+fresh paired session before capture may resume.
+
+The supervisor maintains a 500 ms management heartbeat with the M7 and faults
+after three missed replies. A DSP direct-link error is relayed by the M7 as
+`PAIR_FAULT`; an M7-local fatal error is reported directly. If the M7 crashes
+or its endpoint disappears, Linux detects that without relying on M7 relay.
+Every such fault invokes the same paired stop/restart policy. One-core restart
+while its peer continues is prohibited.
+
+The management protocol uses the common 40-byte header below with stream ID
+zero. Its control prefix and transaction rules are identical to the direct
+control endpoint. Management-only message types are `PAIR_QUERY` (`0x40`),
+`PAIR_STATE` (`0x41`), `PAIR_START` (`0x42`), `PAIR_START_ACK` (`0x43`),
+`PAIR_QUIESCE` (`0x44`), `PAIR_QUIESCED` (`0x45`), and `PAIR_FAULT` (`0x46`).
+Their body is the 20-byte `STATUS` body defined below; command requests set
+state to the requested target and zero all counters. `PAIR_FAULT` uses the
+16-byte `ERROR` body. Linux refuses an ACK whose transaction ID does not match
+the outstanding command.
+
+On the exact 6.6 BSP, the HiFi4 firmware triggers MU2_B general interrupt zero
+exactly once per boot, after minimal local initialization and before waiting on
+MU3. Linux binds that to its `<&mu2 3 0>` receive-doorbell channel and clears
+its ready flag again on stop. The firmware sends no data word, enables no MU2
+receive or general-interrupt source, creates no Zephyr MU2 mailbox device, and
+does not use MU2 for application traffic. Its resource table must not advertise
+a Linux RPMsg vdev. Acceptance of an ELF with no resource table and of the
+one-shot notification is an explicit clean-probe test.
 
 System suspend is prohibited while either member of the pair is running. The
 orchestrator must stop the pair before suspend. A future BSP backport of the
@@ -179,6 +241,9 @@ The production Linux device tree must:
   with `no-map`;
 - omit the direct window from both remoteproc `memory-region` arrays so neither
   driver's prepare phase clears live peer data;
+- add `IMX8MP_CLK_AUDIOMIX_MU3_ROOT` to the DSP remoteproc `clocks` list as
+  `per_clk1`, so the exact DSP driver enables it with the AudioMix power domain
+  for the remote's runtime and disables it at runtime suspend;
 - disable the existing RPMsg audio and RPMsg MICFIL nodes for this operating
   mode; and
 - leave physical audio peripherals assigned according to the selected M7
@@ -190,10 +255,9 @@ gains only the MU3_B mailbox interrupt device; it must not create a MU2 mailbox
 interrupt device. The boot-only MU2 ready write is a narrowly isolated platform
 operation.
 
-Mailbox channel direction must be complementary between the static-vrings host
-and remote. The likely mapping is host transmit channel 0 / receive channel 1
-and remote transmit channel 1 / receive channel 0. It remains provisional until
-confirmed against the final binding examples and a clean hardware probe.
+NXP's paired static-vrings board examples establish the complementary channel
+mapping: M7 host `tx = 0`, `rx = 1`; HiFi4 remote `rx = 0`, `tx = 1`. The clean
+probe must still demonstrate both directions on this SoC before feature work.
 
 ## Shared-memory layout
 
@@ -201,18 +265,33 @@ The provisional direct window is:
 
 | Property | Value |
 | --- | --- |
-| Physical base | `0x91100000` |
-| Size | `0x00020000` (128 KiB) |
-| End, exclusive | `0x91120000` |
+| Physical base | `0xa0000000` |
+| Size | `0x00040000` (256 KiB) |
+| End, exclusive | `0xa0040000` |
 | Linux mapping | `reserved-memory`, `no-map` |
-| Zephyr alignment | 64 bytes |
-| Static-vrings payload buffer | 768 bytes |
+| Zephyr alignment | 128 bytes |
+| Static-vrings transport buffer | 1024 bytes |
+| RPMsg application-visible maximum | 1008 bytes after its 16-byte header |
 | Planned descriptors | 64 in each direction |
 
-The window begins immediately after the existing 1 MiB RPMsg MICFIL reservation
-and lies below the DSP image at `0x92400000`. The current allocation algorithm
-needs approximately 101,952 bytes for 64 descriptors in each direction, so 128
-KiB provides margin for alignment and metadata.
+Both Zephyr static-vrings nodes receive only
+`0xa0000000-0xa003ff7f` (262,016 bytes). The aligned retained-generation block
+occupies `0xa003ff80-0xa003ffff`; it is never included in the backend's memory
+region. Linux reserves the enclosing 256 KiB as one unit.
+
+The live Linux map currently treats this range as unreserved System RAM. The
+production `reserved-memory` node therefore removes it from the allocator. The
+M7 MPU maps `0x80000000-0xbfffffff` as normal non-cacheable memory. The HiFi4
+reset `CACHEATTR` maps 512 MiB windows and gives `0xa0000000-0xbfffffff` cache
+bypass, whereas the earlier `0x91100000` candidate is write-through cached.
+
+With 128-byte alignment, 1024-byte transport buffers, and 64 descriptors, each
+vring is 1,920 bytes. The backend requires
+`2 * (64 * 1024 + 1920) + 128 = 135,040` bytes, including its status block.
+An additional 128-byte generation block makes the exact v1 requirement 135,168
+bytes. The 256 KiB reservation provides margin but cannot support 128 descriptors:
+that configuration requires 269,568 bytes. Descriptor count is therefore
+fixed at 64 unless the reservation and sizing proof are reviewed together.
 
 The address is not final until all of the following pass:
 
@@ -220,6 +299,7 @@ The address is not final until all of the following pass:
 - the final Linux DT has no overlapping reservation or ordinary System RAM
   allocation;
 - both remotes observe the same pattern through the intended cache policy; and
+- Linux excludes the entire window after the overlay is applied; and
 - the address is recorded in one shared source of truth used by both builds and
   the Linux overlay.
 
@@ -238,6 +318,40 @@ components must not independently tear down the underlying transport.
 The backend uses `K_NO_WAIT` for transmit-buffer acquisition. Neither capture
 nor a mailbox callback may block waiting for transport space.
 
+The M7 host is the sole owner of persistent-vring reset and initialization.
+`CONFIG_IPC_SERVICE_BACKEND_RPMSG_SHMEM_RESET` is enabled on the host: its
+pre-kernel initialization clears the shared status block, and host OpenAMP
+creation clears and initializes both vrings. The HiFi4 never clears a vring.
+
+The last 128 bytes of the direct reservation are a separately aligned retained
+generation block, not backend status. Its fixed little-endian layout is:
+
+| Offset | Field | Rule |
+| ---: | --- | --- |
+| 0 | magic | four bytes `MGEN` |
+| 4 | version / length | `le16` 1 / `le16` 128 |
+| 8 | host generation / inverse | nonzero `le32` and bitwise inverse `le32` |
+| 16 | DSP-accepted generation / inverse | `le32` and bitwise inverse `le32` |
+| 24 | host state | `le32`: 0 initializing, 1 published |
+| 28..127 | reserved | zero |
+
+On every M7 boot, the host writes state 0, completes backend status/vring reset,
+executes a release barrier, increments the retained host generation (invalid or
+wrapped state becomes 1), writes its inverse, and publishes state 1. It opens
+the host backend only after publication. The DSP waits up to 5 seconds for a
+valid published generation different from its retained accepted generation,
+then opens the remote backend. Because reset precedes generation publication,
+a nonzero backend status observed with that new generation belongs to the new
+host even if the DSP did not sample the intervening zero. The DSP records the
+accepted generation only after HELLO succeeds.
+
+This rule supports both boot orders. A DSP-first boot waits for a new host
+generation; an M7-first boot finds the new generation already published. A
+host-generation change after a DSP has accepted one is fatal rather than an
+in-place rebind. A DSP reboot while the old generation remains cannot accept
+stale `DRIVER_OK` and times out into paired recovery. HELLO and its new nonzero
+session ID provide a second generation check before application traffic.
+
 ## Wire format
 
 All multibyte wire fields are little-endian. Receivers reject unknown mandatory
@@ -246,7 +360,7 @@ failures before the payload is exposed to audio processing.
 
 ### Common header
 
-Every message begins with a 32-byte header:
+Every message begins with a 40-byte header:
 
 | Offset | Field | Encoding |
 | ---: | --- | --- |
@@ -254,19 +368,31 @@ Every message begins with a 32-byte header:
 | 4 | major | `u8` |
 | 5 | minor | `u8` |
 | 6 | type | `u8` |
-| 7 | header length | `u8`, value 32 in v1 |
+| 7 | header length | `u8`, value 40 in v1 |
 | 8 | flags | `le32` |
 | 12 | session ID | nonzero `le32` |
-| 16 | sequence | `le32` |
-| 20 | payload length | `le32` |
-| 24 | capture timestamp | microseconds modulo 2^32, `le32` |
-| 28 | CRC32C | header with this field zeroed, followed by payload |
+| 16 | stream ID | `le32`; 0 control/management, 1 audio |
+| 20 | sequence | `le32` |
+| 24 | payload length | `le32` |
+| 28 | timestamp | microseconds modulo 2^32, `le32` |
+| 32 | format generation | `le32`; 0 control, initially 1 audio |
+| 36 | CRC32C | header with this field zeroed, followed by payload |
+
+Version 1.0 recognizes flags bit 0 `ACK_REQUIRED`, bit 1 `RETRY`, bit 2
+`DISCONTINUITY`, and bit 3 `FATAL`. Bits 4 through 31 must be zero. CRC32C uses
+the Castagnoli polynomial and covers exactly the 40-byte header with its CRC
+field zeroed, then `payload length` bytes.
 
 A new paired-core start creates a new, nonzero session ID. Sequence numbers are
-monotonic modulo 2^32 within a session and independently tracked per endpoint
-and direction. Duplicate, stale-session, and gap events increment distinct
-counters. A duplicate or stale message is discarded; a gap is reported and the
-stream continues unless a control transaction has lost required state.
+monotonic modulo 2^32 starting at zero, independently tracked per stream and
+direction. Duplicate, stale-session, and gap events increment distinct
+counters. A duplicate or stale message is discarded; an audio gap sets a
+discontinuity and resets partial aggregation. A control gap faults the session
+if it prevents completion of the single outstanding transaction. The M7
+creates the session ID after every host boot; the DSP accepts it only during a
+fresh HELLO after the status-zero bootstrap. Format generation starts at one
+and increments on each accepted CONFIG change. Version 1 forbids live format
+change while streaming.
 
 ### Audio descriptor
 
@@ -283,31 +409,82 @@ Audio messages append a 16-byte descriptor before PCM bytes:
 | 10 | reserved | `le16`, must be zero |
 | 12 | PCM byte count | `le32` |
 
-Version 1 audio is 16 kHz, signed 16-bit little-endian, stereo interleaved,
-160 samples per channel, and 10 ms per frame. PCM occupies 640 bytes; header,
-descriptor, and PCM total 688 bytes, which fits the 768-byte transport buffer.
+Version 1 audio is 16 kHz, signed 16-bit little-endian (`format = 1`), stereo
+interleaved (`layout = 1`), 160 samples per channel, and 10 ms per frame. PCM
+occupies 640 bytes; header, descriptor, and PCM total 696 bytes, which fits the
+1008-byte application-visible maximum.
 
 ### Control messages
 
-Version 1 defines `HELLO`, `HELLO_ACK`, `CONFIG`, `CONFIG_ACK`, `START`,
-`START_ACK`, `STOP`, `STOP_ACK`, `CREDIT`, `STATUS`, `ERROR`, and `HEARTBEAT`.
-Requests and acknowledgements carry a transaction sequence. A major-version
-mismatch prevents stream start. A minor-version mismatch is allowed only when
-both sides agree that all requested capabilities are understood.
+Version 1.0 assigns the following message types:
+
+| Value | Type | Body |
+| ---: | --- | --- |
+| `0x01` / `0x02` | `HELLO` / `HELLO_ACK` | HELLO, 16 bytes |
+| `0x03` / `0x04` | `CONFIG` / `CONFIG_ACK` | audio descriptor, 16 bytes |
+| `0x05` / `0x06` | `START` / `START_ACK` | START, 8 bytes |
+| `0x07` / `0x08` | `STOP` / `STOP_ACK` | STOP, 8 bytes |
+| `0x09` | `CREDIT` | CREDIT, 8 bytes |
+| `0x0a` | `STATUS` | STATUS, 20 bytes |
+| `0x0b` | `ERROR` | ERROR, 16 bytes |
+| `0x0c` / `0x0d` | `HEARTBEAT` / `HEARTBEAT_ACK` | HEARTBEAT, 8 bytes |
+| `0x20` | `AUDIO` | audio descriptor followed by PCM |
+
+Every control payload begins with an 8-byte prefix: transaction ID `le32`,
+result `le16`, and following body length `le16`. Requests use a nonzero
+transaction ID and result zero; acknowledgements echo that ID. Unsolicited
+`CREDIT`, `STATUS`, and `ERROR` use transaction ID zero. Result values are 0
+success, 1 unsupported version, 2 invalid state, 3 invalid argument, 4 busy,
+and 5 internal error. Other values are reserved. Only one acknowledged control
+transaction may be outstanding per direction. Timeout is 1 second; retry once
+with the same ID and `RETRY`, then fault.
+
+The exact control bodies are:
+
+- HELLO: role `u8` (1 M7 host, 2 DSP remote), endpoint count `u8` (2), credit
+  maximum `le16` (1..8), capability bits `le32` (zero in v1), maximum message
+  `le32` (1008), heartbeat milliseconds `le16` (500), and control timeout
+  milliseconds `le16` (1000). Its ACK contains the selected values.
+- CONFIG: the 16-byte audio descriptor above. Its ACK echoes the selected
+  descriptor. The negotiated format generation is 1 for subsequent AUDIO
+  messages; CONFIG itself retains control-stream generation zero.
+- START: initial credits `le16` (requested 4), queue depth `le16` (requested
+  4), and first audio sequence `le32` (0). Its ACK contains selected values.
+- STOP: reason `le16`, mode `u8` (1 means drain), reserved `u8` (zero), and
+  last submitted/released audio sequence `le32`. Its ACK reports the last
+  released sequence and succeeds only when held-buffer and credit accounting
+  is balanced.
+- CREDIT: returned count `le16`, negotiated limit `le16`, and last released
+  audio sequence `le32`. The sender rejects zero returns and totals above the
+  negotiated limit.
+- STATUS: state `u8`, last error `u8`, credits `le16`, held buffers `le16`,
+  queue depth `le16`, last received sequence `le32`, no-credit drops `le32`,
+  and queue-full drops `le32`.
+- ERROR: code `le16`, subsystem `u8`, severity `u8`, offending type `u8`, three
+  reserved zero bytes, offending sequence `le32`, and implementation-defined
+  detail `le32`. Severity 2 is fatal; values 0 and 1 are informational and
+  recoverable.
+- HEARTBEAT: uptime milliseconds `le32`, state `u8`, and three reserved zero
+  bytes. Its ACK echoes the request body.
+
+Unknown types are rejected. An unknown control type receives `ERROR` when it is
+safe to do so; an unknown audio type is dropped and counted. A major-version
+mismatch prevents stream start. A higher minor version is accepted only if all
+mandatory flags and capabilities are understood.
 
 ## Session state machine
 
 Both peers implement the same externally observable states:
 
-1. `BOOT`: local hardware and transport initialization.
-2. `BIND`: both logical endpoints are bound.
-3. `HELLO`: version, role, session, and capability agreement.
-4. `CONFIGURED`: the fixed v1 audio format is accepted.
-5. `PAUSED`: transport is ready but capture is not producing frames.
-6. `STREAMING`: credits permit audio transfer.
-7. `DRAINING`: M7 has stopped new capture submissions and outstanding receive
+1. `BOOT` (0): local hardware and transport initialization.
+2. `BIND` (1): both logical endpoints are bound.
+3. `HELLO` (2): version, role, session, and capability agreement.
+4. `CONFIGURED` (3): the fixed v1 audio format is accepted.
+5. `PAUSED` (4): transport is ready but capture is not producing frames.
+6. `STREAMING` (5): credits permit audio transfer.
+7. `DRAINING` (6): M7 has stopped new capture submissions and outstanding receive
    ownership is being returned.
-8. `FAULT`: no new audio is accepted; Linux must recover the pair.
+8. `FAULT` (7): no new audio is accepted; Linux must recover the pair.
 
 Only acknowledged control transitions change streaming state. A control timeout
 retries only an idempotent transaction with the same transaction identifier.
@@ -316,7 +493,7 @@ never advance the state machine.
 
 ## Flow control and buffer ownership
 
-The HiFi4 receiver initially grants four audio credits after `START_ACK`; the
+The HiFi4 receiver grants four initial audio credits in `START_ACK`; the
 protocol maximum is eight. One credit authorizes exactly one audio message. A
 credit is returned only after the HiFi4 has finished with the held receive
 buffer and released it to the transport.
@@ -356,25 +533,34 @@ window.
 
 ## Cache and ordering contract
 
-The shared region is explicitly non-cacheable on both remotes for the initial
-implementation unless the clean hardware probe demonstrates a supported,
-matched coherent mapping. Device-tree and linker placement alone are not
-accepted as proof of cache behavior.
+The initial shared region is normal non-cacheable in the M7 MPU and cache
+bypass in the HiFi4 reset mapping. This avoids cache-line ownership sharing
+between processors while retaining normal-memory ordering semantics. The
+128-byte transport alignment matches the HiFi4 data-cache line even though the
+selected region bypasses that cache. Device-tree and linker placement alone
+are not accepted as proof; the clean probe must verify attributes and repeated
+bidirectional visibility at `0xa0000000`.
 
 Producer ordering is payload and descriptor writes, memory barrier, then MU3
 notification. Consumer ordering is notification, memory barrier, then
 descriptor and payload reads. The static-vrings backend's cache maintenance and
 barriers must be audited against this contract on both architectures. If either
 side uses a cacheable mapping, explicit clean/invalidate operations and cache
-line ownership rules become mandatory before implementation approval.
+line ownership rules become mandatory and the design must return for approval.
+Zephyr OpenAMP/libmetal cache-operation configuration and the final map are
+recorded in the build manifest even when the bypass mapping makes maintenance a
+no-op.
 
 ## Clock, power, and access control
 
 The direct design requires MU3 clock enable while either endpoint is active and
 valid RDC access for M7 MU3_A PDAP18 and HiFi4 MU3_B PDAP31. SEMA42 ownership
-must not deny either side's intended access. Linux remains responsible for
-bringing the relevant AudioMix power domain and clocks into a usable state
-before releasing the DSP.
+must not deny either side's intended access. Linux owns the production MU3
+clock lifetime: the DSP remoteproc node supplies
+`IMX8MP_CLK_AUDIOMIX_MU3_ROOT` as `per_clk1`. The exact 6.6 DSP driver bulk
+enables named peripheral clocks during runtime resume, after enabling its power
+domains, and disables them during runtime suspend. Neither remote firmware may
+toggle the AudioMix MU3 gate directly.
 
 Current offline clock state does not prove a defect. Before feature code, a
 minimal provenance-clean probe must record:
@@ -392,21 +578,28 @@ hashes are reviewed. Existing installed `69cb3b08a12a` artifacts are prohibited.
 
 Protocol-fatal conditions include bad negotiated state, repeated control
 timeout, send failure after buffer acquisition, ownership accounting failure,
-or inability to make progress while heartbeats continue. Data validation
-failures are counted and dropped; a configured threshold escalates persistent
-corruption to protocol-fatal.
+failure to observe the fresh-host zero/`DRIVER_OK` sequence, three missed 500 ms
+heartbeats, or inability to make progress while heartbeats continue. Data
+validation failures are counted and dropped. Eight CRC or structural errors in
+any rolling 1-second interval escalate persistent corruption to fatal; a clean
+second resets the interval count.
 
 On fatal error:
 
 1. Stop M7 capture submissions.
 2. Mark both endpoints faulted and reject new application traffic.
 3. Release all locally held receive buffers that can be safely accounted for.
-4. Report final counters and reason to Linux-visible diagnostics.
-5. Have Linux stop the M7 and then the HiFi4.
-6. Restart HiFi4 and then M7 with a new session ID.
+4. Report final counters and reason over the MU1 management endpoint if the M7
+   remains alive; otherwise Linux detects the failed remoteproc or endpoint.
+5. Have `mpipe-paird` stop the M7 and then the HiFi4, using the forced-stop
+   path if normal quiesce cannot complete.
+6. Restart HiFi4 and then M7 with a new session ID only under the supervisor's
+   configured restart policy.
 
 The first implementation does not attempt in-place vring repair or unilateral
-remote recovery.
+remote recovery. An accidental one-core restart must never resume streaming:
+the peer detects a session, heartbeat, or transport-state discontinuity and
+requests paired recovery.
 
 ## Observability and console ownership
 
@@ -439,24 +632,37 @@ authored commits associated with upstream work, especially PRs #114088 and
 remain visible in commit history; code must not be copied from the quarantined
 branch.
 
+PR #96657 is also an upstream input requiring explicit provenance handling.
+Its current head `433157262647ffcd042fb8621c6160ac71d5e8af` contains three
+commits authored by Thong Phan (`101fb10a`, `e8edea20`, and `43315726`) covering
+the sample, transport, and documentation. Any model/preprocessing reuse must be
+content-reviewed from that original head, preserve Thong Phan's authored
+commits or attribution, retain the TensorFlow Authors copyright and Apache-2.0
+notices present in model assets, and be coordinated with the author before an
+upstream submission. The open, changes-requested PR is a reference, not a
+license to copy through the quarantined branch.
+
 ## Verification stages
 
 Implementation planning must keep these stages independently reviewable:
 
 1. Freeze and record exact source, toolchain, DTS, and firmware inputs.
 2. Run the approved minimal MU3/DDR probe and close the access, clock, IRQ,
-   cache, address, and channel-mapping unknowns.
+   cache, address, channel-direction, and MU2-ready unknowns. Test both remote
+   start orders; DSP-first is production and M7-first must converge safely.
 3. Add common protocol definitions with host-side serialization, validation,
    CRC, sequence, and state-machine tests.
 4. Add the one physical static-vrings transport and two logical endpoints on
    both remotes, initially without audio.
 5. Exercise control negotiation, credits, held-buffer accounting, saturation,
-   and paired restart.
+   paired restart, retained-memory reboot, and accidental one-core restart in
+   each direction. The one-core cases must fault rather than resume streaming.
 6. Connect the M7 mpipe sink and prove bounded newest-frame drops under load.
 7. Connect the HiFi4 source, stereo-to-mono adapter, 20 ms aggregation, and
    model window; verify arithmetic and reset behavior with known vectors.
-8. Add the production Linux overlay and orchestration, including suspend
-   exclusion and exact start/stop order.
+8. Add the production Linux overlay and pair supervisor, including verified
+   sysfs transitions, rollback/forced-stop behavior, management-heartbeat
+   failure, suspend exclusion, and exact start/stop order.
 9. Run extended audio, inference, fault-injection, restart, and cold-boot tests
    while capturing the required provenance record.
 
@@ -466,17 +672,18 @@ The following are intentionally unresolved and must be closed before their
 dependent implementation stage:
 
 - live RDC PDAP18/PDAP31 and SEMA42 permissions;
-- who enables and retains the AudioMix MU3 clock/power domain in the production
-  boot sequence;
-- exact complementary MU channel indices and DSP IRQ 7 demultiplex behavior;
-- verified M7 and HiFi4 cache attributes for the proposed DDR mapping;
+- DSP IRQ 7 MU2/MU3 demultiplex behavior under the direct firmware;
+- hardware confirmation of the source-verified channel 0/1 direction mapping;
+- hardware confirmation of the source-derived M7 non-cacheable and HiFi4
+  cache-bypass attributes at `0xa0000000`;
 - final shared-memory address after final ELF and Linux-memory validation;
 - the clean probe's design, source provenance, binaries, and run procedure;
-- the production orchestration interface and mechanism for suspend exclusion;
-- acceptable timeout, retry, heartbeat, and persistent-corruption thresholds;
-- recovery signaling from remote diagnostics to the Linux orchestrator; and
-- whether the exact-6.6 MU2 one-shot is accepted for production or replaced by
-  a reviewed BSP backport before release.
+- end-to-end confirmation that the exact-6.6 driver observes the one-shot
+  MU2_B general interrupt zero from the direct DSP firmware;
+- practical validation of Linux-owned MU3 gate lifetime through the DSP
+  remoteproc `per_clk1` entry; and
+- the operating-system mechanism used by `mpipe-paird` to enforce the stated
+  suspend prohibition.
 
 Approval gates are:
 
