@@ -1,0 +1,15 @@
+#
+# Copyright (c) 2026 Mohit Talwar
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config MPIPE_IPC
+	bool "Direct inter-core IPC protocol"
+	select CRC
+	help
+	  Version 1 wire protocol for the direct M7 to HiFi4 link: framing,
+	  CRC32C integrity, structural validation, and the paired session
+	  state machine. Transport independent; it marshals bytes and decides
+	  whether they are currently meaningful, while the IPC Service backend
+	  moves them between cores.

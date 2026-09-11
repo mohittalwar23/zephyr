@@ -1,0 +1,11 @@
+tests:
+  mpipe.ipc.protocol:
+    platform_allow:
+      - native_sim/native/64
+      - qemu_cortex_m3
+    integration_platforms:
+      - native_sim/native/64
+    tags:
+      - mpipe
+      - ipc
+    timeout: 60
