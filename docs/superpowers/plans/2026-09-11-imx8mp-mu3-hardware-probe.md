@@ -97,9 +97,11 @@ succeeds; failure disarms the prior gate and restores the previous firmware
 selection while the lock remains live. Lock loss after a possible selection
 change must report the exact previous values and require manual recovery.
 Open/flush the UART only after the run lock is acquired, and restore and close
-it before releasing that lock. If the lock connection dies during a run, close
-the UART and dead process context while retaining the PM hold for recovery
-under newly acquired exclusivity. Save the previous DSP
+it before releasing that lock. If the lock connection dies before confirmed
+PM restoration, close the UART and dead process context, conservatively treat
+the PM hold as retained, and recover under newly acquired exclusivity. Loss
+during the PM-restore write makes board PM state ambiguous and requires a
+readback before further action. Save the previous DSP
 `power/control`, write `on`, wait for `runtime_status=active`, verify every
 state write, stop M7 before DSP, and restore PM only when both are offline.
 `ArtifactInstaller` must compare the local, copied, and remotely recomputed
