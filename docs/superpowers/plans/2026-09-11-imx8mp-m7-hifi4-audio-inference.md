@@ -71,7 +71,7 @@ ZTEST(mpipe_ipc_elements, test_two_sinks_are_independent)
 - [ ] **Step 2: Run the suite and verify the missing-element failure**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 ```
 
@@ -86,7 +86,7 @@ drop/fatal counters through a copy-out accessor.
 - [ ] **Step 4: Run tests and commit the sink**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 git diff --check
 git add include/zephyr/mpipe/ipc subsys/mpipe/ipc tests/subsys/mpipe/ipc_elements
@@ -145,7 +145,7 @@ processing the next valid frame after any discontinuity.
 - [ ] **Step 4: Run all element tests and commit**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 git diff --check
 git add include/zephyr/mpipe subsys/mpipe tests/subsys/mpipe/ipc_elements
@@ -181,11 +181,11 @@ counters only. Configure fixed pools/queues at compile time.
 audio_m7_build=$(mktemp -d /tmp/imx8mp-audio-m7.XXXXXX)
 audio_dsp_build=$(mktemp -d /tmp/imx8mp-audio-dsp.XXXXXX)
 ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
-  /home/mt/zephyrproject/.venv/bin/west build -p always \
+  /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc build -p always \
   -d "$audio_m7_build" -b imx8mp_evk/mimx8ml8/m7 \
   samples/subsys/mpipe/imx8mp_m7_hifi4_audio
 ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
-  /home/mt/zephyrproject/.venv/bin/west build -p always \
+  /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc build -p always \
   -d "$audio_dsp_build" -b imx8mp_evk/mimx8ml8/adsp \
   samples/subsys/mpipe/imx8mp_m7_hifi4_audio
 ```
@@ -319,7 +319,7 @@ session/discontinuity/stop and require one complete 16,000-sample window.
 - [ ] **Step 5: Build/run fixtures and inspect attribution**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west twister \
+/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
   -T samples/modules/tflite-micro/micro_speech/tests/reference \
   -p native_sim/native/64
 git log --format='%H%x09%an%x09%ae%x09%s%n%b' -- \
