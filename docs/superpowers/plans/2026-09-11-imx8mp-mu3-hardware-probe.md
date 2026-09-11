@@ -90,13 +90,19 @@ fault injection return a `ProbeResult` carrying timestamps, states, hashes, and
 captured probe counters.
 
 Implementation rules: discover by `name`, take `flock` on
-`/run/lock/mpipe-pair.lock`, save the previous DSP `power/control`, write `on`,
-wait for `runtime_status=active`, verify every state write, stop M7 before DSP,
-and restore PM only when both are offline. `ArtifactInstaller` must compare the
-local, copied, and remotely recomputed SHA-256 values and refuse a generic
-firmware filename. The fault-injection method starts a healthy pair, stops the
-DSP while retaining the PM hold, requires the M7 quiesced banner, stops M7, and
-only then restores PM.
+`/run/lock/mpipe-pair.lock` before every preflight mutation and for the complete
+run, monitor the persistent lock connection, and bound every SSH/SCP process.
+Preflight commits hashes and artifacts only after the complete transaction
+succeeds; failure disarms the prior gate and restores the previous firmware
+selection. Open/flush the UART only after the run lock is acquired, and restore
+and close it before releasing that lock. Save the previous DSP
+`power/control`, write `on`, wait for `runtime_status=active`, verify every
+state write, stop M7 before DSP, and restore PM only when both are offline.
+`ArtifactInstaller` must compare the local, copied, and remotely recomputed
+SHA-256 values and refuse a generic firmware filename. The fault-injection
+method starts a healthy pair, stops the DSP while retaining the PM hold,
+requires and parses the M7 quiesced counters, stops M7, and only then restores
+PM.
 
 - [ ] **Step 4: Run tests and static checks**
 
@@ -148,6 +154,7 @@ struct mu3_probe_record {
 	uint32_t magic;
 	uint32_t iteration;
 	uint32_t writer;
+	uint32_t reserved;
 	uint32_t pattern[28];
 };
 
@@ -180,6 +187,9 @@ MU3. The role-specific main loop writes the iteration, role, and deterministic
 `pattern[i] = iteration ^ (0x9e3779b9U * (i + 1U))`, executes a release barrier,
 sends MBOX channel 0, validates the peer record after an acquire barrier, and
 replies on channel 1. M7 prints the final counters; DSP has no UART console.
+The PASS record contains exact iteration, send, receive, receive-IRQ, and zero
+pattern-error counters. The peer-loss record additionally contains explicit
+zero post-quiesce-send and post-quiesce-write counters.
 Both roles run a bounded peer-progress timer. If notifications stop, the M7
 disables new probe submissions, performs no further shared-memory write or MU3
 send, and prints `MU3_PROBE PEER_LOST QUIESCED`; the DSP enters the same local
@@ -194,11 +204,13 @@ if test -e build/probe-m7 || test -e build/probe-dsp; then
   printf '%s\n' 'probe build path already exists; inspect it and choose a new reviewed path' >&2
   exit 1
 fi
-ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
+PATH=/home/mt/zephyrproject/.venv/bin:$PATH \
+  ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
   /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe build -p always \
   -d build/probe-m7 -b imx8mp_evk/mimx8ml8/m7 \
   samples/subsys/ipc/ipc_service/imx8mp_mu3_probe
-ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
+PATH=/home/mt/zephyrproject/.venv/bin:$PATH \
+  ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
   /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe build -p always \
   -d build/probe-dsp -b imx8mp_evk/mimx8ml8/adsp \
   samples/subsys/ipc/ipc_service/imx8mp_mu3_probe
@@ -214,6 +226,16 @@ device, addresses/IRQs differ, or M7 and DSP memory nodes disagree.
 git add samples/subsys/ipc/ipc_service/imx8mp_mu3_probe
 git commit -s -m "samples: ipc: add i.MX8MP MU3 diagnostic firmware"
 ```
+
+- [ ] **Step 6: Rebuild deployable ELFs from new empty directories**
+
+Repeat Step 4 from empty `build/probe-m7-final` and
+`build/probe-dsp-final` directories after the commit. Confirm both ELFs embed
+the exact new 40-character commit, and repeat all DTS, Kconfig, program-header,
+map, and SHA-256 checks. The DSP SoC build may warn that `rimage` is unavailable;
+the audited Linux remoteproc path consumes `zephyr.elf`, so absence of an
+optional signed `zephyr.ri` is not a probe failure. Missing or invalid ELF
+output is a failure.
 
 ### Task 3: Build the exact temporary Linux DTB
 
@@ -318,8 +340,8 @@ enabled. Stop until the user approves this specific run.
 
 ```bash
 sha256sum \
-  /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe/build/probe-m7/zephyr/zephyr.elf \
-  /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe/build/probe-dsp/zephyr/zephyr.elf \
+  /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe/build/probe-m7-final/zephyr/zephyr.elf \
+  /home/mt/zephyrproject/worktrees/imx8mp-mu3-probe/build/probe-dsp-final/zephyr/zephyr.elf \
   /home/mt/linux-imx-worktrees/imx8mp-mu3-probe/arch/arm64/boot/dts/freescale/imx8mp-evk-rpmsg.dtb
 ssh root@192.168.7.2 'sha256sum /lib/firmware/rproc-imx-rproc-fw /lib/firmware/imx/dsp/hifi4.bin /boot/imx8mp-evk-rpmsg.dtb'
 ```
