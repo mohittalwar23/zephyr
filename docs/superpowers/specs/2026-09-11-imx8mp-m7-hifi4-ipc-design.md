@@ -2,7 +2,7 @@
 
 Date: 2026-09-11
 
-Status: Revised after independent review; approval required; implementation not authorized
+Status: Approved 2026-09-11 for implementation planning; source implementation and board execution remain separately gated
 
 Target board: NXP i.MX8M Plus EVK
 
@@ -26,16 +26,18 @@ The authoritative inputs are:
 - NXP i.MX 8M Plus Applications Processor Reference Manual, Rev. 3,
   August 2024.
 
-This document is a design artifact only. It does not authorize source changes,
-firmware installation, remote-processor starts, device-tree replacement, or a
-push. Tested branches and commit attribution must remain intact.
+This document is an approved design artifact. The approval authorizes detailed
+implementation and hardware-probe planning only; it does not by itself
+authorize source implementation, firmware installation, remote-processor
+starts, device-tree replacement, or a push. Tested branches and commit
+attribution must remain intact.
 
 Independent review of commit `761aee5a7b4f4d328223b9811f2211c5e2b8891c`
 returned a no-go for planning. This revision addresses its lifecycle,
 persistent-vring reset, buffer sizing, wire protocol, bootstrap, restart-test,
 attribution, and approval-state findings. Because those changes are material,
-the revised specification requires explicit approval before implementation
-planning.
+the revised specification was presented again and explicitly approved by the
+user on 2026-09-11 before this implementation-plan set was written.
 
 ## Goals
 
@@ -94,6 +96,9 @@ differences or refinements:
   `755dd0e66b7258c3124354978ad240e163c3258309d5184fb3227b8189dab90d`.
 - The board audit was read-only: neither remote processor was started and no
   target file, boot artifact, or device-tree blob was modified.
+- A post-approval read-only check confirmed `/usr/bin/systemd-inhibit` on the
+  target and systemd 255 (255.4^). The implementation plan therefore uses a
+  blocking sleep inhibitor plus ordered service shutdown for suspend exclusion.
 
 ### Remote processors and existing management links
 
@@ -724,8 +729,9 @@ dependent implementation stage:
   MU2_B general interrupt zero from the direct DSP firmware;
 - practical validation of Linux-owned MU3 gate lifetime through the DSP
   remoteproc `per_clk1` entry and pair-level runtime-PM hold; and
-- the operating-system mechanism used by `mpipe-paird` to enforce the stated
-  suspend prohibition.
+- hardware validation that the selected systemd inhibitor remains held for the
+  active pair and that ordered service shutdown removes it only after both
+  remote processors are offline.
 
 Approval gates are:
 
