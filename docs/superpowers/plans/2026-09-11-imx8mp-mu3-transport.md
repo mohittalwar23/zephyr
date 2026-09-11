@@ -83,7 +83,7 @@ ZTEST(mpipe_ipc_protocol, test_header_golden_bytes)
 ```bash
 python3 -m unittest discover -v \
   -s tests/subsys/mpipe/ipc_protocol/scripts -p 'test_*.py'
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_protocol \
   -p native_sim/native/64 -p qemu_cortex_m3
 ```
@@ -110,7 +110,7 @@ constants in the public header with `BUILD_ASSERT` coverage for v1 sizes.
 ```bash
 python3 -m unittest discover -v \
   -s tests/subsys/mpipe/ipc_protocol/scripts -p 'test_*.py'
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_protocol \
   -p native_sim/native/64 -p qemu_cortex_m3 --inline-logs
 git diff --check
@@ -177,7 +177,7 @@ never an in-place rebind.
 - [ ] **Step 2: Confirm the new suite fails before implementation**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_session -p native_sim/native/64
 ```
 
@@ -192,7 +192,7 @@ backend access and is re-read under an acquire barrier immediately before open.
 - [ ] **Step 4: Run tests and commit the session layer**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_session -p native_sim/native/64
 git diff --check
 git add include/zephyr/mpipe/ipc subsys/mpipe/ipc tests/subsys/mpipe/ipc_session
@@ -328,7 +328,7 @@ until held buffers and credits balance.
 - [ ] **Step 2: Run red tests, implement minimal adapter, then rerun**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_transport -p native_sim/native/64
 ```
 
@@ -406,7 +406,7 @@ on MU1.
 - [ ] **Step 2: Run red tests and implement the pure bridge**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_management -p native_sim/native/64
 ```
 
@@ -427,7 +427,7 @@ Keep MU1/OpenAMP teardown independent from the single MU3 IPC Service owner.
 - [ ] **Step 4: Test and inspect the combined M7 build**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_management -p native_sim/native/64
 ZEPHYR_SDK_INSTALL_DIR=/home/mt/zephyr-sdk-1.0.1 \
   /home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc build -p always \
@@ -480,7 +480,7 @@ Linux commands. Banners include source/HAL IDs and all counters.
 - [ ] **Step 2: Run all native tests and both target builds fresh**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_protocol \
   -T tests/subsys/mpipe/ipc_session \
   -T tests/subsys/mpipe/ipc_transport \
