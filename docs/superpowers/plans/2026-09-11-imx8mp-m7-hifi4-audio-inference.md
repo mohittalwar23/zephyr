@@ -71,7 +71,7 @@ ZTEST(mpipe_ipc_elements, test_two_sinks_are_independent)
 - [ ] **Step 2: Run the suite and verify the missing-element failure**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 ```
 
@@ -86,7 +86,7 @@ drop/fatal counters through a copy-out accessor.
 - [ ] **Step 4: Run tests and commit the sink**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 git diff --check
 git add include/zephyr/mpipe/ipc subsys/mpipe/ipc tests/subsys/mpipe/ipc_elements
@@ -145,7 +145,7 @@ processing the next valid frame after any discontinuity.
 - [ ] **Step 4: Run all element tests and commit**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T tests/subsys/mpipe/ipc_elements -p native_sim/native/64
 git diff --check
 git add include/zephyr/mpipe subsys/mpipe tests/subsys/mpipe/ipc_elements
@@ -319,7 +319,7 @@ session/discontinuity/stop and require one complete 16,000-sample window.
 - [ ] **Step 5: Build/run fixtures and inspect attribution**
 
 ```bash
-/home/mt/zephyrproject/.venv/bin/west -z /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc twister \
+env -u ZEPHYR_BASE /home/mt/zephyrproject/.venv/bin/python /home/mt/zephyrproject/worktrees/imx8mp-m7-hifi4-ipc/scripts/twister \
   -T samples/modules/tflite-micro/micro_speech/tests/reference \
   -p native_sim/native/64
 git log --format='%H%x09%an%x09%ae%x09%s%n%b' -- \
