@@ -94,8 +94,12 @@ Implementation rules: discover by `name`, take `flock` on
 run, monitor the persistent lock connection, and bound every SSH/SCP process.
 Preflight commits hashes and artifacts only after the complete transaction
 succeeds; failure disarms the prior gate and restores the previous firmware
-selection. Open/flush the UART only after the run lock is acquired, and restore
-and close it before releasing that lock. Save the previous DSP
+selection while the lock remains live. Lock loss after a possible selection
+change must report the exact previous values and require manual recovery.
+Open/flush the UART only after the run lock is acquired, and restore and close
+it before releasing that lock. If the lock connection dies during a run, close
+the UART and dead process context while retaining the PM hold for recovery
+under newly acquired exclusivity. Save the previous DSP
 `power/control`, write `on`, wait for `runtime_status=active`, verify every
 state write, stop M7 before DSP, and restore PM only when both are offline.
 `ArtifactInstaller` must compare the local, copied, and remotely recomputed
