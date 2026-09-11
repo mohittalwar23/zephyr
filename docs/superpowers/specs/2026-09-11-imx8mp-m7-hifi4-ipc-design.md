@@ -75,6 +75,7 @@ differences or refinements:
 | Linux audio nodes | Not fully inventoried | RPMsg audio and RPMsg MICFIL nodes are enabled; physical MICFIL, SAI3, SDMA3, and sound nodes are disabled | The direct-MU3 production overlay must disable both Linux RPMsg audio nodes to avoid stale ownership and misleading devices |
 | MU3 runtime state | Register permissions and clock state were unknown | With both remotes offline, `mu3_cg` is disabled and AudioMix is powered off; strict `/dev/mem` prevents read-only RDC inspection | MU3 clock/power and RDC permissions require a provenance-clean probe; no conclusion may be inferred from offline state |
 | DSP clock ownership | MU3 clock owner was open | The active DSP node lists only `ocram`, `core`, and `debug`; the exact driver supports optional `per_clk1`...`per_clk18`, and the clock provider exposes MU3 root | Add MU3 root as `per_clk1`, making Linux DSP runtime PM the sole gate owner; verify on hardware |
+| Pair-level clock hold | Not specified | The DSP parent device exposes runtime-PM `power/control=auto` and reports `runtime_status=suspended` while offline | The Linux pair supervisor must hold that device at `power/control=on` before either remote starts and until both are offline |
 | Installed experiments | Old binaries were known to exist | `mu3-*`, `xcore-*`, and related Zephyr artifacts identify prohibited commit `69cb3b08a12a`; none was run | Installed experiments are quarantined and cannot serve as evidence or implementation input |
 | Upstream Zephyr | Moving baseline was expected | `origin/main` advanced to `3860b8cb663...`; scoped IPC/MBOX/i.MX/mpipe review found no relevant replacement for the tested integration | Continue from the exact tested integration, not a moving rebase |
 
@@ -170,23 +171,33 @@ Linux.
 
 The production start order remains HiFi4 first, then M7:
 
-1. Discover the remotes by their `name` attributes rather than assuming stable
-   enumeration. Verify both are offline, the expected firmware names and hashes
-   are selected, and no conflicting audio service is active.
-2. Start the HiFi4; require its state to become `running` within 5 seconds. On
+1. Take an exclusive pair lock and discover the remotes by their `name`
+   attributes rather than assuming stable enumeration. Resolve the DSP parent
+   device through its remoteproc `device` link, record its current
+   `power/control`, write `on`, and require `power/runtime_status` to become
+   `active` within 2 seconds. This Linux runtime-PM hold exists before either
+   remote can access MU3.
+2. Verify both remotes are offline, the expected firmware names and hashes are
+   selected, and no conflicting audio service is active.
+3. Start the HiFi4; require its state to become `running` within 5 seconds. On
    the exact 6.6 BSP this includes its MU2 ready handshake.
-3. Start the M7; require its state to become `running` and the MU1
-   management endpoint to appear within 5 seconds.
-4. Require an M7 `PAIR_STATE` report with state `PAUSED` within another 5
+4. Start the M7; require its state to become `running` and the MU1 management
+   endpoint to appear within 5 seconds.
+5. Require an M7 `PAIR_STATE` report with state `PAUSED` within another 5
    seconds. It proves a new direct-link session is ready; it does not start
    capture.
-5. Send an idempotent `PAIR_START` with a nonzero transaction ID. Require
+6. Send an idempotent `PAIR_START` with a nonzero transaction ID. Require
    `PAIR_START_ACK` within 2 seconds before reporting the service active.
+
+The alternative M7-first test uses the same steps except that steps 3 and 4
+are reversed. It is valid only under the already-active pair-level runtime-PM
+hold; ad-hoc manual starts are outside the design.
 
 Any start failure rolls back everything started by that transaction: stop the
 M7 if it reached running, then stop the HiFi4, verify both state attributes are
-offline, and mark the pair faulted. A repeated start request returns the
-current state and never starts either core twice.
+offline, restore the DSP parent's prior `power/control`, and mark the pair
+faulted. A repeated start request returns the current state and never starts
+either core twice.
 
 For an orderly stop, the supervisor sends `PAIR_QUIESCE` over MU1. The M7 stops
 new capture, completes the direct `STOP` transaction, accounts for all credits
@@ -194,7 +205,10 @@ and held buffers, then returns `PAIR_QUIESCED`. The supervisor allows 2 seconds,
 then stops the M7 and the HiFi4 in that order, verifying each becomes offline
 within 5 seconds. If quiesce or a normal stop times out, it force-writes `stop`
 to the M7 first and then the HiFi4, records an unclean shutdown, and requires a
-fresh paired session before capture may resume.
+fresh paired session before capture may resume. The runtime-PM hold is restored
+to its prior value only after both remotes are confirmed offline. If either
+cannot be stopped, the supervisor retains the hold, reports manual intervention
+required, and does not risk gating MU3 while M7 code may still execute.
 
 The supervisor maintains a 500 ms management heartbeat with the M7 and faults
 after three missed replies. A DSP direct-link error is relayed by the M7 as
@@ -298,7 +312,7 @@ The address is not final until all of the following pass:
 - final M7 and DSP ELF program-header ranges do not overlap it;
 - the final Linux DT has no overlapping reservation or ordinary System RAM
   allocation;
-- both remotes observe the same pattern through the intended cache policy; and
+- both remotes observe the same pattern through the intended cache policy;
 - Linux excludes the entire window after the overlay is applied; and
 - the address is recorded in one shared source of truth used by both builds and
   the Linux overlay.
@@ -340,17 +354,22 @@ executes a release barrier, increments the retained host generation (invalid or
 wrapped state becomes 1), writes its inverse, and publishes state 1. It opens
 the host backend only after publication. The DSP waits up to 5 seconds for a
 valid published generation different from its retained accepted generation,
-then opens the remote backend. Because reset precedes generation publication,
-a nonzero backend status observed with that new generation belongs to the new
-host even if the DSP did not sample the intervening zero. The DSP records the
-accepted generation only after HELLO succeeds.
+then claims it before opening the remote backend. The DSP writes the candidate
+generation and inverse into the accepted fields, executes a release barrier,
+reads both back, and requires a valid match before any backend or MU3 access.
+A reset during a torn claim is safe because no transport access has happened;
+a reset after a valid claim sees an equal generation and cannot reopen against
+the same host. Because host reset precedes generation publication, a nonzero
+backend status observed with a newly claimed generation belongs to the new host
+even if the DSP did not sample the intervening zero.
 
 This rule supports both boot orders. A DSP-first boot waits for a new host
 generation; an M7-first boot finds the new generation already published. A
-host-generation change after a DSP has accepted one is fatal rather than an
-in-place rebind. A DSP reboot while the old generation remains cannot accept
-stale `DRIVER_OK` and times out into paired recovery. HELLO and its new nonzero
-session ID provide a second generation check before application traffic.
+host-generation change after a DSP has claimed one is fatal rather than an
+in-place rebind. A DSP reboot after any backend access finds its durable claim
+equal to the old host generation and times out into paired recovery. HELLO and
+its new nonzero session ID provide a second generation check before application
+traffic.
 
 ## Wire format
 
@@ -381,7 +400,11 @@ Every message begins with a 40-byte header:
 Version 1.0 recognizes flags bit 0 `ACK_REQUIRED`, bit 1 `RETRY`, bit 2
 `DISCONTINUITY`, and bit 3 `FATAL`. Bits 4 through 31 must be zero. CRC32C uses
 the Castagnoli polynomial and covers exactly the 40-byte header with its CRC
-field zeroed, then `payload length` bytes.
+field zeroed, then `payload length` bytes. Its complete parameters are width
+32, normal polynomial `0x1edc6f41` (reflected form `0x82f63b78`), initial
+remainder `0xffffffff`, reflected input and output, and final XOR
+`0xffffffff`. The check value for the nine ASCII bytes `123456789` is
+`0xe3069283`. The resulting CRC is serialized little-endian.
 
 A new paired-core start creates a new, nonzero session ID. Sequence numbers are
 monotonic modulo 2^32 starting at zero, independently tracked per stream and
@@ -390,7 +413,7 @@ counters. A duplicate or stale message is discarded; an audio gap sets a
 discontinuity and resets partial aggregation. A control gap faults the session
 if it prevents completion of the single outstanding transaction. The M7
 creates the session ID after every host boot; the DSP accepts it only during a
-fresh HELLO after the status-zero bootstrap. Format generation starts at one
+fresh HELLO after the retained-generation bootstrap. Format generation starts at one
 and increments on each accepted CONFIG change. Version 1 forbids live format
 change while streaming.
 
@@ -562,6 +585,14 @@ enables named peripheral clocks during runtime resume, after enabling its power
 domains, and disables them during runtime suspend. Neither remote firmware may
 toggle the AudioMix MU3 gate directly.
 
+For the whole paired lifecycle, `mpipe-paird` forbids runtime suspend of the
+DSP parent by holding its standard `power/control` at `on`. This is a Linux
+pair-level hold on the same driver and power domain, not firmware clock
+ownership. It makes M7-first testing safe and keeps MU3 available if the DSP
+crashes while the M7 is quiescing or reporting the fault. The hold is released
+only after both remoteprocs are offline; failure to stop either core leaves it
+active for manual recovery.
+
 Current offline clock state does not prove a defect. Before feature code, a
 minimal provenance-clean probe must record:
 
@@ -578,8 +609,9 @@ hashes are reviewed. Existing installed `69cb3b08a12a` artifacts are prohibited.
 
 Protocol-fatal conditions include bad negotiated state, repeated control
 timeout, send failure after buffer acquisition, ownership accounting failure,
-failure to observe the fresh-host zero/`DRIVER_OK` sequence, three missed 500 ms
-heartbeats, or inability to make progress while heartbeats continue. Data
+failure to observe a newly published host generation/`DRIVER_OK` sequence,
+three missed 500 ms heartbeats, or inability to make progress while heartbeats
+continue. Data
 validation failures are counted and dropped. Eight CRC or structural errors in
 any rolling 1-second interval escalate persistent corruption to fatal; a clean
 second resets the interval count.
@@ -649,7 +681,9 @@ Implementation planning must keep these stages independently reviewable:
 1. Freeze and record exact source, toolchain, DTS, and firmware inputs.
 2. Run the approved minimal MU3/DDR probe and close the access, clock, IRQ,
    cache, address, channel-direction, and MU2-ready unknowns. Test both remote
-   start orders; DSP-first is production and M7-first must converge safely.
+   start orders under the pair-level runtime-PM hold; DSP-first is production
+   and M7-first must converge safely. Verify MU3 remains clocked while handling
+   an injected DSP crash and is gated only after both remotes stop.
 3. Add common protocol definitions with host-side serialization, validation,
    CRC, sequence, and state-machine tests.
 4. Add the one physical static-vrings transport and two logical endpoints on
@@ -681,7 +715,7 @@ dependent implementation stage:
 - end-to-end confirmation that the exact-6.6 driver observes the one-shot
   MU2_B general interrupt zero from the direct DSP firmware;
 - practical validation of Linux-owned MU3 gate lifetime through the DSP
-  remoteproc `per_clk1` entry; and
+  remoteproc `per_clk1` entry and pair-level runtime-PM hold; and
 - the operating-system mechanism used by `mpipe-paird` to enforce the stated
   suspend prohibition.
 
