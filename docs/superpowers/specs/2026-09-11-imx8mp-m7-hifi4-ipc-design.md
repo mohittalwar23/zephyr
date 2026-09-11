@@ -359,9 +359,13 @@ generation and inverse into the accepted fields, executes a release barrier,
 reads both back, and requires a valid match before any backend or MU3 access.
 A reset during a torn claim is safe because no transport access has happened;
 a reset after a valid claim sees an equal generation and cannot reopen against
-the same host. Because host reset precedes generation publication, a nonzero
-backend status observed with a newly claimed generation belongs to the new host
-even if the DSP did not sample the intervening zero.
+the same host. Immediately before backend open, the DSP executes an acquire
+barrier and rereads host state, generation, and inverse. State must still be
+published, the generation pair must still be valid, and it must equal the
+claimed candidate. Any mismatch faults without backend access. Because host
+reset precedes generation publication, a nonzero backend status observed after
+that revalidation belongs to the new host even if the DSP did not sample the
+intervening zero.
 
 This rule supports both boot orders. A DSP-first boot waits for a new host
 generation; an M7-first boot finds the new generation already published. A
@@ -683,7 +687,11 @@ Implementation planning must keep these stages independently reviewable:
    cache, address, channel-direction, and MU2-ready unknowns. Test both remote
    start orders under the pair-level runtime-PM hold; DSP-first is production
    and M7-first must converge safely. Verify MU3 remains clocked while handling
-   an injected DSP crash and is gated only after both remotes stop.
+   an injected DSP crash and is gated only after both remotes stop. This stage
+   includes a separately reviewed minimal lifecycle harness that implements the
+   exclusive lock, runtime-PM hold, ordered starts/stops, and rollback needed by
+   the probe; it is not permissible to start remotes manually and defer those
+   safeguards to the stage-8 production supervisor.
 3. Add common protocol definitions with host-side serialization, validation,
    CRC, sequence, and state-machine tests.
 4. Add the one physical static-vrings transport and two logical endpoints on
