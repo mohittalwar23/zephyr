@@ -24,7 +24,7 @@
 #include <zephyr/mpipe/aud/mpipe_aud_i2s_src.h>
 #include <zephyr/mpipe/base/mpipe_caps_filter.h>
 #include <zephyr/mpipe/base/mpipe_tee.h>
-#include <zephyr/mpipe/ipc/mpipe_ipc_sink.h>
+#include <zephyr/mpipe/ipc/mpipe_ipc_plugin.h>
 #include <zephyr/mpipe/mpipe_pipeline.h>
 #include <zephyr/mpipe/utils/mpipe_player.h>
 
@@ -54,7 +54,7 @@ static struct mpipe_aud_i2s_codec_sink audible;
 static struct mpipe_ipc_sink forward;
 static struct mpipe_player player;
 
-int producer_start(struct mpipe_ipc_ring *ring)
+int producer_start(const struct device *ipc)
 {
 	int gain_percent = CONFIG_SAMPLE_IPC_INFER_GAIN_PERCENT;
 	struct mpipe_structure caps;
@@ -86,7 +86,12 @@ int producer_start(struct mpipe_ipc_ring *ring)
 	if (ret < 0) {
 		goto err;
 	}
-	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ring);
+	/*
+	 * The peer's source binds to this same endpoint name. Buffers cross by
+	 * reference, so the pool feeding this sink has to live in memory the
+	 * HiFi4 can address -- see the sample README.
+	 */
+	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ipc, "mpipe.audio");
 	if (ret < 0) {
 		goto err;
 	}

@@ -13,3 +13,12 @@ config MPIPE_IPC
 	  state machine. Transport independent; it marshals bytes and decides
 	  whether they are currently meaningful, while the IPC Service backend
 	  moves them between cores.
+
+config MPIPE_IPC_PLUGIN
+	bool "Cross-core pipeline elements"
+	depends on MPIPE_IPC && IPC_SERVICE
+	help
+	  Build the IPC sink and source elements, which let one pipeline span
+	  two cores: it ends on one in an IPC sink and resumes on the other in
+	  an IPC source. Buffers cross by reference, so the pool the sink draws
+	  from must live in memory the peer can address.
