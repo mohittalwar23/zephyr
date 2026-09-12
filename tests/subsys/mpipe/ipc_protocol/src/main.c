@@ -305,3 +305,131 @@ ZTEST(mpipe_ipc, test_session_argument_rules)
 	zassert_equal(mpipe_ipc_session_check(NULL, 0U), -EINVAL);
 	zassert_false(mpipe_ipc_session_acknowledged(NULL, 0U));
 }
+
+/* ------------------------------------------------------------------ */
+/* Rendezvous barrier                                                  */
+/* ------------------------------------------------------------------ */
+
+#define HOST   true
+#define REMOTE false
+
+/* Cold boot: host may proceed with no peer at all; the remote may not. */
+ZTEST(mpipe_ipc, test_cold_boot_host_opens_alone_remote_waits)
+{
+	struct mpipe_ipc_session h, r;
+
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
+
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, 0U, MPIPE_IPC_BRINGUP_DOWN),
+		      MPIPE_IPC_ACTION_OPEN, "host owns the rings");
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, 0U, MPIPE_IPC_BRINGUP_DOWN),
+		      MPIPE_IPC_ACTION_WAIT, "remote must never build rings");
+}
+
+/* The remote attaches only once the host has finished initialising. */
+ZTEST(mpipe_ipc, test_remote_waits_for_host_ready)
+{
+	struct mpipe_ipc_session r;
+	uint32_t host_word = MPIPE_IPC_HANDSHAKE(11U, 0U);
+
+	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
+
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, host_word,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_WAIT, "host has not built the rings yet");
+	zassert_true(r.connected, "but the peer session is latched while waiting");
+
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, host_word,
+					     MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_OPEN);
+}
+
+/*
+ * The case that makes the barrier necessary: a restarted host must not call
+ * open() while the remote is live, because open() zeroes both vrings.
+ */
+ZTEST(mpipe_ipc, test_restarted_host_must_not_wipe_a_live_remote)
+{
+	struct mpipe_ipc_session h;
+	uint32_t remote_word = MPIPE_IPC_HANDSHAKE(77U, 0U);
+
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_word,
+					     MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_WAIT,
+		      "host must stand off while the remote is using the rings");
+
+	/* The remote notices the new host session, tears down, and stands by. */
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_word,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN);
+}
+
+/* The mirror direction must also converge rather than deadlock. */
+ZTEST(mpipe_ipc, test_restarted_remote_converges)
+{
+	struct mpipe_ipc_session h, r;
+	uint32_t remote_v1 = MPIPE_IPC_HANDSHAKE(77U, 0U);
+	uint32_t remote_v2 = MPIPE_IPC_HANDSHAKE(78U, 0U);
+	uint32_t host_word;
+
+	/* Steady state: both up. */
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v1,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN);
+	host_word = mpipe_ipc_session_word(&h);
+
+	/* The remote reboots and publishes a new session. */
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v2,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_FAULT, "host sees a different incarnation");
+	zassert_false(h.connected);
+
+	/* Host tears down, re-opens a session, and both converge. */
+	zassert_ok(mpipe_ipc_session_open(&h, host_word, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v2,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN);
+
+	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, mpipe_ipc_session_word(&h),
+					     MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_OPEN, "remote attaches to the rebuilt rings");
+}
+
+/* A peer that claims READY without a session is impossible and is distrusted. */
+ZTEST(mpipe_ipc, test_ready_without_a_session_is_rejected)
+{
+	struct mpipe_ipc_session s;
+
+	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&s, REMOTE, 0U, MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_FAULT);
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, 0U, MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_FAULT);
+}
+
+/* A peer that disappears after being latched is a fault, not a cold start. */
+ZTEST(mpipe_ipc, test_peer_vanishing_after_latch_faults)
+{
+	struct mpipe_ipc_session s;
+
+	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, MPIPE_IPC_HANDSHAKE(9U, 0U),
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN);
+	zassert_true(s.connected);
+
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, 0U, MPIPE_IPC_BRINGUP_DOWN),
+		      MPIPE_IPC_ACTION_FAULT);
+	zassert_false(s.connected);
+}
+
+ZTEST(mpipe_ipc, test_bringup_rejects_null)
+{
+	zassert_equal(mpipe_ipc_bringup_step(NULL, HOST, 0U, 0U),
+		      MPIPE_IPC_ACTION_FAULT);
+}
