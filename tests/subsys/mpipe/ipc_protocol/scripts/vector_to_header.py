@@ -2,13 +2,16 @@
 # Copyright (c) 2026 Mohit Talwar
 # SPDX-License-Identifier: Apache-2.0
 
-"""Turn the checked-in MIPC golden vectors into a C header of exact bytes.
+"""Turn the checked-in golden vectors into a C header of exact bytes.
 
 The JSON file is the single cross-language source of truth for the version 1
-wire format. This script computes each frame's CRC32C with an implementation
-independent of Zephyr's C one and emits explicit byte arrays, so the C tests
-and any later Python peer consume identical bytes and disagree loudly if either
-side grows a host endianness or structure padding assumption.
+control wire format. It emits explicit byte arrays, so the C tests and any
+later Python peer consume identical bytes and disagree loudly if either side
+grows a host endianness or structure padding assumption.
+
+The v1 control header is 12 bytes — size, cmd, generation — and carries no
+CRC; see the design spec for why a checksum cannot detect the stale-cache-line
+failure that actually occurs on a shared window.
 """
 
 from __future__ import annotations
@@ -20,48 +23,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# CRC32C (Castagnoli), reflected form of polynomial 0x1edc6f41.
-_CRC32C_POLY_REFLECTED = 0x82F63B78
-_CRC32C_INIT = 0xFFFFFFFF
-_CRC32C_XOR_OUT = 0xFFFFFFFF
-
-#: Fixed v1 header length in bytes.
-HEADER_LENGTH = 40
-#: Offset of the CRC field within the header.
-CRC_OFFSET = 36
+#: Fixed v1 control header length in bytes.
+HEADER_LENGTH = 12
 
 #: Header fields in wire order, with their width in bytes.
+#: "size" is computed from the payload, so it is not listed here.
 _HEADER_FIELDS: tuple[tuple[str, int], ...] = (
-    ("major", 1),
-    ("minor", 1),
-    ("type", 1),
-    ("header_length", 1),
-    ("flags", 4),
-    ("session_id", 4),
-    ("stream_id", 4),
-    ("sequence", 4),
-    ("payload_length", 4),
-    ("timestamp_us", 4),
-    ("format_generation", 4),
+    ("cmd", 4),
+    ("generation", 4),
 )
 
 
 class VectorError(ValueError):
     """The vector document does not satisfy the golden-vector contract."""
-
-
-def crc32c(data: bytes) -> int:
-    """Return the CRC32C of @p data using the spec's exact parameters."""
-
-    crc = _CRC32C_INIT
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ _CRC32C_POLY_REFLECTED
-            else:
-                crc >>= 1
-    return crc ^ _CRC32C_XOR_OUT
 
 
 @dataclass(frozen=True)
@@ -72,12 +46,6 @@ class Frame:
     header: dict[str, int]
     payload: bytes
     frame: bytes
-
-    @property
-    def crc32c(self) -> int:
-        return int.from_bytes(
-            self.frame[CRC_OFFSET : CRC_OFFSET + 4], "little", signed=False
-        )
 
 
 def _require(mapping: dict[str, Any], key: str, where: str) -> Any:
@@ -97,9 +65,9 @@ def _parse_hex(value: str, where: str) -> bytes:
         raise VectorError(f"{where} is not valid hex: {exc}") from exc
 
 
-def _encode_header(header: dict[str, int], name: str) -> bytearray:
+def _encode_header(header: dict[str, int], name: str, size: int) -> bytearray:
     buf = bytearray(HEADER_LENGTH)
-    buf[0:4] = b"MIPC"
+    buf[0:4] = size.to_bytes(4, "little")
     offset = 4
     for field, width in _HEADER_FIELDS:
         value = _require(header, field, f"frame {name!r} header")
@@ -111,7 +79,7 @@ def _encode_header(header: dict[str, int], name: str) -> bytearray:
             )
         buf[offset : offset + width] = value.to_bytes(width, "little")
         offset += width
-    if offset != CRC_OFFSET:
+    if offset != HEADER_LENGTH:
         raise VectorError("internal header layout error")
     return buf
 
@@ -126,22 +94,14 @@ def build_frame(entry: dict[str, Any]) -> Frame:
     header = dict(_require(entry, "header", f"frame {name!r}"))
     payload = _parse_hex(entry.get("payload_hex", ""), f"frame {name!r} payload_hex")
 
-    declared = _require(header, "payload_length", f"frame {name!r} header")
-    if declared != len(payload):
-        raise VectorError(
-            f"frame {name!r} declares payload_length {declared} "
-            f"but payload_hex holds {len(payload)} bytes"
-        )
-    if header.get("header_length") != HEADER_LENGTH:
-        raise VectorError(f"frame {name!r} header_length must be {HEADER_LENGTH}")
+    if header.get("generation", 0) == 0:
+        raise VectorError(f"frame {name!r} generation must be nonzero")
 
-    buf = _encode_header(header, name)
-    # The CRC covers the header with its own field zeroed, then the payload.
-    frame = bytes(buf) + payload
-    value = crc32c(frame)
-    buf[CRC_OFFSET : CRC_OFFSET + 4] = value.to_bytes(4, "little")
+    size = HEADER_LENGTH + len(payload)
+    buf = _encode_header(header, name, size)
 
-    return Frame(name=name, header=header, payload=payload, frame=bytes(buf) + payload)
+    return Frame(name=name, header=header, payload=payload,
+                 frame=bytes(buf) + payload)
 
 
 def build_frames(document: dict[str, Any]) -> list[Frame]:
@@ -174,16 +134,6 @@ def render_header(document: dict[str, Any]) -> str:
     """Render the generated C header for @p document."""
 
     frames = build_frames(document)
-    check = _require(document, "crc32c_check", "document")
-    check_input = _require(check, "input_ascii", "crc32c_check").encode("ascii")
-    check_expected = int(_require(check, "expected", "crc32c_check"), 16)
-
-    computed = crc32c(check_input)
-    if computed != check_expected:
-        raise VectorError(
-            f"crc32c_check mismatch: computed 0x{computed:08x}, "
-            f"document declares 0x{check_expected:08x}"
-        )
 
     out: list[str] = [
         "/*",
@@ -199,25 +149,14 @@ def render_header(document: dict[str, Any]) -> str:
         "#include <stdint.h>",
         "#include <stddef.h>",
         "",
-        f"#define MPIPE_IPC_VECTOR_CRC_CHECK_INPUT \"{check_input.decode('ascii')}\"",
-        f"#define MPIPE_IPC_VECTOR_CRC_CHECK_EXPECTED 0x{check_expected:08x}U",
-        "",
         "struct mpipe_ipc_vector {",
         "\tconst char *name;",
         "\tconst uint8_t *frame;",
         "\tsize_t frame_length;",
         "\tsize_t payload_length;",
-        "\tuint8_t major;",
-        "\tuint8_t minor;",
-        "\tuint8_t type;",
-        "\tuint8_t header_length;",
-        "\tuint32_t flags;",
-        "\tuint32_t session_id;",
-        "\tuint32_t stream_id;",
-        "\tuint32_t sequence;",
-        "\tuint32_t timestamp_us;",
-        "\tuint32_t format_generation;",
-        "\tuint32_t crc32c;",
+        "\tuint32_t size;",
+        "\tuint32_t cmd;",
+        "\tuint32_t generation;",
         "};",
         "",
     ]
@@ -230,17 +169,14 @@ def render_header(document: dict[str, Any]) -> str:
 
     out.append("static const struct mpipe_ipc_vector mpipe_ipc_vectors[] = {")
     for index, frame in enumerate(frames):
-        header = frame.header
         out.append("\t{")
-        out.append(f"\t\t.name = \"{frame.name}\",")
+        out.append(f'\t\t.name = "{frame.name}",')
         out.append(f"\t\t.frame = mpipe_ipc_vector_bytes_{index},")
         out.append(f"\t\t.frame_length = {len(frame.frame)}U,")
         out.append(f"\t\t.payload_length = {len(frame.payload)}U,")
+        out.append(f"\t\t.size = {len(frame.frame)}U,")
         for field, _width in _HEADER_FIELDS:
-            if field == "payload_length":
-                continue
-            out.append(f"\t\t.{field} = {header[field]}U,")
-        out.append(f"\t\t.crc32c = 0x{frame.crc32c:08x}U,")
+            out.append(f"\t\t.{field} = {frame.header[field]}U,")
         out.append("\t},")
     out.append("};")
     out.append("")
