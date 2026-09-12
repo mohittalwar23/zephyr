@@ -1,262 +1,123 @@
 {
-  "$comment": "Golden MIPC v1 wire vectors. Single cross-language source of truth; see docs/superpowers/specs/2026-09-11-imx8mp-m7-hifi4-ipc-design.md.",
+  "$comment": "Golden mpipe IPC v1 CONTROL wire vectors. Single cross-language source of truth. Audio does not appear here: bulk PCM travels on a separate shared-DDR ring. See docs/superpowers/specs/2026-09-11-imx8mp-m7-hifi4-ipc-design.md.",
   "version": 1,
-  "crc32c_check": {
-    "input_ascii": "123456789",
-    "expected": "e3069283"
-  },
   "frames": [
     {
       "name": "hello_request",
-      "description": "HELLO from the M7 host, ACK_REQUIRED",
+      "description": "HELLO from the M7 host, transaction 1",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 1,
-        "header_length": 40,
-        "flags": 1,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 0,
-        "payload_length": 24,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 65537,
+        "generation": 41244
       },
-      "payload_hex": "01000000000010000102080000000000f0030000f401e803"
+      "payload_hex": "010200000100000000000000"
     },
     {
       "name": "hello_ack",
-      "description": "HELLO_ACK from the HiFi4 remote with selected values",
+      "description": "HELLO_ACK from the HiFi4 remote, echoing transaction 1",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 2,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 0,
-        "payload_length": 24,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 131073,
+        "generation": 45613
       },
-      "payload_hex": "01000000000010000202080000000000f0030000f401e803"
+      "payload_hex": "020200000100000000000000"
     },
     {
       "name": "config_request",
-      "description": "CONFIG carrying the fixed v1 audio descriptor",
+      "description": "CONFIG carrying the fixed v1 audio format",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 3,
-        "header_length": 40,
-        "flags": 1,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 1,
-        "payload_length": 24,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 196610,
+        "generation": 41244
       },
-      "payload_hex": "0200000000001000803e0000a0000201010a000080020000"
+      "payload_hex": "803e0000a0000201010a0200"
     },
     {
       "name": "config_ack",
-      "description": "CONFIG_ACK echoing the selected descriptor",
+      "description": "CONFIG_ACK echoing the selected format",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 4,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 1,
-        "payload_length": 24,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 262146,
+        "generation": 45613
       },
-      "payload_hex": "0200000000001000803e0000a0000201010a000080020000"
+      "payload_hex": "803e0000a0000201010a0200"
     },
     {
       "name": "start_request",
-      "description": "START requesting four credits and depth four",
+      "description": "START of the audio ring",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 5,
-        "header_length": 40,
-        "flags": 1,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 2,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 327683,
+        "generation": 41244
       },
-      "payload_hex": "03000000000008000400040000000000"
+      "payload_hex": "0000000000000000"
     },
     {
       "name": "start_ack",
-      "description": "START_ACK granting the requested values",
+      "description": "START_ACK",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 6,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 2,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 393219,
+        "generation": 45613
       },
-      "payload_hex": "03000000000008000400040000000000"
+      "payload_hex": "0000000000000000"
     },
     {
       "name": "stop_request",
-      "description": "STOP with drain mode and last submitted sequence",
+      "description": "STOP with drain mode",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 7,
-        "header_length": 40,
-        "flags": 1,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 3,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 458756,
+        "generation": 41244
       },
-      "payload_hex": "04000000000008000100010063000000"
+      "payload_hex": "0100010063000000"
     },
     {
       "name": "stop_ack",
-      "description": "STOP_ACK reporting the last released sequence",
+      "description": "STOP_ACK reporting the last released period",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 8,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 3,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 524292,
+        "generation": 45613
       },
-      "payload_hex": "04000000000008000100010063000000"
-    },
-    {
-      "name": "credit_return",
-      "description": "Unsolicited CREDIT, transaction identifier zero",
-      "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 9,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 4,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
-      },
-      "payload_hex": "00000000000008000200080029000000"
+      "payload_hex": "0100010063000000"
     },
     {
       "name": "status_report",
-      "description": "Unsolicited STATUS with a twenty byte body",
+      "description": "Unsolicited STATUS, transaction id zero",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 10,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 5,
-        "payload_length": 28,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 589824,
+        "generation": 45613
       },
-      "payload_hex": "000000000000140005000300010004004d0000000200000001000000"
+      "payload_hex": "050000004d00000003000000"
     },
     {
       "name": "error_fatal",
       "description": "Unsolicited ERROR, severity two is fatal",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 11,
-        "header_length": 40,
-        "flags": 8,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 6,
-        "payload_length": 24,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 655360,
+        "generation": 45613
       },
-      "payload_hex": "00000000000010000c0001022000000005000000cdab0000"
+      "payload_hex": "0c00010205000000cdab0000"
     },
     {
       "name": "heartbeat_request",
       "description": "HEARTBEAT liveness probe",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 12,
-        "header_length": 40,
-        "flags": 1,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 7,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 720901,
+        "generation": 41244
       },
-      "payload_hex": "0500000000000800d204000005000000"
+      "payload_hex": "d204000005000000"
     },
     {
       "name": "heartbeat_ack",
       "description": "HEARTBEAT_ACK echoing the request body",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 13,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 0,
-        "sequence": 7,
-        "payload_length": 16,
-        "timestamp_us": 0,
-        "format_generation": 0
+        "cmd": 786437,
+        "generation": 45613
       },
-      "payload_hex": "0500000000000800d204000005000000"
+      "payload_hex": "d204000005000000"
     },
     {
-      "name": "audio_frame",
-      "description": "Complete 696 byte v1 audio frame: descriptor plus 640 PCM bytes",
+      "name": "bare_heartbeat",
+      "description": "Smallest legal message: header only, no payload",
       "header": {
-        "major": 1,
-        "minor": 0,
-        "type": 32,
-        "header_length": 40,
-        "flags": 0,
-        "session_id": 287454020,
-        "stream_id": 1,
-        "sequence": 100,
-        "payload_length": 656,
-        "timestamp_us": 1000000,
-        "format_generation": 1
+        "cmd": 720902,
+        "generation": 41244
       },
-      "payload_hex": "803e0000a0000201010a000080020000000000000100ffff0200feff0300fdff0400fcff0500fbff0600faff0700f9ff0800f8ff0900f7ff0a00f6ff0b00f5ff0c00f4ff0d00f3ff0e00f2ff0f00f1ff1000f0ff1100efff1200eeff1300edff1400ecff1500ebff1600eaff1700e9ff1800e8ff1900e7ff1a00e6ff1b00e5ff1c00e4ff1d00e3ff1e00e2ff1f00e1ff2000e0ff2100dfff2200deff2300ddff2400dcff2500dbff2600daff2700d9ff2800d8ff2900d7ff2a00d6ff2b00d5ff2c00d4ff2d00d3ff2e00d2ff2f00d1ff3000d0ff3100cfff3200ceff3300cdff3400ccff3500cbff3600caff3700c9ff3800c8ff3900c7ff3a00c6ff3b00c5ff3c00c4ff3d00c3ff3e00c2ff3f00c1ff4000c0ff4100bfff4200beff4300bdff4400bcff4500bbff4600baff4700b9ff4800b8ff4900b7ff4a00b6ff4b00b5ff4c00b4ff4d00b3ff4e00b2ff4f00b1ff5000b0ff5100afff5200aeff5300adff5400acff5500abff5600aaff5700a9ff5800a8ff5900a7ff5a00a6ff5b00a5ff5c00a4ff5d00a3ff5e00a2ff5f00a1ff6000a0ff61009fff62009eff63009dff64009cff65009bff66009aff670099ff680098ff690097ff6a0096ff6b0095ff6c0094ff6d0093ff6e0092ff6f0091ff700090ff71008fff72008eff73008dff74008cff75008bff76008aff770089ff780088ff790087ff7a0086ff7b0085ff7c0084ff7d0083ff7e0082ff7f0081ff800080ff81007fff82007eff83007dff84007cff85007bff86007aff870079ff880078ff890077ff8a0076ff8b0075ff8c0074ff8d0073ff8e0072ff8f0071ff900070ff91006fff92006eff93006dff94006cff95006bff96006aff970069ff980068ff990067ff9a0066ff9b0065ff9c0064ff9d0063ff9e0062ff9f0061ff"
+      "payload_hex": ""
     }
   ]
 }

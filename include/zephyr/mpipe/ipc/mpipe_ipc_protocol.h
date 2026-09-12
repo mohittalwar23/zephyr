@@ -6,17 +6,45 @@
 
 /**
  * @file
- * @brief Version 1 wire protocol for the direct M7 to HiFi4 link.
+ * @brief Version 1 control protocol for the direct M7 to HiFi4 link.
  *
- * The IPC Service backend moves opaque bytes between cores. This layer decides
- * whether those bytes are currently meaningful: it frames them, protects them
- * with CRC32C, and rejects anything structurally invalid before a payload is
- * exposed to audio processing.
+ * This layer frames **control** messages only. Bulk audio does not travel
+ * here: it moves through a dedicated shared-DDR ring with its own doorbell,
+ * following the same split that NXP AN12762 and SOF both use, so a real-time
+ * bulk path never shares a strictly one-outstanding control channel.
  *
- * Wire fields are little-endian and are marshalled explicitly. A packed
- * structure is never cast over received bytes, so the format does not depend on
- * the host's endianness, structure padding, or the alignment of the receive
- * buffer.
+ * The header is deliberately small. SOF ships an 8-byte IPC header in
+ * production on this same HiFi4 over this same doorbell-plus-shared-window
+ * transport (@c sof_ipc_cmd_hdr, @c src/include/ipc/header.h), and NXP's SRTM
+ * ships 10 bytes. This header is 12: SOF's two fields plus the one thing
+ * neither vendor needs and this design does.
+ *
+ * That extra field is @c generation. In both SOF and SRTM the lifecycle
+ * authority and the data-plane peer are the same entity, so neither can meet
+ * a peer that restarted independently. Here Linux is the lifecycle authority
+ * but the M7 and the HiFi4 are the data-plane peers, so either can be
+ * restarted under the other. Each core publishes a boot generation and stamps
+ * it on every message; a peer that restarted is then rejected per message,
+ * with no state machine required to notice.
+ *
+ * Deliberately absent, each following established practice rather than
+ * oversight:
+ *
+ * - **No CRC.** SOF carries none on a shared-DDR path. A checksum cannot
+ *   detect the failure that actually occurs here, a stale cache line, because
+ *   it is computed over the same stale bytes and validates. Cache maintenance
+ *   is the correctness requirement.
+ * - **No magic.** SOF reserves its magic for data tunnelled from userspace
+ *   and omits it core-to-core. This is the trusted path.
+ * - **No per-message version.** The ABI is negotiated once in HELLO, and only
+ *   the major version must match.
+ * - **No per-message sequence.** A doorbell-ordered channel does not reorder
+ *   or duplicate. Sequence belongs on the lossy audio ring, for gap
+ *   statistics, not here.
+ *
+ * Fields are marshalled explicitly at named offsets, little-endian. A packed
+ * structure is never cast over received bytes, so the format does not depend
+ * on host endianness, structure padding, or receive-buffer alignment.
  */
 
 #ifndef ZEPHYR_INCLUDE_MPIPE_IPC_MPIPE_IPC_PROTOCOL_H_
@@ -35,26 +63,44 @@
 extern "C" {
 #endif
 
-/** @brief Protocol version implemented here. */
+/** @brief Protocol version. Only the major version must match a peer. */
 #define MPIPE_IPC_VERSION_MAJOR 1U
 #define MPIPE_IPC_VERSION_MINOR 0U
 
-/** @brief Fixed version 1 header length, in bytes. */
-#define MPIPE_IPC_HEADER_LENGTH 40U
-/** @brief Largest complete message the transport exposes to the application. */
-#define MPIPE_IPC_MAX_MESSAGE 1008U
-/** @brief Largest payload that can follow a version 1 header. */
+/** @brief Fixed control header length, in bytes. */
+#define MPIPE_IPC_HEADER_LENGTH 12U
+/** @brief Largest control message, including the header. */
+#define MPIPE_IPC_MAX_MESSAGE 256U
+/** @brief Largest control payload that can follow a header. */
 #define MPIPE_IPC_MAX_PAYLOAD (MPIPE_IPC_MAX_MESSAGE - MPIPE_IPC_HEADER_LENGTH)
-/** @brief Length of the audio descriptor that precedes PCM bytes. */
-#define MPIPE_IPC_AUDIO_DESC_LENGTH 16U
-/** @brief Length of the prefix shared by every control payload. */
-#define MPIPE_IPC_CTRL_PREFIX_LENGTH 8U
 
-/** @brief Stream identifiers. */
-#define MPIPE_IPC_STREAM_CONTROL 0U
-#define MPIPE_IPC_STREAM_AUDIO   1U
+/** @brief Header field offsets, in bytes from the start of the message. */
+#define MPIPE_IPC_OFF_SIZE       0U
+#define MPIPE_IPC_OFF_CMD        4U
+#define MPIPE_IPC_OFF_GENERATION 8U
 
-/** @brief Message types assigned by version 1.0. */
+/**
+ * @brief @c cmd encoding: message type in bits 31:16, identifier in 15:0.
+ *
+ * The identifier carries the control transaction id, so a reply can be
+ * matched to its request without a separate field.
+ */
+#define MPIPE_IPC_CMD_TYPE_SHIFT 16U
+#define MPIPE_IPC_CMD_ID_MASK    0xffffU
+
+#define MPIPE_IPC_CMD(type, id)                                                        \
+	((((uint32_t)(type)) << MPIPE_IPC_CMD_TYPE_SHIFT) |                            \
+	 ((uint32_t)(id) & MPIPE_IPC_CMD_ID_MASK))
+#define MPIPE_IPC_CMD_TYPE(cmd) ((uint16_t)((cmd) >> MPIPE_IPC_CMD_TYPE_SHIFT))
+#define MPIPE_IPC_CMD_ID(cmd)   ((uint16_t)((cmd) & MPIPE_IPC_CMD_ID_MASK))
+
+/**
+ * @brief Control message types.
+ *
+ * There is no audio type: audio does not travel on this path. There is no
+ * credit type either; a slow consumer is governed by the per-stream
+ * @c underrun_permitted / @c overrun_permitted policy, not by a window.
+ */
 enum mpipe_ipc_type {
 	MPIPE_IPC_TYPE_HELLO = 0x01,
 	MPIPE_IPC_TYPE_HELLO_ACK = 0x02,
@@ -64,26 +110,11 @@ enum mpipe_ipc_type {
 	MPIPE_IPC_TYPE_START_ACK = 0x06,
 	MPIPE_IPC_TYPE_STOP = 0x07,
 	MPIPE_IPC_TYPE_STOP_ACK = 0x08,
-	MPIPE_IPC_TYPE_CREDIT = 0x09,
-	MPIPE_IPC_TYPE_STATUS = 0x0a,
-	MPIPE_IPC_TYPE_ERROR = 0x0b,
-	MPIPE_IPC_TYPE_HEARTBEAT = 0x0c,
-	MPIPE_IPC_TYPE_HEARTBEAT_ACK = 0x0d,
-	MPIPE_IPC_TYPE_AUDIO = 0x20,
+	MPIPE_IPC_TYPE_STATUS = 0x09,
+	MPIPE_IPC_TYPE_ERROR = 0x0a,
+	MPIPE_IPC_TYPE_HEARTBEAT = 0x0b,
+	MPIPE_IPC_TYPE_HEARTBEAT_ACK = 0x0c,
 };
-
-/** @brief Header flag bits recognized by version 1.0. */
-enum mpipe_ipc_flag {
-	MPIPE_IPC_FLAG_ACK_REQUIRED = BIT(0),
-	MPIPE_IPC_FLAG_RETRY = BIT(1),
-	MPIPE_IPC_FLAG_DISCONTINUITY = BIT(2),
-	MPIPE_IPC_FLAG_FATAL = BIT(3),
-};
-
-/** @brief Every flag this version understands. Bits 4..31 must be zero. */
-#define MPIPE_IPC_FLAGS_KNOWN                                                          \
-	((uint32_t)(MPIPE_IPC_FLAG_ACK_REQUIRED | MPIPE_IPC_FLAG_RETRY |               \
-		    MPIPE_IPC_FLAG_DISCONTINUITY | MPIPE_IPC_FLAG_FATAL))
 
 /** @brief Control transaction result codes. */
 enum mpipe_ipc_result {
@@ -95,54 +126,25 @@ enum mpipe_ipc_result {
 	MPIPE_IPC_RESULT_INTERNAL = 5,
 };
 
-/** @brief Externally observable session states, shared by both peers. */
-enum mpipe_ipc_state {
-	MPIPE_IPC_STATE_BOOT = 0,
-	MPIPE_IPC_STATE_BIND = 1,
-	MPIPE_IPC_STATE_HELLO = 2,
-	MPIPE_IPC_STATE_CONFIGURED = 3,
-	MPIPE_IPC_STATE_PAUSED = 4,
-	MPIPE_IPC_STATE_STREAMING = 5,
-	MPIPE_IPC_STATE_DRAINING = 6,
-	MPIPE_IPC_STATE_FAULT = 7,
-};
-
 /** @brief HELLO role codes. */
 #define MPIPE_IPC_ROLE_HOST   1U
 #define MPIPE_IPC_ROLE_REMOTE 2U
 
-/** @brief Sample format and channel layout codes. */
-#define MPIPE_IPC_FORMAT_S16LE       1U
-#define MPIPE_IPC_LAYOUT_INTERLEAVED 1U
+/** @brief A generation is never zero; zero means "not yet published". */
+#define MPIPE_IPC_GENERATION_INVALID 0U
 
-/** @brief STOP mode codes. */
-#define MPIPE_IPC_STOP_MODE_DRAIN 1U
-
-/** @brief Complete version 1 audio frame length: header, descriptor, PCM. */
-#define MPIPE_IPC_V1_AUDIO_FRAME_LENGTH                                                \
-	(MPIPE_IPC_HEADER_LENGTH + MPIPE_IPC_AUDIO_DESC_LENGTH + 640U)
-
-/** @brief Decoded form of the 40-byte wire header, in host byte order. */
+/** @brief Decoded control header, in host byte order. */
 struct mpipe_ipc_header {
-	uint8_t major;
-	uint8_t minor;
-	uint8_t type;
-	uint8_t header_length;
-	uint32_t flags;
-	uint32_t session_id;
-	uint32_t stream_id;
-	uint32_t sequence;
-	uint32_t payload_length;
-	uint32_t timestamp_us;
-	uint32_t format_generation;
-	uint32_t crc32c;
+	uint32_t size;
+	uint32_t cmd;
+	uint32_t generation;
 };
 
 /**
  * @brief A decoded message: its header plus a span into caller-owned storage.
  *
- * After a successful mpipe_ipc_decode() the payload points into the caller's
- * receive buffer and stays valid only as long as that buffer does.
+ * After a successful decode the payload points into the caller's receive
+ * buffer and stays valid only as long as that buffer does.
  */
 struct mpipe_ipc_message {
 	struct mpipe_ipc_header header;
@@ -150,7 +152,12 @@ struct mpipe_ipc_message {
 	size_t payload_length;
 };
 
-/** @brief The 16-byte audio descriptor that precedes PCM bytes. */
+/**
+ * @brief Audio format, exchanged in CONFIG and negotiated once.
+ *
+ * This describes the stream carried by the audio ring; it never appears in an
+ * audio message, because there are none.
+ */
 struct mpipe_ipc_audio_format {
 	uint32_t sample_rate;
 	uint16_t samples_per_channel;
@@ -158,8 +165,18 @@ struct mpipe_ipc_audio_format {
 	uint8_t sample_format;
 	uint8_t layout;
 	uint8_t frame_duration_ms;
-	uint32_t pcm_bytes;
+	/**
+	 * Slow-consumer policy, following SOF's per-stream xrun permissions.
+	 * When permitted, the ring drops and continues; otherwise the session
+	 * stops and reports.
+	 */
+	bool underrun_permitted;
+	bool overrun_permitted;
 };
+
+/** @brief Sample format and channel layout codes. */
+#define MPIPE_IPC_FORMAT_S16LE       1U
+#define MPIPE_IPC_LAYOUT_INTERLEAVED 1U
 
 /** @brief The single audio format version 1 permits. */
 #define MPIPE_IPC_V1_AUDIO_FORMAT                                                      \
@@ -170,72 +187,74 @@ struct mpipe_ipc_audio_format {
 		.sample_format = MPIPE_IPC_FORMAT_S16LE,                               \
 		.layout = MPIPE_IPC_LAYOUT_INTERLEAVED,                                \
 		.frame_duration_ms = 10U,                                              \
-		.pcm_bytes = 640U,                                                     \
+		.underrun_permitted = false,                                           \
+		.overrun_permitted = true,                                             \
 	}
 
-BUILD_ASSERT(MPIPE_IPC_HEADER_LENGTH == 40U, "v1 header is 40 bytes");
-BUILD_ASSERT(MPIPE_IPC_AUDIO_DESC_LENGTH == 16U, "v1 audio descriptor is 16 bytes");
-BUILD_ASSERT(MPIPE_IPC_CTRL_PREFIX_LENGTH == 8U, "v1 control prefix is 8 bytes");
-BUILD_ASSERT(MPIPE_IPC_MAX_PAYLOAD == 968U, "v1 payload ceiling");
-BUILD_ASSERT(MPIPE_IPC_V1_AUDIO_FRAME_LENGTH == 696U, "v1 audio frame is 696 bytes");
-BUILD_ASSERT(MPIPE_IPC_V1_AUDIO_FRAME_LENGTH <= MPIPE_IPC_MAX_MESSAGE,
-	     "v1 audio frame must fit the application-visible maximum");
+/** @brief Serialized length of an audio format in a CONFIG payload. */
+#define MPIPE_IPC_AUDIO_FORMAT_LENGTH 12U
+
+/** @brief PCM bytes in one version 1 audio period, carried on the ring. */
+#define MPIPE_IPC_V1_PCM_BYTES 640U
+
+BUILD_ASSERT(MPIPE_IPC_HEADER_LENGTH == 12U, "v1 control header is 12 bytes");
+BUILD_ASSERT(MPIPE_IPC_OFF_GENERATION + sizeof(uint32_t) == MPIPE_IPC_HEADER_LENGTH,
+	     "header offsets must tile the header exactly");
+BUILD_ASSERT(MPIPE_IPC_MAX_PAYLOAD == 244U, "v1 control payload ceiling");
+BUILD_ASSERT(MPIPE_IPC_AUDIO_FORMAT_LENGTH == 12U, "v1 audio format is 12 bytes");
 
 /**
- * @brief Serialize a message and fill in its CRC32C.
+ * @brief Serialize a control message.
  *
- * The header's @c payload_length and @c crc32c are ignored on input and are
- * written from @c message->payload_length and the computed checksum.
+ * The header's @c size is ignored on input and written from @p payload_length.
  *
- * @param dst      Destination buffer.
- * @param capacity Bytes available in @p dst.
- * @param message  Message to serialize.
- * @param written  Set to the complete frame length on success.
- *
- * @retval 0 on success.
+ * @retval 0 on success, with @p written set to the complete message length.
  * @retval -EINVAL   A pointer is NULL, or a payload is declared without bytes.
  * @retval -EMSGSIZE The payload exceeds MPIPE_IPC_MAX_PAYLOAD.
- * @retval -ENOSPC   @p capacity cannot hold the complete frame.
+ * @retval -ENOSPC   @p capacity cannot hold the complete message.
  */
 int mpipe_ipc_encode(void *dst, size_t capacity, const struct mpipe_ipc_message *message,
 		     size_t *written);
 
 /**
- * @brief Validate and decode a received frame.
+ * @brief Validate and decode a received control message.
  *
- * Applies every version 1 receive rule before exposing any payload, in this
- * order: buffer length, magic, major version, header length, reserved flag
- * bits, nonzero session, known type, known stream, declared payload bounds,
- * available bytes, and finally CRC32C. On any rejection the message's payload
- * span is cleared, so a caller cannot follow a pointer into rejected bytes.
+ * Applies every receive rule before exposing a payload: available length,
+ * declared size bounds, a known message type, and a nonzero generation. On
+ * rejection the payload span is cleared, so a caller cannot follow a pointer
+ * into rejected bytes.
  *
- * @param message Filled in on success.
- * @param src     Received bytes; may be unaligned.
- * @param length  Bytes available in @p src.
+ * The generation is returned but not judged here; the session layer compares
+ * it against the value latched from the peer at session open.
  *
  * @retval 0 on success.
- * @retval -EINVAL           A pointer is NULL.
- * @retval -EMSGSIZE         Truncated, wrong header length, or a declared
- *                           payload that is out of range or not present.
- * @retval -EBADMSG          Wrong magic, or the CRC32C does not match.
- * @retval -EPROTONOSUPPORT  Major version mismatch.
- * @retval -ENOTSUP          Unknown message type or unknown mandatory flag.
- * @retval -EPROTO           Zero session identifier or unknown stream.
+ * @retval -EINVAL   A pointer is NULL.
+ * @retval -EMSGSIZE Truncated, or a declared size out of range or not present.
+ * @retval -ENOTSUP  Unknown message type.
+ * @retval -EPROTO   Generation is zero.
  */
 int mpipe_ipc_decode(struct mpipe_ipc_message *message, const void *src, size_t length);
 
 /**
- * @brief Check that a decoded audio message carries the expected format.
+ * @brief Check a decoded CONFIG payload against the expected audio format.
  *
- * @retval 0 when the descriptor matches @p expected and the PCM length agrees.
+ * @retval 0 when the format matches @p expected.
  * @retval -EINVAL   A pointer is NULL.
- * @retval -ENOTSUP  The message is not an audio message.
- * @retval -EMSGSIZE The payload is too short, or @c pcm_bytes disagrees with it.
- * @retval -EILSEQ   The descriptor's reserved field is nonzero.
- * @retval -EPROTO   The descriptor differs from @p expected.
+ * @retval -ENOTSUP  The message is not CONFIG or CONFIG_ACK.
+ * @retval -EMSGSIZE The payload is too short to hold a format.
+ * @retval -EPROTO   The format differs from @p expected.
  */
 int mpipe_ipc_validate_audio(const struct mpipe_ipc_message *message,
 			     const struct mpipe_ipc_audio_format *expected);
+
+/**
+ * @brief Serialize an audio format into a CONFIG payload.
+ *
+ * @retval MPIPE_IPC_AUDIO_FORMAT_LENGTH on success.
+ * @retval -EINVAL A pointer is NULL or @p buf_len is too small.
+ */
+int mpipe_ipc_audio_format_encode(uint8_t *buf, size_t buf_len,
+				  const struct mpipe_ipc_audio_format *format);
 
 #ifdef __cplusplus
 }

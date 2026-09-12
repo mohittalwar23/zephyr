@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Mohit Talwar
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the MIPC golden-vector header generator."""
+"""Tests for the golden-vector header generator."""
 
 from __future__ import annotations
 
@@ -16,113 +16,75 @@ from vector_to_header import (
     build_frame,
     build_frames,
     check_output_path,
-    crc32c,
     main,
     render_header,
 )
 
+GENERATION = 0x0000A11C
+
 
 def header(**overrides: int) -> dict[str, int]:
-    base = {
-        "major": 1,
-        "minor": 0,
-        "type": 0x0C,
-        "header_length": HEADER_LENGTH,
-        "flags": 1,
-        "session_id": 0x11223344,
-        "stream_id": 0,
-        "sequence": 0,
-        "payload_length": 0,
-        "timestamp_us": 0,
-        "format_generation": 0,
-    }
+    base = {"cmd": (0x0B << 16) | 1, "generation": GENERATION}
     base.update(overrides)
     return base
 
 
 def document(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
-        "crc32c_check": {"input_ascii": "123456789", "expected": "e3069283"},
         "frames": [{"name": "heartbeat", "header": header(), "payload_hex": ""}],
     }
     base.update(overrides)
     return base
 
 
-class Crc32cTest(unittest.TestCase):
-    def test_matches_the_standard_check_value(self):
-        self.assertEqual(crc32c(b"123456789"), 0xE3069283)
-
-    def test_empty_input_is_zero(self):
-        self.assertEqual(crc32c(b""), 0x00000000)
-
-
 class FrameTest(unittest.TestCase):
-    def test_frame_is_header_plus_payload_with_crc_filled_in(self):
-        payload = bytes(range(16))
+    def test_header_only_frame_is_exactly_twelve_bytes(self):
+        frame = build_frame({"name": "bare", "header": header(), "payload_hex": ""})
+
+        self.assertEqual(len(frame.frame), HEADER_LENGTH)
+        self.assertEqual(frame.frame[:4], (12).to_bytes(4, "little"))
+
+    def test_size_field_counts_header_plus_payload(self):
+        payload = bytes(range(12))
         frame = build_frame(
-            {
-                "name": "hello",
-                "header": header(type=0x01, payload_length=len(payload)),
-                "payload_hex": payload.hex(),
-            }
+            {"name": "config", "header": header(), "payload_hex": payload.hex()}
         )
 
         self.assertEqual(len(frame.frame), HEADER_LENGTH + len(payload))
-        self.assertEqual(frame.frame[:4], b"MIPC")
-        self.assertEqual(frame.payload, payload)
-
-    def test_crc_is_computed_over_the_header_with_its_own_field_zeroed(self):
-        frame = build_frame(
-            {"name": "heartbeat", "header": header(), "payload_hex": ""}
+        self.assertEqual(
+            int.from_bytes(frame.frame[0:4], "little"), HEADER_LENGTH + len(payload)
         )
-
-        zeroed = bytearray(frame.frame)
-        zeroed[36:40] = b"\x00\x00\x00\x00"
-
-        self.assertEqual(frame.crc32c, crc32c(bytes(zeroed)))
+        self.assertEqual(frame.payload, payload)
 
     def test_fields_are_serialized_little_endian(self):
         frame = build_frame(
-            {
-                "name": "heartbeat",
-                "header": header(session_id=0xAABBCCDD),
-                "payload_hex": "",
-            }
+            {"name": "hb", "header": header(generation=0xAABBCCDD), "payload_hex": ""}
         )
 
-        self.assertEqual(frame.frame[12:16], bytes([0xDD, 0xCC, 0xBB, 0xAA]))
+        self.assertEqual(frame.frame[8:12], bytes([0xDD, 0xCC, 0xBB, 0xAA]))
 
-    def test_rejects_declared_length_that_disagrees_with_payload(self):
-        with self.assertRaisesRegex(VectorError, "payload_length"):
+    def test_rejects_zero_generation(self):
+        """A generation of zero means "not yet published" and is never on the wire."""
+
+        with self.assertRaisesRegex(VectorError, "generation must be nonzero"):
             build_frame(
-                {
-                    "name": "bad",
-                    "header": header(payload_length=8),
-                    "payload_hex": "0011",
-                }
+                {"name": "bad", "header": header(generation=0), "payload_hex": ""}
             )
 
     def test_rejects_odd_length_hex(self):
         with self.assertRaisesRegex(VectorError, "even number of hex digits"):
-            build_frame(
-                {"name": "bad", "header": header(payload_length=1), "payload_hex": "0"}
-            )
+            build_frame({"name": "bad", "header": header(), "payload_hex": "0"})
 
     def test_rejects_missing_required_field(self):
         fields = header()
-        del fields["sequence"]
-        with self.assertRaisesRegex(VectorError, "sequence"):
+        del fields["cmd"]
+        with self.assertRaisesRegex(VectorError, "cmd"):
             build_frame({"name": "bad", "header": fields, "payload_hex": ""})
 
     def test_rejects_value_too_wide_for_its_field(self):
         with self.assertRaisesRegex(VectorError, "does not fit"):
-            build_frame({"name": "bad", "header": header(major=256), "payload_hex": ""})
-
-    def test_rejects_wrong_header_length(self):
-        with self.assertRaisesRegex(VectorError, "header_length"):
             build_frame(
-                {"name": "bad", "header": header(header_length=44), "payload_hex": ""}
+                {"name": "bad", "header": header(cmd=1 << 32), "payload_hex": ""}
             )
 
     def test_rejects_duplicate_frame_names(self):
@@ -136,7 +98,7 @@ class RenderTest(unittest.TestCase):
         doc = document(
             frames=[
                 {"name": "zulu", "header": header(), "payload_hex": ""},
-                {"name": "alpha", "header": header(sequence=1), "payload_hex": ""},
+                {"name": "alpha", "header": header(cmd=2), "payload_hex": ""},
             ]
         )
 
@@ -150,11 +112,12 @@ class RenderTest(unittest.TestCase):
             "frames must keep declaration order, not be sorted",
         )
 
-    def test_rejects_a_document_whose_declared_check_value_is_wrong(self):
-        doc = document(crc32c_check={"input_ascii": "123456789", "expected": "deadbeef"})
+    def test_rendered_header_carries_no_crc(self):
+        """The v1 control format has no checksum; the generator must not invent one."""
 
-        with self.assertRaisesRegex(VectorError, "crc32c_check mismatch"):
-            render_header(doc)
+        rendered = render_header(document())
+
+        self.assertNotIn("crc", rendered.lower())
 
     def test_rejects_empty_frame_list(self):
         with self.assertRaisesRegex(VectorError, "non-empty list"):
@@ -181,13 +144,11 @@ class MainTest(unittest.TestCase):
             source.write_text(json.dumps(document()), encoding="utf-8")
             target = Path(tmp) / "build" / "include" / "mpipe_ipc_vectors.h"
 
-            self.assertEqual(
-                main(["--input", str(source), "--output", str(target)]), 0
-            )
+            self.assertEqual(main(["--input", str(source), "--output", str(target)]), 0)
 
             text = target.read_text(encoding="utf-8")
             self.assertIn("MPIPE_IPC_VECTOR_COUNT", text)
-            self.assertIn("0x4d, 0x49, 0x50, 0x43,", text, "magic must appear as bytes")
+            self.assertIn("0x0c, 0x00, 0x00, 0x00,", text, "size must lead the header")
 
     def test_reports_failure_for_a_bad_document(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,10 +156,29 @@ class MainTest(unittest.TestCase):
             source.write_text("{not json", encoding="utf-8")
             target = Path(tmp) / "out.h"
 
-            self.assertEqual(
-                main(["--input", str(source), "--output", str(target)]), 1
-            )
+            self.assertEqual(main(["--input", str(source), "--output", str(target)]), 1)
             self.assertFalse(target.exists())
+
+
+class RealVectorsTest(unittest.TestCase):
+    """The checked-in vectors must satisfy their own contract."""
+
+    def test_shipped_vectors_build(self):
+        source = Path(__file__).resolve().parent.parent / "vectors" / "mpipe-ipc-v1.json"
+        doc = json.loads(source.read_text(encoding="utf-8"))
+
+        frames = build_frames(doc)
+
+        self.assertGreaterEqual(len(frames), 12)
+        for frame in frames:
+            self.assertEqual(
+                int.from_bytes(frame.frame[0:4], "little"),
+                len(frame.frame),
+                f"{frame.name}: size field must equal the real length",
+            )
+            self.assertLessEqual(
+                len(frame.frame), 256, f"{frame.name}: exceeds the control ceiling"
+            )
 
 
 if __name__ == "__main__":
