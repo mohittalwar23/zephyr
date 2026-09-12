@@ -9,8 +9,35 @@ Overview
 
 Both cores run the same source; only the board overlay differs. The sample
 establishes a session, opens an IPC Service instance over MU3, binds an
-endpoint, and exchanges heartbeats. It survives either core restarting
-underneath the other.
+endpoint, and then runs both halves of the split this design is built around:
+
+* **Control** messages -- heartbeats and status reports -- travel over MU3
+  through IPC Service.
+* **Audio** travels through a shared-DDR ring and never touches the message
+  path, following the same split the NXP SDK, NXP's Linux side and SOF all use.
+
+The M7 produces periods stamped with their own sequence number; the HiFi4
+verifies every byte and reports what it saw back over the control path. Either
+core can be restarted underneath the other and both the link and the stream
+rebuild themselves.
+
+Memory
+******
+
+The reserved window is 256 KiB at ``0xa0000000``:
+
+=============  ========  =====================================================
+Address        Size      Contents
+=============  ========  =====================================================
+``0xa0000000``    4 KiB  Bring-up control block: session, state, last error
+``0xa0010000``   64 KiB  IPC Service shared memory (vrings and buffers)
+``0xa0020000``  128 KiB  PCM ring: 32 periods of 640 bytes
+=============  ========  =====================================================
+
+Every region is a power-of-two size at a naturally aligned base. The M7's
+ARMv7-M MPU can express nothing else -- it rounds a size up to the next power of
+two and masks the base to match -- so a region that is neither silently covers
+something other than what was asked for.
 
 Building and running
 ********************
@@ -68,5 +95,9 @@ Sample output
    <inf> mpipe_ipc_bringup: gen 0: endpoint 'mpipe.ctrl' bound
    <inf> mpipe_ipc_bringup: gen 0: FIRST ROUND TRIP: heartbeat 0 acknowledged in 4 us
    <wrn> mpipe_ipc_bringup: gen 0: peer restarted; standing down so it can rebuild
-   <inf> mpipe_ipc_bringup: gen 1: LINK UP after 1 polls: session 4 <-> 4
-   <inf> mpipe_ipc_bringup: gen 1: endpoint 'mpipe.ctrl' bound
+   <inf> mpipe_ipc_bringup: gen 0: ring up: 32 periods of 640 bytes
+   <inf> mpipe_ipc_bringup: gen 0: produced 208 periods, fill 16; remote verified 0, 0 corrupt
+   <inf> mpipe_ipc_bringup: gen 0: produced 400 periods, fill 16; remote verified 208, 0 corrupt
+   <wrn> mpipe_ipc_bringup: gen 0: peer restarted; standing down so it can rebuild
+   <inf> mpipe_ipc_bringup: gen 1: LINK UP after 1 polls: session 10 <-> 14
+   <inf> mpipe_ipc_bringup: gen 1: ring up: 32 periods of 640 bytes

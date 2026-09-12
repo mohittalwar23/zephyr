@@ -142,3 +142,58 @@ Real round-trip time on this link is **23-26 us**, and the trip counter now
 tracks sends one for one. The lesson generalises past this sample: a Zephyr API
 that returns a count on success cannot be tested with `!= 0`, and here the wrong
 test produced a number plausible enough to be mistaken for a measurement.
+
+---
+
+## Addendum: PCM across the shared ring
+
+Bulk audio now moves through a dedicated shared-DDR ring, off the message path,
+with control messages on MU3 alongside it. Both halves run at once.
+
+Layout inside the existing 256 KiB reservation, no Linux devicetree change:
+
+    0xa0000000    4 KiB   bring-up control block
+    0xa0010000   64 KiB   IPC Service shared memory
+    0xa0020000  128 KiB   PCM ring, 32 periods of 640 bytes
+
+Every region is a power-of-two size at a naturally aligned base, because the
+M7's ARMv7-M MPU rounds a size up to the next power of two and masks the base to
+match. The previous 252 KiB region at 0xa0001000 was neither, and only happened
+to work because the rounding landed on a superset of what was intended.
+
+**Ring design.** Single producer, single consumer; each side writes one sequence
+counter the other only reads, which is the same lock-free argument the bring-up
+control block rests on. The counters are monotonic rather than wrapped indices,
+so `write - read` is the fill directly and is correct across the wrap without
+sacrificing a slot. Claim/commit rather than copy, so a DMA engine can write
+straight into a period.
+
+**The producer publishes its geometry and the consumer checks it.** A period
+size or count mismatch is silent in hardware -- each side simply addresses
+different bytes than the other wrote. The same class of silent disagreement in
+the mailbox channel mapping had already cost a long session on this link.
+
+## Result
+
+    gen 0: ring up: 32 periods of 640 bytes
+    gen 0: produced 208 periods, fill 16; remote verified 0, 0 corrupt
+    gen 0: produced 400 periods, fill 16; remote verified 208, 0 corrupt
+    gen 0: produced 608 periods, fill 16; remote verified 400, 0 corrupt
+    gen 0: produced 800 periods, fill 16; remote verified 608, 0 corrupt
+    gen 0: peer restarted; standing down so it can rebuild
+    gen 1: ring up: 32 periods of 640 bytes
+    gen 1: produced 800 periods, fill 16; remote verified 608, 0 corrupt
+
+    producer seq=928 period=640B count=32 overruns=0
+    consumer seq=928 underruns=1
+
+Every period is stamped with its own sequence number, so the consumer catches a
+period delivered late, twice, or out of order -- which a constant pattern would
+not. Zero corrupt periods across both generations, zero overruns, and the single
+underrun is the consumer arriving before the producer had filled anything.
+
+**One reporting bug found and fixed here**, of the same family as the byte-count
+one: progress was reported on `periods % 200 == 0`, but periods advance in
+bursts of up to 16, so the exact multiples were stepped over and the remote's
+verified count appeared frozen at 400. Cross a threshold, do not land on a
+multiple.

@@ -20,6 +20,7 @@
 #include <zephyr/sys/atomic.h>
 
 #include <zephyr/mpipe/ipc/mpipe_ipc_protocol.h>
+#include <zephyr/mpipe/ipc/mpipe_ipc_ring.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 
 LOG_MODULE_REGISTER(mpipe_ipc_bringup, LOG_LEVEL_INF);
@@ -50,6 +51,7 @@ static inline void signal_linux_ready(void)
 
 #define IPC_NODE    DT_NODELABEL(ipc0)
 #define SHARED_NODE DT_NODELABEL(mpipe_ipc_ctrl)
+#define RING_NODE   DT_NODELABEL(mpipe_ipc_ring)
 
 /*
  * The control block lives in its own reserved region, deliberately outside the
@@ -61,6 +63,48 @@ static volatile struct mpipe_ipc_shared *const shared =
 
 BUILD_ASSERT(DT_REG_SIZE(SHARED_NODE) >= sizeof(struct mpipe_ipc_shared),
 	     "the reserved control region is too small for the shared block");
+
+/*
+ * The audio ring, in its own region. Bulk audio never travels on the control
+ * path: the period size and count here are the version 1 format, 10 ms of
+ * 16 kHz stereo S16LE.
+ */
+static volatile struct mpipe_ipc_ring_shared *const ring_shared =
+	(volatile struct mpipe_ipc_ring_shared *)DT_REG_ADDR(RING_NODE);
+
+#define RING_REGION_SIZE DT_REG_SIZE(RING_NODE)
+#define RING_PERIOD_BYTES MPIPE_IPC_V1_PCM_BYTES
+#define RING_PERIOD_COUNT 32U
+
+BUILD_ASSERT(RING_REGION_SIZE >=
+		     MPIPE_IPC_RING_DATA_OFFSET +
+			     (RING_PERIOD_BYTES * RING_PERIOD_COUNT),
+	     "the reserved ring region is too small for the chosen geometry");
+
+static struct mpipe_ipc_ring ring;
+
+/*
+ * A pattern the consumer can check every byte of. Each period is stamped with
+ * its own sequence number, so a period delivered late, twice, or out of order
+ * is caught -- which a constant pattern would not catch.
+ */
+static void fill_period(uint8_t *period, uint32_t sequence)
+{
+	for (uint32_t i = 0; i < RING_PERIOD_BYTES; i++) {
+		period[i] = (uint8_t)(sequence + i);
+	}
+}
+
+static bool period_is_intact(const uint8_t *period, uint32_t sequence)
+{
+	for (uint32_t i = 0; i < RING_PERIOD_BYTES; i++) {
+		if (period[i] != (uint8_t)(sequence + i)) {
+			return false;
+		}
+	}
+
+	return true;
+}
 
 /*
  * Which side clears the rings is a devicetree decision, not a build-time one.
@@ -91,6 +135,9 @@ static uint16_t expected_reply_id;
 static atomic_t round_trips;
 static atomic_t echoes;
 static atomic_t drops;
+/* What the remote last reported about the audio it received. */
+static atomic_t peer_consumed;
+static atomic_t peer_bad;
 
 static int send_command(uint16_t type, uint16_t id)
 {
@@ -120,6 +167,43 @@ static int send_command(uint16_t type, uint16_t id)
 	}
 
 	return 0;
+}
+
+/*
+ * The consumer reports what it saw over the control path, which is what the
+ * control path is for. It is also the only way its verdict can be seen at all:
+ * both cores share one UART, so the remote has no console.
+ */
+#define STATUS_PAYLOAD_BYTES 8U
+#define STATUS_OFF_CONSUMED  0U
+#define STATUS_OFF_BAD       4U
+
+static int send_status(uint32_t consumed, uint32_t bad)
+{
+	uint8_t frame[MPIPE_IPC_HEADER_LENGTH + STATUS_PAYLOAD_BYTES];
+	uint8_t payload[STATUS_PAYLOAD_BYTES];
+	struct mpipe_ipc_message message = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_STATUS, 0U) },
+		.payload = payload,
+		.payload_length = sizeof(payload),
+	};
+	size_t written;
+	int err;
+
+	sys_put_le32(consumed, &payload[STATUS_OFF_CONSUMED]);
+	sys_put_le32(bad, &payload[STATUS_OFF_BAD]);
+
+	err = mpipe_ipc_encode(frame, sizeof(frame), &message, &written);
+	if (err != 0) {
+		return err;
+	}
+
+	err = ipc_service_send(&endpoint, frame, written);
+	if (err < 0) {
+		return err;
+	}
+
+	return ((size_t)err == written) ? 0 : -EIO;
 }
 
 static void on_bound(void *priv)
@@ -176,12 +260,43 @@ static void on_received(const void *data, size_t length, void *priv)
 		}
 		break;
 
+	case MPIPE_IPC_TYPE_STATUS:
+		if (message.payload_length < STATUS_PAYLOAD_BYTES) {
+			atomic_inc(&drops);
+			LOG_WRN("a STATUS too short to hold a report: %zu bytes",
+				message.payload_length);
+			break;
+		}
+		atomic_set(&peer_consumed,
+			   (atomic_val_t)sys_get_le32(
+				   &message.payload[STATUS_OFF_CONSUMED]));
+		atomic_set(&peer_bad,
+			   (atomic_val_t)sys_get_le32(
+				   &message.payload[STATUS_OFF_BAD]));
+		break;
+
 	default:
 		LOG_WRN("unexpected message type 0x%04x",
 			MPIPE_IPC_CMD_TYPE(message.header.cmd));
 		break;
 	}
 }
+
+static uint32_t ring_load(const volatile uint32_t *address)
+{
+	return *address;
+}
+
+static void ring_store(volatile uint32_t *address, uint32_t value)
+{
+	*address = value;
+}
+
+/* Same contract as the transport's: the window is uncached on both cores. */
+static const struct mpipe_ipc_ring_ops ring_ops = {
+	.load = ring_load,
+	.store = ring_store,
+};
 
 static const struct ipc_ept_cfg endpoint_cfg = {
 	.name = MPIPE_IPC_EP_NAME,
@@ -190,6 +305,53 @@ static const struct ipc_ept_cfg endpoint_cfg = {
 		.received = on_received,
 	},
 };
+
+/*
+ * Move a burst of periods each tick. A real stream is paced by the audio clock;
+ * here the tick is 500 ms, so a burst stands in for the periods that would have
+ * accumulated between wakeups and exercises the full and empty edges properly.
+ */
+#define PERIODS_PER_TICK 16U
+
+/** Periods between progress reports. */
+#define REPORT_INTERVAL 200U
+
+static void move_periods(uint32_t *moved, uint32_t *bad)
+{
+	for (uint32_t i = 0; i < PERIODS_PER_TICK; i++) {
+		if (IS_HOST) {
+			uint8_t *slot = mpipe_ipc_ring_claim_write(&ring);
+
+			if (slot == NULL) {
+				/*
+				 * The consumer is behind. Version 1 permits
+				 * overrun on this stream, so drop and carry on
+				 * rather than stalling the producer.
+				 */
+				mpipe_ipc_ring_record_overrun(&ring);
+				break;
+			}
+
+			fill_period(slot, ring.sequence);
+			(void)mpipe_ipc_ring_commit_write(&ring);
+			(*moved)++;
+		} else {
+			const uint8_t *slot = mpipe_ipc_ring_claim_read(&ring);
+			uint32_t sequence = ring.sequence;
+
+			if (slot == NULL) {
+				mpipe_ipc_ring_record_underrun(&ring);
+				break;
+			}
+
+			if (!period_is_intact(slot, sequence)) {
+				(*bad)++;
+			}
+			(void)mpipe_ipc_ring_commit_read(&ring);
+			(*moved)++;
+		}
+	}
+}
 
 /* One request, one reply. Returns the round-trip time or a negative errno. */
 static int exchange_heartbeat(uint16_t id)
@@ -222,6 +384,10 @@ int main(void)
 	bool joined;
 	bool bound;
 	bool announced;
+	bool streaming;
+	uint32_t periods;
+	uint32_t bad_periods;
+	uint32_t next_report;
 	int err;
 
 	/*
@@ -325,6 +491,10 @@ int main(void)
 		joined = transport.session.connected;
 		bound = false;
 		announced = false;
+		streaming = false;
+		periods = 0U;
+		bad_periods = 0U;
+		next_report = REPORT_INTERVAL;
 		do {
 			k_msleep(500);
 			err = mpipe_ipc_transport_poll(&transport);
@@ -340,6 +510,67 @@ int main(void)
 				bound = true;
 				LOG_INF("gen %u: endpoint '%s' bound", generation,
 					MPIPE_IPC_EP_NAME);
+			}
+
+			/*
+			 * Start the audio ring once the link is two-sided. The
+			 * producer publishes the geometry, so the consumer can
+			 * only attach after it; a consumer that gets there first
+			 * is told -EAGAIN and simply tries again next tick.
+			 */
+			if (err == 0 && joined && !streaming) {
+				int ring_err = mpipe_ipc_ring_init(
+					&ring, ring_shared, &ring_ops, IS_HOST,
+					RING_PERIOD_BYTES, RING_PERIOD_COUNT,
+					RING_REGION_SIZE);
+
+				if (ring_err == 0) {
+					streaming = true;
+					LOG_INF("gen %u: ring up: %u periods of %u "
+						"bytes",
+						generation, RING_PERIOD_COUNT,
+						(unsigned int)RING_PERIOD_BYTES);
+				} else if (ring_err != -EAGAIN) {
+					LOG_ERR("gen %u: ring refused: %d",
+						generation, ring_err);
+				}
+			}
+
+			if (err == 0 && streaming) {
+				move_periods(&periods, &bad_periods);
+
+				/*
+				 * Cross a threshold rather than land on a
+				 * multiple: periods advance in bursts, so an
+				 * exact modulo is stepped over whenever the
+				 * burst size and the interval are not aligned.
+				 */
+				if (periods >= next_report) {
+					next_report += REPORT_INTERVAL;
+					if (IS_HOST) {
+						LOG_INF("gen %u: produced %u periods, "
+							"fill %u; remote verified %ld, "
+							"%ld corrupt",
+							generation, periods,
+							mpipe_ipc_ring_fill(&ring),
+							(long)atomic_get(&peer_consumed),
+							(long)atomic_get(&peer_bad));
+					} else if (bound) {
+						/*
+						 * Report upstream. A failure here
+						 * is not fatal to the stream, so
+						 * it is noted and the audio keeps
+						 * flowing.
+						 */
+						int status_err =
+							send_status(periods, bad_periods);
+
+						if (status_err != 0) {
+							LOG_WRN("status report failed: %d",
+								status_err);
+						}
+					}
+				}
 			}
 
 			/*
