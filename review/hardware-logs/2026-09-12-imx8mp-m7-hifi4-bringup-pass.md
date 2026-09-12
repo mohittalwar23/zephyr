@@ -66,3 +66,68 @@ is indistinguishable from one that never started.
 
   host/M7     session=0x00110014 req=20    ack=17    state=2 READY    error=0
   remote/DSP  session=0x00140011 req=17    ack=20    state=2 READY    error=0
+
+---
+
+## Addendum, same day: first data across the link
+
+The bring-up above established the rings but registered no endpoint, so not one
+byte had actually crossed MU3. Adding an endpoint and a heartbeat round trip
+exposed a sixth defect, and this one was invisible to every layer above it.
+
+**MU3 is powered by the peer.** It sits in AUDIOMIX and is clocked as a
+peripheral clock of the DSP node (`mu3_cg` -> `3b6e8000.dsp`, `per_clk1`), so it
+runs only while Linux holds the DSP runtime-resumed. Measured directly:
+
+    DSP suspended -> mu3_cg enable_count 0
+    DSP resumed   -> mu3_cg enable_count 1
+
+The M7 starts first, so it was configuring MU3_A -- `MU_Init()`, then the
+receive-interrupt enables -- while the block was ungated. Those writes are
+discarded with no error reported. The result was a link that passed every check
+and ran exactly one way:
+
+    M7  -> DSP   21 of 21 doorbells delivered
+    DSP -> M7     0 of 26 doorbells delivered
+
+Everything downstream followed from that. The DSP's name-service announcement
+was sitting in the host's receive ring the whole time -- readable from Linux at
+0xa0001004 as `6d706970652e6374726c` ("mpipe.ctrl"), addressed to dst 0x35, the
+RPMsg name-service address. It had been sent correctly. The host simply never
+got the interrupt telling it to look, so no endpoint ever bound and no data
+moved. Bring-up itself never noticed, because it is deliberately poll-only and
+needs no doorbell.
+
+Confirmed by holding the clock on before starting the M7: `received` went from
+0 to 21.
+
+**Fix:** `mpipe_ipc_transport_require_peer()`. The host waits for the peer to
+acknowledge it before opening the instance. On this SoC "the mailbox is clocked"
+and "the peer is alive" are the same condition, so the barrier already had the
+information -- it just was not being used. This costs a host nothing, since it
+has nobody to talk to until the peer exists.
+
+It does not cover teardown: standing down after the DSP stops still writes to
+MU3. That window needs the runtime-PM hold, and the hold conflicts with starting
+the DSP (`start` then fails `-ETIMEDOUT`), so it must be released first. The
+sequence is in the sample README.
+
+## Result
+
+    gen 0: LINK UP after 128 polls: session 4 <-> 3
+    gen 0: endpoint 'mpipe.ctrl' bound
+    gen 0: FIRST ROUND TRIP: heartbeat 0 acknowledged in 4 us
+    gen 0: peer restarted; standing down so it can rebuild
+    gen 1: LINK UP after 1 polls: session 4 <-> 4
+    gen 1: endpoint 'mpipe.ctrl' bound
+    gen 1: FIRST ROUND TRIP: heartbeat 34 acknowledged in 4 us
+
+Control messages cross MU3 in 4 us, verified against the peer's session on every
+receive, and the whole path -- including the endpoint -- rebuilds itself after
+the remote restarts. 270 consecutive round trips with 0 dropped in one run.
+
+**Open, minor:** the sample's round-trip counter advances more slowly than
+heartbeats are sent while reporting success and logging no error (10, 16, 16
+across 30 sends). The discrepancy is in the sample's instrumentation, not in the
+transport -- the link itself keeps working and recovers -- but it is not yet
+explained.

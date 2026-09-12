@@ -135,7 +135,7 @@ static void track_stall(struct mpipe_ipc_session *session, uint32_t peer_word,
 }
 
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
-						     bool is_host,
+						     bool is_host, bool require_peer,
 						     uint32_t peer_session_word,
 						     uint32_t peer_state)
 {
@@ -168,6 +168,16 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 	}
 
 	if (is_host) {
+		/*
+		 * Where the mailbox belongs to the peer's power domain, opening
+		 * before the peer exists configures hardware that is not
+		 * clocked. Nothing reports an error; the writes simply do not
+		 * land, and the link then runs one-way forever.
+		 */
+		if (require_peer && !acked) {
+			return MPIPE_IPC_ACTION_WAIT;
+		}
+
 		/*
 		 * Never clear rings a live remote is reading. The wait does not
 		 * require an acknowledgement, because a remote that is live but

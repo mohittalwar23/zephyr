@@ -260,13 +260,23 @@ enum mpipe_ipc_bringup_action {
  * clears the latch, so a caller that faults and re-enters the sequence starts
  * from a clean state.
  *
+ * @p require_peer makes the host wait for a live peer instead of opening alone.
+ * Set it when the mailbox is powered by the peer's domain rather than this
+ * core's: on the i.MX8MP, MU3 sits in AUDIOMIX and its clock is a peripheral
+ * clock of the DSP node, so it runs only while Linux holds the DSP
+ * runtime-resumed. A host that opens first then configures a mailbox that is
+ * not clocked, and the writes are silently discarded -- the link comes up, both
+ * cores agree, and not one doorbell is ever delivered to the host. Waiting costs
+ * nothing, because a host has no peer to talk to until the peer exists anyway.
+ *
  * @param session           This core's session, from mpipe_ipc_session_open().
  * @param is_host           True on the static-vrings host.
+ * @param require_peer      Host must not open until the peer acknowledges it.
  * @param peer_session_word The peer's published handshake word.
  * @param peer_state        The peer's published bring-up state.
  */
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
-						     bool is_host,
+						     bool is_host, bool require_peer,
 						     uint32_t peer_session_word,
 						     uint32_t peer_state);
 
