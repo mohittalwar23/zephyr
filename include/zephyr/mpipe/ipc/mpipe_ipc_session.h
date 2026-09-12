@@ -85,14 +85,46 @@ extern "C" {
 
 BUILD_ASSERT(MPIPE_IPC_SID_NONE == 0U, "zero is reserved for no session");
 
+/**
+ * @brief Polls a host waits on an unmoving READY peer before calling it residue.
+ *
+ * A core killed by `remoteproc stop` while it was READY leaves that word behind
+ * in retained memory, and nothing in shared memory distinguishes it from a peer
+ * that is still running. A live peer answers a host's new session within one of
+ * its own poll periods, so a peer whose published word has not moved for
+ * appreciably longer than that is gone. The sample polls a running link every
+ * 500 ms and bring-up every 20 ms, so this is four running periods of margin.
+ *
+ * A core that is hung with its memory intact is indistinguishable from one that
+ * is gone. Only the lifecycle authority knows the difference, and it is not in
+ * this path; the timeout is the recovery.
+ */
+#define MPIPE_IPC_RESIDUE_POLLS 100U
+
 /** @brief One endpoint's view of the session with its peer. */
 struct mpipe_ipc_session {
 	/** This core's session for the current boot. Never MPIPE_IPC_SID_NONE. */
 	uint16_t local_sid;
+	/**
+	 * The peer request half last observed, echoed as this core's
+	 * acknowledgement.
+	 *
+	 * Deliberately separate from @ref remote_sid. This is what we have
+	 * *seen*; @ref remote_sid is what we have *accepted*. A core must echo
+	 * unconditionally -- that echo is the only way the peer learns this core
+	 * exists -- but must accept only a peer that has echoed back this boot's
+	 * own session.
+	 */
+	uint16_t peer_seen;
 	/** The peer session latched at connect, or MPIPE_IPC_SID_NONE. */
 	uint16_t remote_sid;
 	/** True once a peer session has been latched and not since invalidated. */
 	bool connected;
+	/** Consecutive polls in which the peer published nothing new. */
+	uint16_t peer_stall;
+	/** The peer word and state behind @ref peer_stall. */
+	uint32_t peer_last_word;
+	uint32_t peer_last_state;
 };
 
 /**
@@ -154,6 +186,15 @@ bool mpipe_ipc_session_acknowledged(const struct mpipe_ipc_session *session,
 				    uint32_t peer_word);
 
 /**
+ * @brief Record what the peer is advertising and report whether it is live.
+ *
+ * Always updates the acknowledgement this core will publish, so the peer can
+ * see it. Returns true only when the peer has acknowledged *this boot's*
+ * session, which is the one thing residue from a dead core cannot fake.
+ */
+bool mpipe_ipc_session_observe(struct mpipe_ipc_session *session, uint32_t peer_word);
+
+/**
  * @brief Bring-up state each core publishes beside its session word.
  *
  * This exists because OpenAMP's host zeroes **both** shared vrings on every
@@ -194,14 +235,30 @@ enum mpipe_ipc_bringup_action {
  * - The **remote** writes nothing at init and reads rings the host built, so it
  *   may open only once the peer *is* `READY`.
  *
- * A peer that has published no session at all is treated as absent, which lets
- * the host come up first on a cold boot. Once a session has been latched, any
- * change to the peer's request half faults, because that peer is a different
- * incarnation from the one this core handshook with.
+ * A peer is accepted only once it acknowledges **this boot's** session. That
+ * rule is what makes retained memory safe to read: a word left behind by a core
+ * that is no longer running carries a stale acknowledgement, and
+ * mpipe_ipc_session_next() guarantees this boot's session differs from the one
+ * the peer last acknowledged, so residue can never satisfy the test. Latching on
+ * the mere presence of a session instead would make a dead peer's leftover word
+ * indistinguishable from a live peer -- observed on the board, where the host
+ * latched a session from the remote's previous life and then read the remote's
+ * actual boot as a restart.
  *
- * @p session is updated in place: a first sighting latches the peer, and a
- * restart clears the latch, so a caller that faults and re-enters the sequence
- * starts from a clean state.
+ * The acknowledgement is echoed unconditionally, including to residue, because
+ * otherwise neither side would ever ack first and both would wait forever.
+ * Echoing is safe: mpipe_ipc_session_next() skips whatever the peer last
+ * acknowledged, so a peer booting afterwards cannot pick the echoed value.
+ *
+ * A host does not require the acknowledgement before *waiting*, only before
+ * proceeding: it holds off on any peer that looks READY, and falls through after
+ * @ref MPIPE_IPC_RESIDUE_POLLS unmoving polls. Requiring the acknowledgement to
+ * wait would let a restarted host barge in during the window before a live
+ * remote has noticed it, which is the ring wipe this barrier exists to prevent.
+ *
+ * @p session is updated in place: acceptance latches the peer, and a restart
+ * clears the latch, so a caller that faults and re-enters the sequence starts
+ * from a clean state.
  *
  * @param session           This core's session, from mpipe_ipc_session_open().
  * @param is_host           True on the static-vrings host.

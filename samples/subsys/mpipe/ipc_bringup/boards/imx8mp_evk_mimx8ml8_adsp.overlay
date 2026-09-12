@@ -42,3 +42,12 @@
 &mu3_b {
 	status = "okay";
 };
+
+/*
+ * Both cores share one UART on this board. Leave it to the M7 so its console
+ * is readable; the DSP's state is observable from the shared control block
+ * instead, which Linux can read directly.
+ */
+&uart4 {
+	status = "disabled";
+};
