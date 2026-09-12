@@ -247,3 +247,72 @@ would score identically. Two words means a wrong answer shows up.
 * The inference sources are **vendored** into `samples/subsys/mpipe/ipc_infer/
   src/inference/` with provenance headers, because the two changes above are
   needed and #96657 is still open. That copy should be deleted once it merges.
+
+---
+
+## Addendum 2026-09-13: live capture, and a duplication caught
+
+Live audio now reaches the DSP and comes back classified. Two capture paths
+work, and one architectural mistake was found and is being reversed.
+
+**Live capture works both ways in.**
+
+    capture pipeline: i2s -> tee -> [speaker, HiFi4] at 16000 Hz
+    forwarding 16000 Hz, 2 ch, 16-bit as 160-sample mono periods
+    codec route is now 1 ... now 2
+    TX started with 3 silence buffers
+    Capture started now
+    [2] heard "yes"   (0 periods dropped)
+
+The tee gives an audible branch alongside the inference branch, which is the
+check that fails first: keyword spotting only tells you whether the model
+agreed, while hearing the same audio tells you whether the microphone, clocks
+and gain are doing anything at all.
+
+**DMIC's apparent failure was ours, not the hardware's.** `dmic_read()` with a
+zero timeout finds the driver's queue momentarily empty and takes a fallback
+that returns *silence and success*. A polling caller therefore never blocks,
+never fails, and fills the ring with zeros as fast as it can loop. The proven
+path in `mpipe_aud_dmic_src` uses a bounded read (~100 ms) on its own thread.
+With that fixed the level went from 0 to real room noise and windows moved from
+15 per second to exactly one per second, which is the signature of capture
+paced by the microphone rather than by a spin.
+
+**The M7 DDR board variant does not run here.** With the pipeline the TCM build
+overflowed ITCM by 4728 bytes, so `imx8mp_evk/mimx8ml8/m7/ddr` was tried.
+It builds, `imx_rproc` reports booting it, and the M7 then re-executes whatever
+is still resident in ITCM -- caught only by checking which log strings were in
+which ELF. `CONFIG_LOG_MODE_MINIMAL=y` makes the TCM build fit instead.
+
+**The duplication.** A `mpipe_ipc_sink` element was written to feed the ring.
+It should not have been: PR #114088's plugin (`c2c21ff684c` on
+`gsoc/mp-ipc-plugin`) already contains `mp_ipc_sink.c`, `mp_ipc_src.c` and
+`mp_ipc_translation.c` -- and is *more* complete, carrying the consumer-side
+element, buffer-release accounting, state propagation, properties, events and
+queries.
+
+It is also already zero-copy, which was the assumption that went unchecked. It
+does not put samples in messages; it passes a descriptor:
+
+    struct { uint32_t phys_addr; uint32_t size; uint32_t timestamp;
+             uint32_t buffer_id; } data;
+
+The sink refs the net_buf, flushes cache, sends the descriptor, and the consumer
+reads the samples from that address and returns a RELEASE carrying the
+buffer_id. Audio never travels in the payload -- exactly the property the ring
+was built to obtain.
+
+    Devanshi's                         this work's ring
+    samples by reference               samples in a ring
+    2 messages per buffer              0 messages per buffer
+    mp_ipc_src element                 hand-rolled consumer
+    no peer-restart handling           session + barrier
+
+**Decision: converge on the plugin, drop `mpipe_ipc_sink` and the ring.** Her
+data path is equivalent and is the upstream-track work; the session and barrier
+layer stays underneath it, since that solves the restart problem the plugin does
+not address and is the part of this work that is actually new.
+
+Known integration point: `phys_addr` is the buffer's own address, so the audio
+pool must sit in memory both cores can address. The M7's pool is in TCM today,
+which the HiFi4 cannot see, so it has to move into the shared DDR window.
