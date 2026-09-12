@@ -8,56 +8,28 @@
 #include <string.h>
 
 #include <zephyr/mpipe/ipc/mpipe_ipc_protocol.h>
+#include <zephyr/mpipe/ipc/mpipe_ipc_session.h>
 
-#include "mpipe_ipc_vectors.h"
+ZTEST_SUITE(mpipe_ipc, NULL, NULL, NULL, NULL, NULL);
 
-ZTEST_SUITE(mpipe_ipc_protocol, NULL, NULL, NULL, NULL, NULL);
-
-/* Kilobyte-scale scratch must not live on the 1024-byte ztest stack. */
 static uint8_t scratch[MPIPE_IPC_MAX_MESSAGE];
 
-static const struct mpipe_ipc_vector *vector_named(const char *name)
-{
-	for (size_t i = 0; i < MPIPE_IPC_VECTOR_COUNT; i++) {
-		if (strcmp(mpipe_ipc_vectors[i].name, name) == 0) {
-			return &mpipe_ipc_vectors[i];
-		}
-	}
-
-	return NULL;
-}
-
-static void message_from_vector(struct mpipe_ipc_message *message,
-				const struct mpipe_ipc_vector *vector)
-{
-	memset(message, 0, sizeof(*message));
-	message->header.cmd = vector->cmd;
-	message->header.generation = vector->generation;
-	message->payload = (vector->payload_length != 0U)
-				   ? vector->frame + MPIPE_IPC_HEADER_LENGTH
-				   : NULL;
-	message->payload_length = vector->payload_length;
-}
-
 /* ------------------------------------------------------------------ */
-/* Shape                                                               */
+/* Control header                                                      */
 /* ------------------------------------------------------------------ */
 
 /*
- * The header is 12 bytes on purpose. SOF ships 8 in production on this same
- * HiFi4 over this same transport and NXP SRTM ships 10; the one field neither
- * needs is the boot generation, because in both of those designs the
- * lifecycle authority and the data-plane peer are the same entity.
+ * Four bytes on purpose. ipc_service's receive callback supplies the length
+ * and its endpoints are named, so neither a size nor a stream id earns a
+ * place; peer identity lives in the session word, not on each message.
  */
-ZTEST(mpipe_ipc_protocol, test_header_is_twelve_bytes)
+ZTEST(mpipe_ipc, test_header_is_four_bytes)
 {
-	zassert_equal(MPIPE_IPC_HEADER_LENGTH, 12U);
-	zassert_equal(MPIPE_IPC_OFF_SIZE, 0U);
-	zassert_equal(MPIPE_IPC_OFF_CMD, 4U);
-	zassert_equal(MPIPE_IPC_OFF_GENERATION, 8U);
+	zassert_equal(MPIPE_IPC_HEADER_LENGTH, 4U);
+	zassert_equal(MPIPE_IPC_OFF_CMD, 0U);
 }
 
-ZTEST(mpipe_ipc_protocol, test_cmd_packs_type_and_id)
+ZTEST(mpipe_ipc, test_cmd_packs_type_and_transaction_id)
 {
 	uint32_t cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_CONFIG, 0xbeef);
 
@@ -65,124 +37,118 @@ ZTEST(mpipe_ipc_protocol, test_cmd_packs_type_and_id)
 	zassert_equal(MPIPE_IPC_CMD_ID(cmd), 0xbeef);
 }
 
-/* ------------------------------------------------------------------ */
-/* Golden vectors                                                      */
-/* ------------------------------------------------------------------ */
-
-ZTEST(mpipe_ipc_protocol, test_every_golden_frame_encodes_to_exact_bytes)
+ZTEST(mpipe_ipc, test_encode_is_little_endian_and_round_trips)
 {
-	for (size_t i = 0; i < MPIPE_IPC_VECTOR_COUNT; i++) {
-		const struct mpipe_ipc_vector *vector = &mpipe_ipc_vectors[i];
-		struct mpipe_ipc_message message;
-		size_t written = 0;
+	struct mpipe_ipc_message in = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_HELLO, 0x1234) },
+		.payload = (const uint8_t *)"abcd",
+		.payload_length = 4U,
+	};
+	struct mpipe_ipc_message out;
+	size_t written = 0;
 
-		message_from_vector(&message, vector);
+	zassert_ok(mpipe_ipc_encode(scratch, sizeof(scratch), &in, &written));
+	zassert_equal(written, MPIPE_IPC_HEADER_LENGTH + 4U);
+	zassert_equal(sys_get_le32(&scratch[MPIPE_IPC_OFF_CMD]), in.header.cmd);
+	zassert_equal(scratch[0], 0x34, "transaction id is little-endian");
 
-		zassert_ok(mpipe_ipc_encode(scratch, sizeof(scratch), &message, &written),
-			   "vector %s failed to encode", vector->name);
-		zassert_equal(written, vector->frame_length, "vector %s length",
-			      vector->name);
-		zassert_mem_equal(scratch, vector->frame, vector->frame_length,
-				  "vector %s differs from the golden frame",
-				  vector->name);
-	}
+	zassert_ok(mpipe_ipc_decode(&out, scratch, written));
+	zassert_equal(out.header.cmd, in.header.cmd);
+	zassert_equal(out.payload_length, 4U);
+	zassert_mem_equal(out.payload, "abcd", 4);
 }
 
-ZTEST(mpipe_ipc_protocol, test_every_golden_frame_decodes_to_expected_fields)
+ZTEST(mpipe_ipc, test_header_only_message_is_legal)
 {
-	for (size_t i = 0; i < MPIPE_IPC_VECTOR_COUNT; i++) {
-		const struct mpipe_ipc_vector *vector = &mpipe_ipc_vectors[i];
-		struct mpipe_ipc_message message;
+	struct mpipe_ipc_message in = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_HEARTBEAT, 1) },
+	};
+	struct mpipe_ipc_message out;
+	size_t written = 0;
 
-		zassert_ok(mpipe_ipc_decode(&message, vector->frame,
-					    vector->frame_length),
-			   "vector %s failed to decode", vector->name);
-
-		zassert_equal(message.header.size, vector->size, "%s size", vector->name);
-		zassert_equal(message.header.cmd, vector->cmd, "%s cmd", vector->name);
-		zassert_equal(message.header.generation, vector->generation,
-			      "%s generation", vector->name);
-		zassert_equal(message.payload_length, vector->payload_length,
-			      "%s payload length", vector->name);
-
-		if (vector->payload_length != 0U) {
-			zassert_mem_equal(message.payload,
-					  vector->frame + MPIPE_IPC_HEADER_LENGTH,
-					  vector->payload_length, "%s payload",
-					  vector->name);
-		}
-	}
+	zassert_ok(mpipe_ipc_encode(scratch, sizeof(scratch), &in, &written));
+	zassert_equal(written, MPIPE_IPC_HEADER_LENGTH);
+	zassert_ok(mpipe_ipc_decode(&out, scratch, written));
+	zassert_equal(out.payload_length, 0U);
+	zassert_is_null(out.payload, "no payload means no pointer");
 }
 
-ZTEST(mpipe_ipc_protocol, test_encode_then_decode_round_trips_every_vector)
+/* The format must not depend on receive-buffer alignment. */
+ZTEST(mpipe_ipc, test_decode_accepts_an_unaligned_buffer)
 {
-	for (size_t i = 0; i < MPIPE_IPC_VECTOR_COUNT; i++) {
-		const struct mpipe_ipc_vector *vector = &mpipe_ipc_vectors[i];
-		struct mpipe_ipc_message in;
-		struct mpipe_ipc_message out;
-		size_t written = 0;
-
-		message_from_vector(&in, vector);
-		zassert_ok(mpipe_ipc_encode(scratch, sizeof(scratch), &in, &written));
-		zassert_ok(mpipe_ipc_decode(&out, scratch, written));
-
-		zassert_equal(out.header.cmd, in.header.cmd, "%s", vector->name);
-		zassert_equal(out.header.generation, in.header.generation, "%s",
-			      vector->name);
-		zassert_equal(out.payload_length, in.payload_length, "%s", vector->name);
-	}
-}
-
-/*
- * A header-only message is legal and is the smallest thing on the wire.
- */
-ZTEST(mpipe_ipc_protocol, test_header_only_message_is_legal)
-{
-	const struct mpipe_ipc_vector *vector = vector_named("bare_heartbeat");
-	struct mpipe_ipc_message message;
-
-	zassert_not_null(vector);
-	zassert_equal(vector->frame_length, MPIPE_IPC_HEADER_LENGTH);
-
-	zassert_ok(mpipe_ipc_decode(&message, vector->frame, vector->frame_length));
-	zassert_equal(message.payload_length, 0U);
-	zassert_is_null(message.payload, "no payload means no pointer");
-}
-
-/*
- * The format must not depend on the alignment of the receive buffer. A
- * packed-struct cast would fault or misread here on a strict-alignment target.
- */
-ZTEST(mpipe_ipc_protocol, test_decode_accepts_an_unaligned_buffer)
-{
-	const struct mpipe_ipc_vector *vector = vector_named("status_report");
 	static uint8_t staging[MPIPE_IPC_MAX_MESSAGE + 3];
-	struct mpipe_ipc_message message;
+	struct mpipe_ipc_message in = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_STATUS, 7) },
+		.payload = (const uint8_t *)"xy",
+		.payload_length = 2U,
+	};
+	struct mpipe_ipc_message out;
+	size_t written = 0;
 
-	zassert_not_null(vector);
-	memcpy(&staging[1], vector->frame, vector->frame_length);
+	zassert_ok(mpipe_ipc_encode(scratch, sizeof(scratch), &in, &written));
+	memcpy(&staging[1], scratch, written);
 
-	zassert_ok(mpipe_ipc_decode(&message, &staging[1], vector->frame_length));
-	zassert_equal(message.header.generation, vector->generation);
+	zassert_ok(mpipe_ipc_decode(&out, &staging[1], written));
+	zassert_equal(out.header.cmd, in.header.cmd);
+}
+
+ZTEST(mpipe_ipc, test_malformed_messages_are_rejected)
+{
+	struct mpipe_ipc_message out;
+
+	zassert_equal(mpipe_ipc_decode(NULL, scratch, 8U), -EINVAL);
+	zassert_equal(mpipe_ipc_decode(&out, NULL, 8U), -EINVAL);
+
+	/* Shorter than a header. */
+	zassert_equal(mpipe_ipc_decode(&out, scratch, MPIPE_IPC_HEADER_LENGTH - 1U),
+		      -EMSGSIZE);
+
+	/* Unknown type. */
+	sys_put_le32(MPIPE_IPC_CMD(0x7f, 1), &scratch[MPIPE_IPC_OFF_CMD]);
+	zassert_equal(mpipe_ipc_decode(&out, scratch, MPIPE_IPC_HEADER_LENGTH),
+		      -ENOTSUP);
+
+	/* Longer than the control ceiling. */
+	sys_put_le32(MPIPE_IPC_CMD(MPIPE_IPC_TYPE_STATUS, 1), &scratch[MPIPE_IPC_OFF_CMD]);
+	zassert_equal(mpipe_ipc_decode(&out, scratch, MPIPE_IPC_MAX_MESSAGE + 1U),
+		      -EMSGSIZE);
+}
+
+ZTEST(mpipe_ipc, test_rejected_message_leaves_no_payload_pointer)
+{
+	struct mpipe_ipc_message out;
+
+	sys_put_le32(MPIPE_IPC_CMD(0x7f, 1), &scratch[MPIPE_IPC_OFF_CMD]);
+	out.payload = (const uint8_t *)0x1;
+	out.payload_length = 12345U;
+
+	zassert_equal(mpipe_ipc_decode(&out, scratch, MPIPE_IPC_HEADER_LENGTH), -ENOTSUP);
+	zassert_is_null(out.payload);
+	zassert_equal(out.payload_length, 0U);
+}
+
+ZTEST(mpipe_ipc, test_encode_argument_and_capacity_rules)
+{
+	struct mpipe_ipc_message in = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_HEARTBEAT, 1) },
+	};
+	size_t written = 0;
+
+	zassert_equal(mpipe_ipc_encode(NULL, sizeof(scratch), &in, &written), -EINVAL);
+	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), NULL, &written), -EINVAL);
+	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), &in, NULL), -EINVAL);
+	zassert_equal(mpipe_ipc_encode(scratch, 1U, &in, &written), -ENOSPC);
+
+	in.payload = scratch;
+	in.payload_length = MPIPE_IPC_MAX_PAYLOAD + 1U;
+	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), &in, &written), -EMSGSIZE);
 }
 
 /* ------------------------------------------------------------------ */
 /* Audio format negotiation                                            */
 /* ------------------------------------------------------------------ */
 
-ZTEST(mpipe_ipc_protocol, test_config_carries_the_v1_audio_format)
-{
-	const struct mpipe_ipc_vector *vector = vector_named("config_request");
-	const struct mpipe_ipc_audio_format expected = MPIPE_IPC_V1_AUDIO_FORMAT;
-	struct mpipe_ipc_message message;
-
-	zassert_not_null(vector);
-	zassert_ok(mpipe_ipc_decode(&message, vector->frame, vector->frame_length));
-	zassert_equal(message.payload_length, MPIPE_IPC_AUDIO_FORMAT_LENGTH);
-	zassert_ok(mpipe_ipc_validate_audio(&message, &expected));
-}
-
-ZTEST(mpipe_ipc_protocol, test_audio_format_encode_round_trips)
+ZTEST(mpipe_ipc, test_audio_format_round_trips_through_config)
 {
 	const struct mpipe_ipc_audio_format in = MPIPE_IPC_V1_AUDIO_FORMAT;
 	struct mpipe_ipc_message message;
@@ -198,15 +164,15 @@ ZTEST(mpipe_ipc_protocol, test_audio_format_encode_round_trips)
 	zassert_ok(mpipe_ipc_validate_audio(&message, &in));
 }
 
-/* The slow-consumer policy is part of the negotiated format, not a window. */
-ZTEST(mpipe_ipc_protocol, test_xrun_policy_is_negotiated_and_compared)
+/* The slow-consumer policy is negotiated, not a credit window. */
+ZTEST(mpipe_ipc, test_xrun_policy_is_part_of_the_negotiated_format)
 {
 	struct mpipe_ipc_audio_format in = MPIPE_IPC_V1_AUDIO_FORMAT;
-	struct mpipe_ipc_audio_format expected = MPIPE_IPC_V1_AUDIO_FORMAT;
+	const struct mpipe_ipc_audio_format expected = MPIPE_IPC_V1_AUDIO_FORMAT;
 	struct mpipe_ipc_message message;
 	uint8_t buf[MPIPE_IPC_AUDIO_FORMAT_LENGTH];
 
-	zassert_true(expected.overrun_permitted, "v1 permits overrun by default");
+	zassert_true(expected.overrun_permitted, "v1 permits overrun");
 	zassert_false(expected.underrun_permitted);
 
 	in.overrun_permitted = false;
@@ -217,141 +183,125 @@ ZTEST(mpipe_ipc_protocol, test_xrun_policy_is_negotiated_and_compared)
 	message.payload = buf;
 	message.payload_length = sizeof(buf);
 
-	zassert_equal(mpipe_ipc_validate_audio(&message, &expected), -EPROTO,
-		      "a differing xrun policy must be rejected");
+	zassert_equal(mpipe_ipc_validate_audio(&message, &expected), -EPROTO);
 }
 
-ZTEST(mpipe_ipc_protocol, test_audio_validation_rejects_a_non_config_message)
+ZTEST(mpipe_ipc, test_audio_validation_rejects_a_non_config_message)
 {
-	const struct mpipe_ipc_vector *vector = vector_named("heartbeat_request");
 	const struct mpipe_ipc_audio_format expected = MPIPE_IPC_V1_AUDIO_FORMAT;
-	struct mpipe_ipc_message message;
+	struct mpipe_ipc_message message = {
+		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_HEARTBEAT, 1) },
+	};
 
-	zassert_not_null(vector);
-	zassert_ok(mpipe_ipc_decode(&message, vector->frame, vector->frame_length));
 	zassert_equal(mpipe_ipc_validate_audio(&message, &expected), -ENOTSUP);
 }
 
 /* ------------------------------------------------------------------ */
-/* Rejection table                                                     */
+/* Session handshake                                                   */
 /* ------------------------------------------------------------------ */
 
-enum mutate_kind {
-	MUTATE_LE32,
-	MUTATE_TRUNCATE,
-};
-
-struct reject_case {
-	const char *name;
-	enum mutate_kind kind;
-	size_t offset;
-	uint32_t value;
-	size_t length_override;
-	int expected;
-};
-
-static const struct reject_case reject_cases[] = {
-	{ .name = "size below a full header", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_SIZE, .value = 4U, .expected = -EMSGSIZE },
-	{ .name = "size beyond the control ceiling", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_SIZE, .value = MPIPE_IPC_MAX_MESSAGE + 1U,
-	  .expected = -EMSGSIZE },
-	{ .name = "size overflows the addition", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_SIZE, .value = 0xffffffffU, .expected = -EMSGSIZE },
-	{ .name = "size larger than the bytes present", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_SIZE, .value = 200U, .expected = -EMSGSIZE },
-	{ .name = "unknown message type", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_CMD, .value = MPIPE_IPC_CMD(0x7f, 1),
-	  .expected = -ENOTSUP },
-	{ .name = "zero generation", .kind = MUTATE_LE32,
-	  .offset = MPIPE_IPC_OFF_GENERATION, .value = 0U, .expected = -EPROTO },
-	{ .name = "truncated below a full header", .kind = MUTATE_TRUNCATE,
-	  .length_override = MPIPE_IPC_HEADER_LENGTH - 1U, .expected = -EMSGSIZE },
-	{ .name = "truncated payload", .kind = MUTATE_TRUNCATE,
-	  .length_override = MPIPE_IPC_HEADER_LENGTH + 1U, .expected = -EMSGSIZE },
-};
-
-ZTEST(mpipe_ipc_protocol, test_malformed_messages_are_rejected)
+ZTEST(mpipe_ipc, test_handshake_word_packs_request_and_ack)
 {
-	const struct mpipe_ipc_vector *vector = vector_named("status_report");
+	uint32_t word = MPIPE_IPC_HANDSHAKE(0x1234, 0xabcd);
 
-	zassert_not_null(vector);
-
-	for (size_t i = 0; i < ARRAY_SIZE(reject_cases); i++) {
-		const struct reject_case *test = &reject_cases[i];
-		struct mpipe_ipc_message message;
-		size_t length = vector->frame_length;
-
-		memcpy(scratch, vector->frame, vector->frame_length);
-
-		switch (test->kind) {
-		case MUTATE_LE32:
-			sys_put_le32(test->value, &scratch[test->offset]);
-			break;
-		case MUTATE_TRUNCATE:
-			length = test->length_override;
-			break;
-		default:
-			break;
-		}
-
-		zassert_equal(mpipe_ipc_decode(&message, scratch, length),
-			      test->expected,
-			      "case %zu (%s) returned the wrong rejection", i,
-			      test->name);
-	}
+	zassert_equal(MPIPE_IPC_HANDSHAKE_REQ(word), 0x1234);
+	zassert_equal(MPIPE_IPC_HANDSHAKE_ACK(word), 0xabcd);
 }
 
-/* A rejected message must never leave a payload pointer a caller could follow. */
-ZTEST(mpipe_ipc_protocol, test_rejected_message_leaves_no_payload_pointer)
+/*
+ * The new session is derived from the value read back out of shared memory.
+ * A core that started from local state would pick the same number every boot
+ * and be indistinguishable from a core that never restarted.
+ */
+ZTEST(mpipe_ipc, test_next_session_increments_from_the_retained_value)
 {
-	const struct mpipe_ipc_vector *vector = vector_named("config_request");
-	struct mpipe_ipc_message message;
-
-	zassert_not_null(vector);
-	memcpy(scratch, vector->frame, vector->frame_length);
-	sys_put_le32(0U, &scratch[MPIPE_IPC_OFF_GENERATION]);
-
-	message.payload = (const uint8_t *)0x1;
-	message.payload_length = 12345U;
-
-	zassert_equal(mpipe_ipc_decode(&message, scratch, vector->frame_length),
-		      -EPROTO);
-	zassert_is_null(message.payload, "payload must not be exposed on rejection");
-	zassert_equal(message.payload_length, 0U);
+	zassert_equal(mpipe_ipc_session_next(5U, 99U), 6U);
+	zassert_equal(mpipe_ipc_session_next(41U, 99U), 42U);
 }
 
-ZTEST(mpipe_ipc_protocol, test_encode_argument_and_capacity_rules)
+ZTEST(mpipe_ipc, test_next_session_skips_zero_on_wrap)
 {
-	const struct mpipe_ipc_vector *vector = vector_named("heartbeat_request");
-	struct mpipe_ipc_message message;
-	size_t written = 0;
-
-	zassert_not_null(vector);
-	message_from_vector(&message, vector);
-
-	zassert_equal(mpipe_ipc_encode(NULL, sizeof(scratch), &message, &written),
-		      -EINVAL);
-	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), NULL, &written),
-		      -EINVAL);
-	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), &message, NULL),
-		      -EINVAL);
-	zassert_equal(mpipe_ipc_encode(scratch, vector->frame_length - 1U, &message,
-				       &written),
-		      -ENOSPC);
-
-	message.payload_length = MPIPE_IPC_MAX_PAYLOAD + 1U;
-	zassert_equal(mpipe_ipc_encode(scratch, sizeof(scratch), &message, &written),
-		      -EMSGSIZE);
+	zassert_equal(mpipe_ipc_session_next(0xffffU, 99U), 1U,
+		      "zero is reserved for no session");
 }
 
-ZTEST(mpipe_ipc_protocol, test_decode_argument_rules)
+ZTEST(mpipe_ipc, test_next_session_skips_the_value_the_peer_acknowledged)
 {
-	const struct mpipe_ipc_vector *vector = vector_named("heartbeat_request");
-	struct mpipe_ipc_message message;
+	zassert_equal(mpipe_ipc_session_next(7U, 8U), 9U,
+		      "a fresh session must not collide with the acknowledged one");
+}
 
-	zassert_not_null(vector);
-	zassert_equal(mpipe_ipc_decode(NULL, vector->frame, vector->frame_length),
-		      -EINVAL);
-	zassert_equal(mpipe_ipc_decode(&message, NULL, vector->frame_length), -EINVAL);
+ZTEST(mpipe_ipc, test_open_latch_and_steady_state)
+{
+	struct mpipe_ipc_session s;
+	uint32_t peer;
+
+	zassert_ok(mpipe_ipc_session_open(&s, MPIPE_IPC_HANDSHAKE(4U, 0U), 0U));
+	zassert_equal(s.local_sid, 5U);
+	zassert_false(s.connected);
+
+	/* Nothing may be checked before a peer session is latched. */
+	zassert_equal(mpipe_ipc_session_check(&s, MPIPE_IPC_HANDSHAKE(77U, 0U)),
+		      -ENOTCONN);
+
+	peer = MPIPE_IPC_HANDSHAKE(77U, 5U);
+	zassert_ok(mpipe_ipc_session_latch(&s, peer));
+	zassert_true(s.connected);
+	zassert_equal(s.remote_sid, 77U);
+	zassert_true(mpipe_ipc_session_acknowledged(&s, peer),
+		     "the peer echoed our session, so the handshake is complete");
+
+	zassert_ok(mpipe_ipc_session_check(&s, peer));
+	zassert_equal(MPIPE_IPC_HANDSHAKE_REQ(mpipe_ipc_session_word(&s)), 5U);
+	zassert_equal(MPIPE_IPC_HANDSHAKE_ACK(mpipe_ipc_session_word(&s)), 77U);
+}
+
+ZTEST(mpipe_ipc, test_latch_waits_for_a_published_peer_session)
+{
+	struct mpipe_ipc_session s;
+
+	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
+	zassert_equal(mpipe_ipc_session_latch(&s, MPIPE_IPC_HANDSHAKE(0U, 0U)), -EAGAIN);
+	zassert_false(s.connected);
+}
+
+/* The case the whole mechanism exists for. */
+ZTEST(mpipe_ipc, test_restarted_peer_is_detected_and_disconnects)
+{
+	struct mpipe_ipc_session s;
+
+	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
+	zassert_ok(mpipe_ipc_session_latch(&s, MPIPE_IPC_HANDSHAKE(77U, 1U)));
+	zassert_ok(mpipe_ipc_session_check(&s, MPIPE_IPC_HANDSHAKE(77U, 1U)));
+
+	/* The peer reboots and publishes a new session. */
+	zassert_equal(mpipe_ipc_session_check(&s, MPIPE_IPC_HANDSHAKE(78U, 0U)),
+		      -ECONNRESET);
+	zassert_false(s.connected, "a restarted peer drops the session");
+	zassert_equal(s.remote_sid, MPIPE_IPC_SID_NONE);
+
+	/* And stays dropped until deliberately re-latched. */
+	zassert_equal(mpipe_ipc_session_check(&s, MPIPE_IPC_HANDSHAKE(78U, 0U)),
+		      -ENOTCONN);
+}
+
+ZTEST(mpipe_ipc, test_acknowledgement_is_one_way_until_the_peer_echoes)
+{
+	struct mpipe_ipc_session s;
+
+	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
+	zassert_ok(mpipe_ipc_session_latch(&s, MPIPE_IPC_HANDSHAKE(77U, 0U)));
+
+	zassert_false(mpipe_ipc_session_acknowledged(&s, MPIPE_IPC_HANDSHAKE(77U, 0U)),
+		      "peer has not echoed our session yet");
+	zassert_true(mpipe_ipc_session_acknowledged(&s,
+						    MPIPE_IPC_HANDSHAKE(77U, s.local_sid)));
+}
+
+ZTEST(mpipe_ipc, test_session_argument_rules)
+{
+	zassert_equal(mpipe_ipc_session_open(NULL, 0U, 0U), -EINVAL);
+	zassert_equal(mpipe_ipc_session_latch(NULL, 0U), -EINVAL);
+	zassert_equal(mpipe_ipc_session_check(NULL, 0U), -EINVAL);
+	zassert_false(mpipe_ipc_session_acknowledged(NULL, 0U));
 }
