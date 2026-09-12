@@ -11,6 +11,15 @@
 #include <zephyr/dt-bindings/i2c/i2c.h>
 
 / {
+	chosen {
+		/*
+		 * Buffers cross to the HiFi4 by address, so the pool must live
+		 * where the HiFi4 can read it. This is the 128 KiB the ring
+		 * used; in plugin mode nothing else wants it.
+		 */
+		zephyr,mpipe-aud-pool = &mpipe_ipc_ring;
+	};
+
 	aliases {
 		audio-codec-capture = &audio_codec;
 		i2s-codec-rx = &sai3;

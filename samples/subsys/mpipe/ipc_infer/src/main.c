@@ -24,6 +24,10 @@
 #include <zephyr/mpipe/ipc/mpipe_ipc_ring.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
+#include "consumer.h"
+#endif
+
 LOG_MODULE_REGISTER(mpipe_ipc_infer, LOG_LEVEL_INF);
 
 #include <fsl_mu.h>
@@ -34,8 +38,6 @@ void model_runner_init(void);
 int micro_speech_process_audio(const int16_t *audio_data, size_t audio_data_size);
 const char *micro_speech_category_label(int category);
 
-#define LIVE_MIC 0
-#define LIVE_I2S 0
 #define LIVE_AUDIO 0
 
 static void signal_linux_ready(void)
@@ -48,19 +50,14 @@ static void signal_linux_ready(void)
 static inline void signal_linux_ready(void) { }
 
 /*
- * Capture live when the board gives us a microphone, otherwise send the baked
- * clips. The clip path is what makes the sample self-checking -- it knows the
- * right answer -- so it stays the default; the microphone is what makes it a
- * demo.
+ * Either capture live through a pipeline, or send the baked clips. The clip
+ * path is what makes the sample self-checking -- it knows the right answer --
+ * so it stays the default; live capture is what makes it a demo.
  */
-#define LIVE_MIC DT_NODE_HAS_STATUS(DT_NODELABEL(micfil), okay)
-#define LIVE_I2S IS_ENABLED(CONFIG_SAMPLE_IPC_INFER_LIVE_I2S)
-#define LIVE_AUDIO (LIVE_MIC || LIVE_I2S)
+#define LIVE_AUDIO IS_ENABLED(CONFIG_SAMPLE_IPC_INFER_LIVE_CAPTURE)
 
-#if LIVE_I2S
+#if LIVE_AUDIO
 #include "producer.h"
-#elif LIVE_MIC
-#include <zephyr/audio/dmic.h>
 #else
 #include "test_clips.h"
 #endif
@@ -203,239 +200,16 @@ static const struct ipc_ept_cfg endpoint_cfg = {
 };
 
 #ifdef CONFIG_SOC_MIMX8ML8_ADSP
-/* One second of audio, rebuilt from the ring a period at a time. */
-static int16_t window[WINDOW_SAMPLES];
-static uint32_t window_fill;
-static uint32_t windows_done;
 
-static void consume(void)
+/* Handed to the inference sink, so a result travels back up the control link. */
+static void on_inference_result(uint32_t window, uint32_t category)
 {
-	while (true) {
-		const int16_t *period = mpipe_ipc_ring_claim_read(&ring);
-		int category;
-		uint32_t started;
-		uint32_t ms;
-
-		if (period == NULL) {
-			return;
-		}
-
-		memcpy(&window[window_fill], period, RING_PERIOD_BYTES);
-		(void)mpipe_ipc_ring_commit_read(&ring);
-		window_fill += PERIOD_SAMPLES;
-
-		if (window_fill < WINDOW_SAMPLES) {
-			continue;
-		}
-
-		window_fill = 0U;
-
-		started = k_cycle_get_32();
-		category = micro_speech_process_audio(window, WINDOW_SAMPLES);
-		ms = k_cyc_to_ms_near32(k_cycle_get_32() - started);
-
-		if (category < 0) {
-			LOG_ERR("window %u: inference failed: %d", windows_done,
-				category);
-			continue;
-		}
-
-		LOG_INF("window %u: heard '%s' in %u ms", windows_done,
-			micro_speech_category_label(category), ms);
-
-		if (send_result(windows_done, (uint32_t)category) != 0) {
-			LOG_WRN("window %u: could not report upstream",
-				windows_done);
-		}
-		windows_done++;
-	}
-}
-#else
-#if LIVE_MIC && !LIVE_I2S
-
-/*
- * MICFIL delivers interleaved stereo; micro_speech wants one channel. A block
- * is one ring period's worth of frames, so each capture fills exactly one
- * period and the two pacings stay locked together.
- */
-#define MIC_CHANNELS    2U
-/*
- * MICFIL's FIFO is 32 bits wide and only the top 24 bits carry signal, so the
- * driver hands back 32-bit samples. micro_speech wants 16-bit, which is the top
- * half of each word.
- */
-#define MIC_SAMPLE_BYTES 4U
-#define MIC_BLOCK_BYTES (PERIOD_SAMPLES * MIC_CHANNELS * MIC_SAMPLE_BYTES)
-#define MIC_BLOCK_COUNT 8U
-
-K_MEM_SLAB_DEFINE_STATIC(mic_slab, MIC_BLOCK_BYTES, MIC_BLOCK_COUNT, 32);
-
-static const struct device *const mic = DEVICE_DT_GET(DT_NODELABEL(micfil));
-
-static int mic_start(void)
-{
-	struct pcm_stream_cfg stream = {
-		.pcm_width = 32,
-		.pcm_rate = SAMPLE_RATE_HZ,
-		.block_size = MIC_BLOCK_BYTES,
-		.mem_slab = &mic_slab,
-	};
-	struct dmic_cfg cfg = {
-		/* Bounds on what the microphone itself can be clocked at. */
-		.io = {
-			.min_pdm_clk_freq = 1000000,
-			.max_pdm_clk_freq = 3500000,
-			.min_pdm_clk_dc = 40,
-			.max_pdm_clk_dc = 60,
-		},
-		.streams = &stream,
-		.channel = {
-			.req_num_streams = 1,
-			.req_num_chan = MIC_CHANNELS,
-			.req_chan_map_lo =
-				dmic_build_channel_map(0, 0, PDM_CHAN_LEFT) |
-				dmic_build_channel_map(1, 0, PDM_CHAN_RIGHT),
-		},
-	};
-	int err;
-
-	if (!device_is_ready(mic)) {
-		LOG_ERR("microphone not ready");
-		return -ENODEV;
-	}
-
-	err = dmic_configure(mic, &cfg);
-	if (err != 0) {
-		LOG_ERR("cannot configure the microphone: %d", err);
-		return err;
-	}
-
-	err = dmic_trigger(mic, DMIC_TRIGGER_START);
-	if (err != 0) {
-		LOG_ERR("cannot start capture: %d", err);
-		return err;
-	}
-
-	LOG_INF("capturing: %u Hz, %u channels, %u ms per period", SAMPLE_RATE_HZ,
-		MIC_CHANNELS, (PERIOD_SAMPLES * 1000U) / SAMPLE_RATE_HZ);
-
-	return 0;
-}
-
-/* Sum of squares over a period, so the caller can show a level. */
-static uint64_t period_energy(const int16_t *samples)
-{
-	uint64_t energy = 0;
-
-	for (uint32_t i = 0; i < PERIOD_SAMPLES; i++) {
-		energy += (uint64_t)((int32_t)samples[i] * (int32_t)samples[i]);
-	}
-
-	return energy;
-}
-
-static uint64_t window_energy;
-static uint32_t window_periods;
-
-/*
- * Capture runs in its own thread with a bounded read.
- *
- * Not because threads are tidier: a zero timeout makes the driver's read find
- * its queue momentarily empty and take a fallback that returns *silence and
- * success*, so a polling caller never blocks, never fails, and fills the ring
- * with zeros as fast as it can loop. The read has to be allowed to wait, and
- * waiting on the link's own loop would stall peer detection.
- */
-#define CAPTURE_READ_TIMEOUT_MS 100
-#define CAPTURE_STACK_SIZE      2048
-
-static K_THREAD_STACK_DEFINE(capture_stack, CAPTURE_STACK_SIZE);
-static struct k_thread capture_thread;
-static atomic_t capture_live;
-
-static void capture_entry(void *a, void *b, void *c)
-{
-	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
-
-	while (true) {
-		void *block;
-		uint32_t size;
-		const int32_t *frames;
-		int16_t *slot;
-		int err;
-
-		err = dmic_read(mic, 0, &block, &size, CAPTURE_READ_TIMEOUT_MS);
-		if (err != 0) {
-			continue;
-		}
-
-		/* The ring is torn down and rebuilt around a peer restart. */
-		if (atomic_get(&capture_live) == 0) {
-			k_mem_slab_free(&mic_slab, block);
-			continue;
-		}
-
-		slot = mpipe_ipc_ring_claim_write(&ring);
-		if (slot == NULL) {
-			/* The DSP is behind. Drop this period and keep capturing. */
-			mpipe_ipc_ring_record_overrun(&ring);
-			k_mem_slab_free(&mic_slab, block);
-			continue;
-		}
-
-		/*
-		 * Keep the left channel and take the top 16 bits of each
-		 * 32-bit word -- micro_speech is 16-bit mono.
-		 */
-		frames = block;
-		for (uint32_t i = 0; i < PERIOD_SAMPLES; i++) {
-			slot[i] = (int16_t)(frames[i * MIC_CHANNELS] >> 16);
-		}
-
-		window_energy += period_energy(slot);
-		window_periods++;
-
-		(void)mpipe_ipc_ring_commit_write(&ring);
-		k_mem_slab_free(&mic_slab, block);
+	if (send_result(window, category) != 0) {
+		LOG_WRN("window %u: could not report upstream", window);
 	}
 }
 
-static void capture_thread_start(void)
-{
-	(void)k_thread_create(&capture_thread, capture_stack, CAPTURE_STACK_SIZE,
-			      capture_entry, NULL, NULL, NULL,
-			      K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
-	k_thread_name_set(&capture_thread, "mic capture");
-}
-
-/* The link loop owns nothing on the capture side; it only gates the ring. */
-static void produce(void)
-{
-}
-
-/* Root-mean-square of the last window, as a rough level indicator. */
-static uint32_t take_window_level(void)
-{
-	uint64_t mean;
-	uint32_t root = 0;
-
-	if (window_periods == 0U) {
-		return 0U;
-	}
-
-	mean = window_energy / ((uint64_t)window_periods * PERIOD_SAMPLES);
-	window_energy = 0U;
-	window_periods = 0U;
-
-	/* Integer square root; the value is only ever read by a human. */
-	while ((uint64_t)(root + 1U) * (root + 1U) <= mean) {
-		root++;
-	}
-
-	return root;
-}
-
-#elif !LIVE_I2S
+#elif !LIVE_AUDIO
 
 /*
  * Send a different word each window, and remember which. Streaming one clip on
@@ -492,7 +266,6 @@ static void produce(void)
 	}
 }
 
-#endif /* LIVE_MIC */
 #endif /* CONFIG_SOC_MIMX8ML8_ADSP */
 
 int main(void)
@@ -572,32 +345,28 @@ int main(void)
 			}
 
 			if (err == 0 && transport.session.connected && !streaming) {
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
+				int ring_err = consumer_start(ipc,
+							      on_inference_result);
+#else
 				int ring_err = mpipe_ipc_ring_init(
 					&ring, ring_shared, &ring_ops, IS_HOST,
 					RING_PERIOD_BYTES, RING_PERIOD_COUNT,
 					DT_REG_SIZE(RING_NODE));
+#endif
 
 				if (ring_err == 0) {
 					streaming = true;
 					LOG_INF("gen %u: ring up, %u x %u bytes",
 						generation, RING_PERIOD_COUNT,
 						(unsigned int)RING_PERIOD_BYTES);
-#if LIVE_I2S
+#if LIVE_AUDIO
 					if (!capturing) {
 						if (producer_start(ipc) != 0) {
 							return -EIO;
 						}
 						capturing = true;
 					}
-#elif LIVE_MIC
-					if (!capturing) {
-						if (mic_start() != 0) {
-							return -EIO;
-						}
-						capture_thread_start();
-						capturing = true;
-					}
-					atomic_set(&capture_live, 1);
 #endif
 				} else if (ring_err != -EAGAIN) {
 					LOG_ERR("gen %u: ring refused: %d",
@@ -607,9 +376,9 @@ int main(void)
 
 			if (err == 0 && streaming) {
 #ifdef CONFIG_SOC_MIMX8ML8_ADSP
-				consume();
+				/* The pipeline runs itself; nothing to poll. */
 #else
-#if !LIVE_I2S
+#if !LIVE_AUDIO
 				produce();
 #endif
 
@@ -620,23 +389,14 @@ int main(void)
 						(uint32_t)atomic_get(&reported_category);
 
 					atomic_set(&reported_window, -1);
-#if LIVE_I2S
+#if LIVE_AUDIO
 					/*
 					 * No expected answer with live audio.
 					 * The audible branch is the microphone
 					 * check; this is the model's verdict.
 					 */
-					LOG_INF("[%u] heard \"%s\"   (%u periods dropped)",
+					LOG_INF("[%u] heard \"%s\"   (%u buffers dropped)",
 						w, category_label(c), producer_dropped());
-#elif LIVE_MIC
-					/*
-					 * Nothing to check against a live
-					 * microphone -- just say what came back,
-					 * with a level so a silent microphone is
-					 * distinguishable from a quiet room.
-					 */
-					LOG_INF("[%u] heard \"%s\"   (level %u)", w,
-						category_label(c), take_window_level());
 #else
 					{
 						uint32_t sent = clip_for_window(w);
@@ -663,9 +423,6 @@ int main(void)
 			}
 		} while (err == 0);
 
-#if LIVE_MIC && !LIVE_I2S
-		atomic_set(&capture_live, 0);
-#endif
 		LOG_WRN("gen %u: peer restarted; standing down", generation);
 		(void)ipc_service_deregister_endpoint(&endpoint);
 		(void)mpipe_ipc_transport_quiesce(&transport);

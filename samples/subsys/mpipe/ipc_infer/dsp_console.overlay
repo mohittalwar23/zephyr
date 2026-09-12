@@ -1,0 +1,12 @@
+/*
+ * Copyright 2026 NXP
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Debug only: hand the shared UART to the DSP. Both cores' consoles are on
+ * uart4, so the board overlay normally leaves it to the M7 and the DSP reports
+ * through the control link instead. Build the M7 with quiet.overlay when using
+ * this, or the two interleave.
+ */
+&uart4 {
+	status = "okay";
+};

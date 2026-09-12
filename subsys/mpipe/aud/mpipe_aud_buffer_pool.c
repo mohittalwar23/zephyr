@@ -21,8 +21,33 @@ LOG_MODULE_REGISTER(mpipe_aud_buffer_pool, CONFIG_MPIPE_LOG_LEVEL);
 #define AUD_BUFFER_POOL_SIZE                                                                       \
 	(CONFIG_MPIPE_AUD_BUFFER_POOL_SZ_MAX * CONFIG_MPIPE_AUD_BUFFER_POOL_NUM_MAX)
 
+/*
+ * Where the buffers live is a board decision, not a subsystem one.
+ *
+ * A pipeline that ends in an IPC sink hands buffers to another core by address,
+ * so its pool has to sit in memory that core can address. Nothing in the code
+ * can check that -- a local pointer is valid either way, and the peer simply
+ * reads the wrong memory -- so the placement is made explicit: point
+ * `zephyr,mpipe-aud-pool` at a shared region and the pool moves there.
+ *
+ * The region is addressed, never linked into. Placing an array there with a
+ * linker section instead gives the image a load segment covering memory it does
+ * not own, and a loader with no mapping for that address refuses to start the
+ * core at all -- which is what shared windows deliberately kept outside both
+ * cores' carveouts look like.
+ */
+#if DT_HAS_CHOSEN(zephyr_mpipe_aud_pool)
+#define AUD_BUFFER_POOL_BASE                                                                       \
+	((uint8_t *)(uintptr_t)DT_REG_ADDR(DT_CHOSEN(zephyr_mpipe_aud_pool)))
+
+BUILD_ASSERT(DT_REG_SIZE(DT_CHOSEN(zephyr_mpipe_aud_pool)) >= AUD_BUFFER_POOL_SIZE,
+	     "the chosen mpipe audio pool region cannot hold the configured pool");
+#else
 static __nocache __aligned(AUD_BUFFER_POOL_BASE_ALIGN)
 uint8_t aud_buffer_pool_buf[AUD_BUFFER_POOL_SIZE];
+
+#define AUD_BUFFER_POOL_BASE aud_buffer_pool_buf
+#endif
 
 static int mpipe_aud_buffer_pool_config(struct mpipe_buffer_pool *pool,
 					const struct mpipe_structure *config)
@@ -80,7 +105,7 @@ static int mpipe_aud_buffer_pool_config(struct mpipe_buffer_pool *pool,
 
 	memset(aud_pool->blocks, 0, sizeof(aud_pool->blocks));
 
-	ret = k_mem_slab_init(aud_pool->mem_slab, (void *)aud_buffer_pool_buf, pool->config.size,
+	ret = k_mem_slab_init(aud_pool->mem_slab, (void *)AUD_BUFFER_POOL_BASE, pool->config.size,
 			      pool->config.min_buffers);
 	if (ret != 0) {
 		LOG_ERR("Unable to initialize memory slab (%d)", ret);

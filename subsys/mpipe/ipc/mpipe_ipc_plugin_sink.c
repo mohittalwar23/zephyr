@@ -80,8 +80,20 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 	*out_buf = NULL;
 
 	if (!sink->bound) {
+		/*
+		 * The peer has not attached yet, which is ordinary at startup:
+		 * the two cores are started separately and the far half of the
+		 * pipeline may not exist for another second.
+		 *
+		 * Report success and drop the buffer. Returning an error here
+		 * fails the push, and a tee propagates that to the whole
+		 * pipeline -- so a branch that is merely not ready yet would
+		 * stop the branches that are, including the one making the
+		 * audio audible.
+		 */
+		sink->dropped++;
 		net_buf_unref(in_buf);
-		return -ENOTCONN;
+		return 0;
 	}
 
 	for (int i = 0; i < MPIPE_IPC_MAX_BUFFERS; i++) {
@@ -146,7 +158,6 @@ bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink)
 int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
 			const struct device *instance, const char *name)
 {
-	struct ipc_ept_cfg cfg;
 	int ret;
 
 	if (sink == NULL || instance == NULL || name == NULL) {
@@ -162,11 +173,11 @@ int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
 
 	sink->base.sink_pad.chain_fn = sink_chain_fn;
 
-	cfg = (struct ipc_ept_cfg){
+	sink->cfg = (struct ipc_ept_cfg){
 		.name = name,
 		.cb = { .bound = sink_bound, .received = sink_received },
 		.priv = sink,
 	};
 
-	return ipc_service_register_endpoint(instance, &sink->ept, &cfg);
+	return ipc_service_register_endpoint(instance, &sink->ept, &sink->cfg);
 }
