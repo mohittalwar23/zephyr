@@ -1,0 +1,78 @@
+/*
+ * Copyright 2026 NXP
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * No memory-attr here: that property is an Arm MPU attribute and Xtensa has no
+ * devicetree equivalent. The window is uncached on this core by the reset
+ * CACHEATTR instead -- soc/nxp/imx/imx8m/adsp/linker.ld installs 0x22212222,
+ * whose region 5 covering 0xa0000000-0xbfffffff is bypass.
+ */
+
+
+/ {
+	/*
+	 * The whole reserved window is 256 KiB at 0xa0000000. Every region below
+	 * is a power-of-two size at a naturally aligned base, because the M7's
+	 * ARMv7-M MPU can express nothing else: it rounds a size up to the next
+	 * power of two and masks the base to match, so an odd region silently
+	 * covers something other than what was asked for.
+	 *
+	 *   0xa0000000   4 KiB   bring-up control block
+	 *   0xa0010000  64 KiB   IPC Service shared memory (control messages)
+	 *   0xa0020000 128 KiB   PCM ring (audio, off the message path)
+	 *
+	 * The control block sits outside the region IPC Service owns. The
+	 * static-vrings host clears its whole vdev status area on open, which
+	 * would erase the retained session this design depends on.
+	 */
+	mpipe_ipc_ctrl: memory@a0000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0000000 DT_SIZE_K(4)>;
+		zephyr,memory-region = "MPIPE_IPC_CTRL";
+	};
+
+	mpipe_ipc_shm: memory@a0010000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0010000 DT_SIZE_K(64)>;
+		zephyr,memory-region = "MPIPE_IPC_SHM";
+	};
+
+	mpipe_ipc_ring: memory@a0020000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0020000 DT_SIZE_K(128)>;
+		zephyr,memory-region = "MPIPE_IPC_RING";
+	};
+
+	ipc0: ipc0 {
+		compatible = "zephyr,ipc-openamp-static-vrings";
+		memory-region = <&mpipe_ipc_shm>;
+		/*
+		 * The same two channels as the host, with the names swapped:
+		 * channel 0 is host-tx / remote-rx and channel 1 the reverse.
+		 * An i.MX MU delivers a trigger on channel N to the peer's
+		 * channel N, so naming both sides "tx", "rx" points each core's
+		 * doorbell at a channel the other is not listening on. Bring-up
+		 * polls shared memory and never notices; only endpoint traffic
+		 * does. This matches upstream's own static-vrings overlays.
+		 */
+		mboxes = <&mu3_b 0>, <&mu3_b 1>;
+		mbox-names = "rx", "tx";
+		role = "remote";
+		status = "okay";
+	};
+};
+
+&mu3_b {
+	status = "okay";
+};
+
+/*
+ * Both cores share one UART on this board. Leave it to the M7 so its console
+ * is readable; the DSP's state is observable from the shared control block
+ * instead, which Linux can read directly.
+ */
+&uart4 {
+	status = "disabled";
+};

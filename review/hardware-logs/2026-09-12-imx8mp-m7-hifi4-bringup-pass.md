@@ -197,3 +197,53 @@ one: progress was reported on `periods % 200 == 0`, but periods advance in
 bursts of up to 16, so the exact multiples were stepped over and the remote's
 verified count appeared frozen at 400. Cross a threshold, do not land on a
 multiple.
+
+---
+
+## Addendum 2026-09-13: keyword spotting over the link
+
+TFLM now runs on the HiFi4 and the full path works end to end.
+
+**TFLM on HiFi4, standalone.** tflite-micro's own `micro_speech` test clips,
+classified on silicon:
+
+    clip 'yes'     -> 'yes'     CORRECT (52704 us)
+    clip 'no'      -> 'no'      CORRECT (52600 us)
+    clip 'silence' -> 'silence' CORRECT (52586 us)
+    3 of 3 clips classified correctly
+
+About 52.6 ms per second of audio, or 5.3% of real time. That is with the
+reference kernels: CMSIS-NN is gated `if CPU_CORTEX_M`, so the HiFi4 has no
+accelerated NN kernels today. Wiring up xa_nnlib is a separate piece of work and
+this is the number to beat.
+
+**Over the link.** The M7 streams one second of 16 kHz mono per window through
+the shared ring, alternating "yes" and "no"; the HiFi4 rebuilds each window,
+runs micro_speech, and reports the category back over the control endpoint.
+
+    gen 0: ring up, 64 x 320 bytes
+    gen 0: 195 windows correct, 0 wrong
+
+    producer seq=19848 period=320B count=64 overruns=0
+    consumer seq=19808 underruns=0
+
+Alternating two spoken words is deliberate. A single word on repeat would prove
+only that the remote keeps answering -- a classifier that had stopped listening
+would score identically. Two words means a wrong answer shows up.
+
+**Findings**
+
+* **PR #96657 hardcodes `$ENV{ZEPHYR_BASE}/../optional/...`** for the TFLM
+  signal sources while using `ZEPHYR_TFLITE_MICRO_MODULE_DIR` for the matching
+  include paths. The hardcoded form breaks in any layout where the workspace is
+  not the parent of ZEPHYR_BASE -- a git worktree, for instance. Worth sending
+  upstream.
+* **`micro_speech_process_audio()` returns a status, not a category**, and logs
+  the label internally, so a caller cannot act on the classification. Also worth
+  sending upstream; a pipeline stage has to act on a result, not read it in a
+  log.
+* **The M7 cannot hold three seconds of 16-bit PCM.** Its read-only data lives
+  in ITCM; the third clip overflowed the region by 12,380 bytes. Two clips.
+* The inference sources are **vendored** into `samples/subsys/mpipe/ipc_infer/
+  src/inference/` with provenance headers, because the two changes above are
+  needed and #96657 is still open. That copy should be deleted once it merges.
