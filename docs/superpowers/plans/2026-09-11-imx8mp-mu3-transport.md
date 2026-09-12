@@ -21,6 +21,61 @@
 
 ---
 
+## AMENDED 2026-09-12 — read this before any task below
+
+Seven read-only audits, one hardware measurement and four build experiments
+changed what this plan should build. The evidence is in
+`docs/superpowers/specs/2026-09-11-imx8mp-m7-hifi4-ipc-design.md`; the
+consequences for this plan are:
+
+1. **Task 1 is DONE, in a much smaller form than written below.** The control
+   header is 4 bytes, `{ cmd }` — a 16-bit type and a 16-bit transaction id —
+   not the 40-byte header with CRC32C this plan describes. `ipc_service`
+   already supplies the length and names endpoints, so a size and a stream id
+   earn no place; the CRC goes because SOF carries none on a shared-DDR path
+   and a checksum cannot detect the stale-cache-line failure this project has
+   already hit. Credits are deleted in favour of per-stream
+   underrun/overrun policy bits. The golden-vector generator described in
+   Task 1 Step 1 was built, then retired once the header reached 4 bytes; it
+   is recoverable at `a0275857da9` and the pattern belongs on the Linux
+   supervisor's management protocol, where two languages actually meet.
+   Delivered by `7303392bd34` and `4dfc48e40cb`.
+2. **Task 2's retained-generation publish/claim/revalidate protocol is
+   WITHDRAWN.** It was the most intricate mechanism in the design and served
+   the least likely scenario. What replaces it is Zephyr ICMsg's session
+   handshake, already implemented in `mpipe_ipc_session`: one 32-bit word per
+   direction, request in the low half and acknowledgement in the high half,
+   with a new value read back out of shared memory and incremented past both
+   the reserved zero and the peer's last acknowledgement. The
+   `mpipe_ipc_generation_io` indirection, `mpipe_ipc_host_publish`,
+   `mpipe_ipc_remote_claim` and `mpipe_ipc_remote_revalidate` are not to be
+   written.
+3. **The eight-state session machine is not required for restart detection.**
+   The latched session word is what makes detection work. Any state machine
+   must be justified on its own terms.
+4. **A rendezvous barrier is mandatory and is the remaining Task 2 work.**
+   OpenAMP's host zeroes *both* vrings on every `open()` (`virtio.c:84`) and
+   `virtio_reset_device()` has zero callers anywhere, so there is no
+   reconciliation path: a restarted host wipes a live peer's receive ring
+   before any stamped message can be exchanged. The survivor must not touch a
+   ring, and must not call `ipc_service_open_instance()`, until the peer has
+   published a session and finished initialising.
+5. **Backend settled: `ipc_rpmsg_static_vrings`.** Both candidates build on
+   both cores and their op tables are identical; static-vrings wins on vendor
+   neutrality, Xtensa coverage, cache-line assertions and having no heap.
+   Task 4 should not re-open this.
+6. **Shared memory is non-cacheable with no cache maintenance**, matching NXP
+   on both the M7 and Linux sides. Zephyr's alignment assertions only check
+   the local core's line size, and the M7 and HiFi4 disagree.
+7. **Declare your own MU node.** The in-tree i.MX8M `mailbox0` nodes are
+   `nxp,imx-mu` (the old IPM binding, no `#mbox-cells`), not the MBOX binding
+   `ipc_service` needs. Affects Task 3.
+8. **Bulk audio leaves the message path**, confirmed by three production
+   stacks. Task 6 carries PCM on a shared ring with two 32-bit offsets, not
+   through the vring.
+
+Where the task text below contradicts this section, this section wins.
+
 ### Task 1: Implement the canonical wire codec test-first
 
 **Files:**
