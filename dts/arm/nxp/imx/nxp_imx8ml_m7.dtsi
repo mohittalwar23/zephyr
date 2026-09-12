@@ -273,6 +273,24 @@
 			status = "disabled";
 		};
 
+		/*
+		 * MU3_A, the Cortex-M7 side of the M7 <-> HiFi4 message unit.
+		 * MU3_B at 0x30e90000 is the DSP side; see the Xtensa dtsi.
+		 *
+		 * MU3 is clocked from AUDIOMIX, which is an A53-owned power
+		 * domain. It must be powered and its CLKEN1 gate opened from
+		 * Linux before either remote touches this block, or the access
+		 * faults silently.
+		 */
+		mu3_a: mailbox@30e80000 {
+			compatible = "nxp,mbox-imx-mu";
+			reg = <0x30e80000 DT_SIZE_K(64)>;
+			interrupts = <138 0>;
+			rx-channels = <2>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
+
 		ecspi1: spi@30820000 {
 			compatible = "nxp,imx-ecspi";
 			reg = <0x30820000 DT_SIZE_K(64)>;
