@@ -65,9 +65,7 @@ int mpipe_ipc_encode(void *dst, size_t capacity, const struct mpipe_ipc_message 
 		return -ENOSPC;
 	}
 
-	sys_put_le32((uint32_t)total, &buf[MPIPE_IPC_OFF_SIZE]);
 	sys_put_le32(message->header.cmd, &buf[MPIPE_IPC_OFF_CMD]);
-	sys_put_le32(message->header.generation, &buf[MPIPE_IPC_OFF_GENERATION]);
 
 	if (message->payload_length != 0U) {
 		memcpy(&buf[MPIPE_IPC_HEADER_LENGTH], message->payload,
@@ -97,26 +95,16 @@ int mpipe_ipc_decode(struct mpipe_ipc_message *message, const void *src, size_t 
 		return -EMSGSIZE;
 	}
 
-	header.size = sys_get_le32(&buf[MPIPE_IPC_OFF_SIZE]);
 	header.cmd = sys_get_le32(&buf[MPIPE_IPC_OFF_CMD]);
-	header.generation = sys_get_le32(&buf[MPIPE_IPC_OFF_GENERATION]);
 
-	/*
-	 * Bound the declared size against both the protocol ceiling and the
-	 * bytes actually present, before it is used as a length anywhere.
-	 */
-	if (header.size < MPIPE_IPC_HEADER_LENGTH ||
-	    header.size > MPIPE_IPC_MAX_MESSAGE || header.size > length) {
-		return -EMSGSIZE;
-	}
 	if (!type_is_known(MPIPE_IPC_CMD_TYPE(header.cmd))) {
 		return -ENOTSUP;
 	}
-	if (header.generation == MPIPE_IPC_GENERATION_INVALID) {
-		return -EPROTO;
+	if (length - MPIPE_IPC_HEADER_LENGTH > MPIPE_IPC_MAX_PAYLOAD) {
+		return -EMSGSIZE;
 	}
 
-	payload_length = header.size - MPIPE_IPC_HEADER_LENGTH;
+	payload_length = length - MPIPE_IPC_HEADER_LENGTH;
 
 	message->header = header;
 	message->payload_length = payload_length;

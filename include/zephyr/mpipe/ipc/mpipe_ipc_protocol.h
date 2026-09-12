@@ -13,34 +13,34 @@
  * following the same split that NXP AN12762 and SOF both use, so a real-time
  * bulk path never shares a strictly one-outstanding control channel.
  *
- * The header is deliberately small. SOF ships an 8-byte IPC header in
- * production on this same HiFi4 over this same doorbell-plus-shared-window
- * transport (@c sof_ipc_cmd_hdr, @c src/include/ipc/header.h), and NXP's SRTM
- * ships 10 bytes. This header is 12: SOF's two fields plus the one thing
- * neither vendor needs and this design does.
+ * The header is deliberately minimal. SOF ships 8 bytes in production on this
+ * same HiFi4 over this same transport and NXP's SRTM ships 10, but both sit on
+ * raw shared windows that must carry their own length. We sit on ipc_service,
+ * whose receive callback already supplies the length and whose endpoints are
+ * already named, so neither a size nor a stream identifier earns its place.
  *
- * That extra field is @c generation. In both SOF and SRTM the lifecycle
- * authority and the data-plane peer are the same entity, so neither can meet
- * a peer that restarted independently. Here Linux is the lifecycle authority
- * but the M7 and the HiFi4 are the data-plane peers, so either can be
- * restarted under the other. Each core publishes a boot generation and stamps
- * it on every message; a peer that restarted is then rejected per message,
- * with no state machine required to notice.
+ * Peer identity is not here either. The session identifier lives in a shared
+ * handshake word and is checked before every delivery, following Zephyr ICMsg;
+ * see mpipe_ipc_session.h for why that is a word in memory rather than a field
+ * on each message.
+ *
+ * What is left is the command: a message type and the transaction identifier
+ * that matches a reply to its request.
  *
  * Deliberately absent, each following established practice rather than
  * oversight:
  *
  * - **No CRC.** SOF carries none on a shared-DDR path. A checksum cannot
  *   detect the failure that actually occurs here, a stale cache line, because
- *   it is computed over the same stale bytes and validates. Cache maintenance
- *   is the correctness requirement.
+ *   it is computed over the same stale bytes and validates. The window is
+ *   non-cacheable instead, which is what NXP does on both the M7 and Linux
+ *   sides of this SoC.
  * - **No magic.** SOF reserves its magic for data tunnelled from userspace
  *   and omits it core-to-core. This is the trusted path.
- * - **No per-message version.** The ABI is negotiated once in HELLO, and only
+ * - **No per-message version.** The ABI is negotiated once in HELLO and only
  *   the major version must match.
- * - **No per-message sequence.** A doorbell-ordered channel does not reorder
- *   or duplicate. Sequence belongs on the lossy audio ring, for gap
- *   statistics, not here.
+ * - **No sequence number.** A doorbell-ordered channel neither reorders nor
+ *   duplicates, and SOF's own control-path sequence field is vestigial.
  *
  * Fields are marshalled explicitly at named offsets, little-endian. A packed
  * structure is never cast over received bytes, so the format does not depend
@@ -68,16 +68,14 @@ extern "C" {
 #define MPIPE_IPC_VERSION_MINOR 0U
 
 /** @brief Fixed control header length, in bytes. */
-#define MPIPE_IPC_HEADER_LENGTH 12U
+#define MPIPE_IPC_HEADER_LENGTH 4U
 /** @brief Largest control message, including the header. */
 #define MPIPE_IPC_MAX_MESSAGE 256U
 /** @brief Largest control payload that can follow a header. */
 #define MPIPE_IPC_MAX_PAYLOAD (MPIPE_IPC_MAX_MESSAGE - MPIPE_IPC_HEADER_LENGTH)
 
 /** @brief Header field offsets, in bytes from the start of the message. */
-#define MPIPE_IPC_OFF_SIZE       0U
-#define MPIPE_IPC_OFF_CMD        4U
-#define MPIPE_IPC_OFF_GENERATION 8U
+#define MPIPE_IPC_OFF_CMD 0U
 
 /**
  * @brief @c cmd encoding: message type in bits 31:16, identifier in 15:0.
@@ -130,14 +128,9 @@ enum mpipe_ipc_result {
 #define MPIPE_IPC_ROLE_HOST   1U
 #define MPIPE_IPC_ROLE_REMOTE 2U
 
-/** @brief A generation is never zero; zero means "not yet published". */
-#define MPIPE_IPC_GENERATION_INVALID 0U
-
 /** @brief Decoded control header, in host byte order. */
 struct mpipe_ipc_header {
-	uint32_t size;
 	uint32_t cmd;
-	uint32_t generation;
 };
 
 /**
@@ -197,10 +190,8 @@ struct mpipe_ipc_audio_format {
 /** @brief PCM bytes in one version 1 audio period, carried on the ring. */
 #define MPIPE_IPC_V1_PCM_BYTES 640U
 
-BUILD_ASSERT(MPIPE_IPC_HEADER_LENGTH == 12U, "v1 control header is 12 bytes");
-BUILD_ASSERT(MPIPE_IPC_OFF_GENERATION + sizeof(uint32_t) == MPIPE_IPC_HEADER_LENGTH,
-	     "header offsets must tile the header exactly");
-BUILD_ASSERT(MPIPE_IPC_MAX_PAYLOAD == 244U, "v1 control payload ceiling");
+BUILD_ASSERT(MPIPE_IPC_HEADER_LENGTH == 4U, "v1 control header is 4 bytes");
+BUILD_ASSERT(MPIPE_IPC_MAX_PAYLOAD == 252U, "v1 control payload ceiling");
 BUILD_ASSERT(MPIPE_IPC_AUDIO_FORMAT_LENGTH == 12U, "v1 audio format is 12 bytes");
 
 /**
