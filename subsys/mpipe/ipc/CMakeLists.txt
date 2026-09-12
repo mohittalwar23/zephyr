@@ -14,8 +14,11 @@ if(CONFIG_MPIPE_IPC)
   zephyr_library_sources(mpipe_ipc_transport.c)
   zephyr_library_sources(mpipe_ipc_ring.c)
 
-  # Pipeline element: needs the audio plugin for its caps helpers.
-  zephyr_library_sources_ifdef(CONFIG_MPIPE_AUD mpipe_ipc_sink.c)
+  # Pipeline elements that carry a pipeline between two cores. From the libMP
+  # IPC plugin (Zephyr PR #114088), adapted to the mpipe element model.
+  zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_plugin_sink.c)
+  zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_plugin_src.c)
+  zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_translation.c)
 
   # The only piece that needs a real backend.
   zephyr_library_sources_ifdef(CONFIG_IPC_SERVICE mpipe_ipc_backend.c)

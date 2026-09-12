@@ -11,10 +11,10 @@
 
 #include <stdint.h>
 
-#include <zephyr/mpipe/ipc/mpipe_ipc_ring.h>
+#include <zephyr/device.h>
 
-/** Start producing into @p ring. Called once the ring is up. */
-int producer_start(struct mpipe_ipc_ring *ring);
+/** Start producing. Called once the link to the peer is up. */
+int producer_start(const struct device *ipc);
 
 /** Periods the peer could not keep up with. */
 uint32_t producer_dropped(void);

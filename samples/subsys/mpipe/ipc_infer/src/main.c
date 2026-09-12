@@ -584,7 +584,7 @@ int main(void)
 						(unsigned int)RING_PERIOD_BYTES);
 #if LIVE_I2S
 					if (!capturing) {
-						if (producer_start(&ring) != 0) {
+						if (producer_start(ipc) != 0) {
 							return -EIO;
 						}
 						capturing = true;
