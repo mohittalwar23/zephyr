@@ -159,5 +159,27 @@
 			rdc = <0>;
 			status = "disabled";
 		};
+
+		/*
+		 * MU3_B, the HiFi4 side of the M7 <-> HiFi4 message unit.
+		 * MU3_A at 0x30e80000 is the M7 side; see the Arm dtsi.
+		 *
+		 * Note the interrupt: on this core MU2 and MU3 share a single
+		 * CLIC vector, so a handler that services both must demultiplex
+		 * by reading each message unit's status rather than assuming
+		 * ownership of the vector.
+		 *
+		 * MU3 is clocked from AUDIOMIX, an A53-owned power domain that
+		 * Linux must power and ungate before this block is touched.
+		 */
+		mu3_b: mailbox@30e90000 {
+			compatible = "nxp,mbox-imx-mu";
+			reg = <0x30e90000 0x10000>;
+			interrupt-parent = <&clic>;
+			interrupts = <7 0 0>;
+			rx-channels = <2>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
 	};
 };
