@@ -7,7 +7,7 @@ project(mpipe_ipc_infer)
 
 target_sources(app PRIVATE src/main.c)
 
-if(CONFIG_SAMPLE_IPC_INFER_LIVE_I2S)
+if(CONFIG_SAMPLE_IPC_INFER_LIVE_CAPTURE)
   target_sources(app PRIVATE src/pipeline.c)
 endif()
 
@@ -29,6 +29,8 @@ if(CONFIG_SOC_MIMX8ML8_ADSP)
   file(GLOB inference_sources src/inference/*)
   target_sources(app PRIVATE
     ${inference_sources}
+    src/consumer.c
+    src/infer_sink.c
 
     ${SIGNAL_DIR}/src/fft_auto_scale.cc
     ${SIGNAL_DIR}/src/max_abs.cc
@@ -52,6 +54,6 @@ if(CONFIG_SOC_MIMX8ML8_ADSP)
     ${SIGNAL_DIR}/micro/kernels/xtensa/filter_bank_square_root.cc
     ${SIGNAL_DIR}/micro/kernels/xtensa/xtensa_square_root.S
   )
-elseif(NOT CONFIG_SAMPLE_IPC_INFER_LIVE_I2S)
+elseif(NOT CONFIG_SAMPLE_IPC_INFER_LIVE_CAPTURE)
   target_sources(app PRIVATE src/test_clips.c)
 endif()

@@ -1,0 +1,9 @@
+/*
+ * Copyright 2026 NXP
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Debug only: give up the shared UART so the other core can use it.
+ */
+&uart4 {
+	status = "disabled";
+};

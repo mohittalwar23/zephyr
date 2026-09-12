@@ -55,6 +55,12 @@ struct mpipe_ipc_sink {
 	struct mpipe_sink base;
 	/** Endpoint this sink sends on. */
 	struct ipc_ept ept;
+	/**
+	 * Kept because IPC Service stores a pointer to it, not a copy: the
+	 * backend calls back through `cfg.cb` long after registration returns,
+	 * so a caller's stack copy becomes a jump to whatever replaced it.
+	 */
+	struct ipc_ept_cfg cfg;
 	/** True once the peer's source has bound to that endpoint. */
 	bool bound;
 	/**
@@ -75,8 +81,12 @@ struct mpipe_ipc_src {
 	struct mpipe_src base;
 	/** Endpoint this source receives on. */
 	struct ipc_ept ept;
+	/** Kept for the same reason as the sink's: the backend holds a pointer. */
+	struct ipc_ept_cfg cfg;
 	/** True once bound to the peer's sink. */
 	bool bound;
+	/** True once the rest of the pipeline exists and can be pushed to. */
+	bool running;
 	/** Buffers received that could not be wrapped and were returned. */
 	uint32_t refused;
 };
@@ -123,6 +133,16 @@ int mpipe_ipc_src_set_format(struct mpipe_ipc_src *src,
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink);
+
+/**
+ * @brief Let the source begin delivering downstream.
+ *
+ * Call once the pipeline is built and playing. Registering the endpoint is what
+ * makes the peer start sending, and that necessarily happens before the rest of
+ * the pipeline exists; until this is called, arriving buffers are handed
+ * straight back instead of pushed into a pad that is not linked yet.
+ */
+int mpipe_ipc_src_start(struct mpipe_ipc_src *src);
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src);

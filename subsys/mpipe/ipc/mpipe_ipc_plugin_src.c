@@ -23,7 +23,7 @@ LOG_MODULE_REGISTER(mpipe_ipc_plugin_src, CONFIG_MPIPE_LOG_LEVEL);
  * read in place.
  */
 NET_BUF_POOL_FIXED_DEFINE(ipc_src_wrappers, MPIPE_IPC_MAX_BUFFERS, 0,
-			  sizeof(struct mpipe_buffer_meta), NULL);
+			  sizeof(struct mpipe_buffer_meta), mpipe_buffer_destroy);
 
 /* The source owning the pool, so a release can be sent from the pool hook. */
 static struct mpipe_ipc_src *pool_owner;
@@ -65,8 +65,56 @@ static int wrapper_released(struct mpipe_buffer_pool *pool, struct net_buf *buf)
 	return 0;
 }
 
+/*
+ * This pool owns no memory, so the lifecycle hooks have nothing to do -- but
+ * they cannot be absent. The pipeline calls start, stop and the configuration
+ * hooks on whatever pool an element advertises, and a NULL there is a jump to a
+ * garbage address rather than a graceful refusal.
+ */
+static int wrapper_pool_noop(struct mpipe_buffer_pool *pool)
+{
+	ARG_UNUSED(pool);
+
+	return 0;
+}
+
+static int wrapper_pool_configure(struct mpipe_buffer_pool *pool,
+				  struct mpipe_structure *config)
+{
+	ARG_UNUSED(pool);
+	ARG_UNUSED(config);
+
+	return 0;
+}
+
+static int wrapper_pool_set_config(struct mpipe_buffer_pool *pool,
+				   const struct mpipe_buffer_pool_config *cfg)
+{
+	ARG_UNUSED(pool);
+	ARG_UNUSED(cfg);
+
+	return 0;
+}
+
+static int wrapper_pool_acquire(struct mpipe_buffer_pool *pool, struct net_buf **buf)
+{
+	ARG_UNUSED(pool);
+	ARG_UNUSED(buf);
+
+	/*
+	 * Buffers here arrive from the peer; there is nothing to hand out on
+	 * request, and a caller that asks has misunderstood the element.
+	 */
+	return -ENOTSUP;
+}
+
 static struct mpipe_buffer_pool wrapper_pool = {
 	.nb_pool = &ipc_src_wrappers,
+	.configure = wrapper_pool_configure,
+	.set_config = wrapper_pool_set_config,
+	.start = wrapper_pool_noop,
+	.stop = wrapper_pool_noop,
+	.acquire_buffer = wrapper_pool_acquire,
 	.release_buffer = wrapper_released,
 };
 
@@ -105,6 +153,17 @@ static void src_received(const void *data, size_t len, void *priv)
 		return;
 	}
 
+	/*
+	 * Registering the endpoint is what makes the peer start sending, and
+	 * that happens before the rest of the pipeline exists. Until it is
+	 * built and playing there is nowhere to push, so hand the buffer back
+	 * rather than deliver into a pad that is not linked yet.
+	 */
+	if (!src->running) {
+		return_buffer(src, msg->data.buffer_id);
+		return;
+	}
+
 	buf = net_buf_alloc(&ipc_src_wrappers, K_NO_WAIT);
 	if (buf == NULL) {
 		/*
@@ -135,6 +194,17 @@ static void src_received(const void *data, size_t len, void *priv)
 	(void)mpipe_push_buffer(&src->base.src_pad, buf);
 }
 
+int mpipe_ipc_src_start(struct mpipe_ipc_src *src)
+{
+	if (src == NULL) {
+		return -EINVAL;
+	}
+
+	src->running = true;
+
+	return 0;
+}
+
 int mpipe_ipc_src_set_format(struct mpipe_ipc_src *src,
 			     const struct mpipe_structure *caps)
 {
@@ -153,7 +223,6 @@ bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src)
 int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
 		       const struct device *instance, const char *name)
 {
-	struct ipc_ept_cfg cfg;
 	int ret;
 
 	if (src == NULL || instance == NULL || name == NULL) {
@@ -170,11 +239,11 @@ int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
 	src->base.pool = &wrapper_pool;
 	pool_owner = src;
 
-	cfg = (struct ipc_ept_cfg){
+	src->cfg = (struct ipc_ept_cfg){
 		.name = name,
 		.cb = { .bound = src_bound, .received = src_received },
 		.priv = src,
 	};
 
-	return ipc_service_register_endpoint(instance, &src->ept, &cfg);
+	return ipc_service_register_endpoint(instance, &src->ept, &src->cfg);
 }
