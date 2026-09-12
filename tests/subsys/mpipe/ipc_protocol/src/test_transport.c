@@ -492,3 +492,39 @@ ZTEST(mpipe_ipc_transport, test_rebuild_requires_the_instance_released)
 	zassert_ok(mpipe_ipc_transport_quiesce(&host));
 	zassert_ok(mpipe_ipc_transport_rebuild(&host));
 }
+
+/* The policy is a board property and must survive a rebuild. */
+ZTEST(mpipe_ipc_transport, test_require_peer_survives_a_rebuild)
+{
+	struct mpipe_ipc_transport host, remote;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(mpipe_ipc_transport_require_peer(&host, true));
+	zassert_equal(mpipe_ipc_transport_require_peer(NULL, true), -EINVAL);
+
+	/* Alone, it waits rather than opening an unpowered mailbox. */
+	zassert_equal(settle(&host, 8), -EAGAIN);
+	zassert_equal(host_opens, 0);
+
+	/*
+	 * The peer appears. It must poll once before the host may proceed: a
+	 * freshly initialised peer has published a session but not yet echoed
+	 * the host's, and an echo is the only thing that proves it is powered.
+	 */
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	zassert_equal(settle(&remote, 2), -EAGAIN,
+		      "the remote waits for rings, but echoes while it waits");
+
+	converge(&host, &remote);
+	zassert_equal(host_opens, 1);
+
+	/* The remote restarts; the host stands down and rebuilds. */
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	zassert_equal(mpipe_ipc_transport_poll(&host), -ECONNRESET);
+	zassert_ok(mpipe_ipc_transport_quiesce(&host));
+	zassert_ok(mpipe_ipc_transport_rebuild(&host));
+	zassert_true(host.require_peer, "a rebuild must not forget the board");
+}

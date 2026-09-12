@@ -321,9 +321,9 @@ ZTEST(mpipe_ipc, test_cold_boot_host_opens_alone_remote_waits)
 	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
 	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
 
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, 0U, MPIPE_IPC_BRINGUP_DOWN),
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, 0U, MPIPE_IPC_BRINGUP_DOWN),
 		      MPIPE_IPC_ACTION_OPEN, "host owns the rings");
-	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, 0U, MPIPE_IPC_BRINGUP_DOWN),
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, false, 0U, MPIPE_IPC_BRINGUP_DOWN),
 		      MPIPE_IPC_ACTION_WAIT, "remote must never build rings");
 }
 
@@ -336,19 +336,19 @@ ZTEST(mpipe_ipc, test_remote_waits_for_host_ready)
 	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
 
 	/* A host that has not acknowledged this remote may be long gone. */
-	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, MPIPE_IPC_HANDSHAKE(11U, 0U),
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, false, MPIPE_IPC_HANDSHAKE(11U, 0U),
 					     MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_WAIT, "an unacknowledged READY may be residue");
 	zassert_false(r.connected);
 
 	host_word = MPIPE_IPC_HANDSHAKE(11U, r.local_sid);
 
-	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, host_word,
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, false, host_word,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_WAIT, "host has not built the rings yet");
 	zassert_true(r.connected, "but the peer session is latched while waiting");
 
-	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, host_word,
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, false, host_word,
 					     MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_OPEN);
 }
@@ -364,13 +364,13 @@ ZTEST(mpipe_ipc, test_restarted_host_must_not_wipe_a_live_remote)
 
 	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
 
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_word,
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, remote_word,
 					     MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_WAIT,
 		      "host must stand off while the remote is using the rings");
 
 	/* The remote notices the new host session, tears down, and stands by. */
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_word,
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, remote_word,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 }
@@ -387,21 +387,21 @@ ZTEST(mpipe_ipc, test_restarted_remote_converges)
 	remote_v1 = MPIPE_IPC_HANDSHAKE(77U, h.local_sid);
 	remote_v2 = MPIPE_IPC_HANDSHAKE(78U, h.local_sid);
 
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v1,
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, remote_v1,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 	zassert_true(h.connected);
 	host_word = mpipe_ipc_session_word(&h);
 
 	/* The remote reboots and publishes a new session. */
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v2,
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, remote_v2,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_FAULT, "host sees a different incarnation");
 	zassert_false(h.connected);
 
 	/* Host tears down, re-opens a session, and both converge. */
 	zassert_ok(mpipe_ipc_session_open(&h, host_word, 0U));
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v2,
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, remote_v2,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 
@@ -411,7 +411,7 @@ ZTEST(mpipe_ipc, test_restarted_remote_converges)
 	 */
 	zassert_ok(mpipe_ipc_session_open(&r, MPIPE_IPC_HANDSHAKE(77U, 0U), 0U));
 	zassert_equal(r.local_sid, 78U);
-	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, mpipe_ipc_session_word(&h),
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, false, mpipe_ipc_session_word(&h),
 					     MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_OPEN, "remote attaches to the rebuilt rings");
 }
@@ -422,9 +422,9 @@ ZTEST(mpipe_ipc, test_ready_without_a_session_is_rejected)
 	struct mpipe_ipc_session s;
 
 	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
-	zassert_equal(mpipe_ipc_bringup_step(&s, REMOTE, 0U, MPIPE_IPC_BRINGUP_READY),
+	zassert_equal(mpipe_ipc_bringup_step(&s, REMOTE, false, 0U, MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_FAULT);
-	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, 0U, MPIPE_IPC_BRINGUP_READY),
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, false, 0U, MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_FAULT);
 }
 
@@ -434,20 +434,20 @@ ZTEST(mpipe_ipc, test_peer_vanishing_after_latch_faults)
 	struct mpipe_ipc_session s;
 
 	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
-	zassert_equal(mpipe_ipc_bringup_step(&s, HOST,
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, false,
 					     MPIPE_IPC_HANDSHAKE(9U, s.local_sid),
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 	zassert_true(s.connected);
 
-	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, 0U, MPIPE_IPC_BRINGUP_DOWN),
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, false, 0U, MPIPE_IPC_BRINGUP_DOWN),
 		      MPIPE_IPC_ACTION_FAULT);
 	zassert_false(s.connected);
 }
 
 ZTEST(mpipe_ipc, test_bringup_rejects_null)
 {
-	zassert_equal(mpipe_ipc_bringup_step(NULL, HOST, 0U, 0U),
+	zassert_equal(mpipe_ipc_bringup_step(NULL, HOST, false, 0U, 0U),
 		      MPIPE_IPC_ACTION_FAULT);
 }
 
@@ -462,11 +462,46 @@ ZTEST(mpipe_ipc, test_an_unacknowledged_session_is_not_accepted)
 
 	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
 
-	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, MPIPE_IPC_HANDSHAKE(3U, 0U),
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, MPIPE_IPC_HANDSHAKE(3U, 0U),
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN, "residue must not block the host");
 	zassert_false(h.connected, "and must not be mistaken for a peer");
 
 	/* But it is still echoed, which is how a real peer learns we are here. */
 	zassert_equal(MPIPE_IPC_HANDSHAKE_ACK(mpipe_ipc_session_word(&h)), 3U);
+}
+
+/*
+ * Where the mailbox belongs to the peer's power domain, a host that opens
+ * before the peer exists configures hardware that is not clocked. The writes
+ * are discarded silently, so bring-up appears to succeed and the link then runs
+ * one way forever. On the i.MX8MP that cost every doorbell into the host.
+ */
+ZTEST(mpipe_ipc, test_a_host_that_needs_its_peer_waits_for_it)
+{
+	struct mpipe_ipc_session h;
+	uint32_t unacknowledged = MPIPE_IPC_HANDSHAKE(7U, 0U);
+	uint32_t acknowledged;
+
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	acknowledged = MPIPE_IPC_HANDSHAKE(7U, h.local_sid);
+
+	/* Without the peer's acknowledgement there is no proof it is powered. */
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, true, 0U,
+					     MPIPE_IPC_BRINGUP_DOWN),
+		      MPIPE_IPC_ACTION_WAIT, "no peer at all");
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, true, unacknowledged,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_WAIT, "a word, but nobody behind it");
+
+	/* The same peer word, now acknowledging this boot, is proof enough. */
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, true, acknowledged,
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN);
+
+	/* And the default is unchanged: a host may still come up alone. */
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, 0U,
+					     MPIPE_IPC_BRINGUP_DOWN),
+		      MPIPE_IPC_ACTION_OPEN);
 }

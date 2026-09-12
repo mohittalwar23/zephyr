@@ -15,8 +15,11 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/ipc/ipc_service.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/atomic.h>
 
+#include <zephyr/mpipe/ipc/mpipe_ipc_protocol.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 
 LOG_MODULE_REGISTER(mpipe_ipc_bringup, LOG_LEVEL_INF);
@@ -67,12 +70,145 @@ BUILD_ASSERT(DT_REG_SIZE(SHARED_NODE) >= sizeof(struct mpipe_ipc_shared),
  */
 #define IS_HOST (DT_ENUM_IDX_OR(IPC_NODE, role, 0) == 0)
 
+/*
+ * Both cores register the same endpoint name; rpmsg's name service pairs them.
+ * One endpoint is enough here -- this sample proves the link carries data, and
+ * audio will not travel on it in any case.
+ */
+#define MPIPE_IPC_EP_NAME "mpipe.ctrl"
+
+/*
+ * File scope because the receive callback runs on the backend's work queue and
+ * needs the transport to verify the sender before acting on anything it sent.
+ */
+static struct mpipe_ipc_transport transport;
+static struct ipc_ept endpoint;
+
+static K_SEM_DEFINE(endpoint_bound, 0, 1);
+static K_SEM_DEFINE(reply_arrived, 0, 1);
+
+static uint16_t expected_reply_id;
+static atomic_t round_trips;
+static atomic_t echoes;
+static atomic_t drops;
+
+static int send_command(uint16_t type, uint16_t id)
+{
+	uint8_t frame[MPIPE_IPC_HEADER_LENGTH];
+	struct mpipe_ipc_message message = {
+		.header = { .cmd = MPIPE_IPC_CMD(type, id) },
+	};
+	size_t written;
+	int err;
+
+	err = mpipe_ipc_encode(frame, sizeof(frame), &message, &written);
+	if (err != 0) {
+		return err;
+	}
+
+	return ipc_service_send(&endpoint, frame, written);
+}
+
+static void on_bound(void *priv)
+{
+	ARG_UNUSED(priv);
+	k_sem_give(&endpoint_bound);
+}
+
+static void on_received(const void *data, size_t length, void *priv)
+{
+	struct mpipe_ipc_message message;
+	int err;
+
+	ARG_UNUSED(priv);
+
+	/*
+	 * Verify the sender before decoding, as ICMsg does. This is the first
+	 * point on hardware where bytes could arrive from an incarnation this
+	 * core never handshook with: the rings survive a peer restart, so a
+	 * message left in them is indistinguishable from a fresh one by content
+	 * alone.
+	 */
+	err = mpipe_ipc_transport_check_peer(&transport);
+	if (err != 0) {
+		atomic_inc(&drops);
+		LOG_WRN("dropped %zu bytes from an unverified peer: %d", length, err);
+		return;
+	}
+
+	err = mpipe_ipc_decode(&message, data, length);
+	if (err != 0) {
+		atomic_inc(&drops);
+		LOG_WRN("dropped a malformed message of %zu bytes: %d", length, err);
+		return;
+	}
+
+	switch (MPIPE_IPC_CMD_TYPE(message.header.cmd)) {
+	case MPIPE_IPC_TYPE_HEARTBEAT:
+		/* The remote half of the round trip. */
+		err = send_command(MPIPE_IPC_TYPE_HEARTBEAT_ACK,
+				   MPIPE_IPC_CMD_ID(message.header.cmd));
+		if (err != 0) {
+			LOG_ERR("could not echo heartbeat %u: %d",
+				MPIPE_IPC_CMD_ID(message.header.cmd), err);
+		} else {
+			atomic_inc(&echoes);
+		}
+		break;
+
+	case MPIPE_IPC_TYPE_HEARTBEAT_ACK:
+		if (MPIPE_IPC_CMD_ID(message.header.cmd) == expected_reply_id) {
+			atomic_inc(&round_trips);
+			k_sem_give(&reply_arrived);
+		}
+		break;
+
+	default:
+		LOG_WRN("unexpected message type 0x%04x",
+			MPIPE_IPC_CMD_TYPE(message.header.cmd));
+		break;
+	}
+}
+
+static const struct ipc_ept_cfg endpoint_cfg = {
+	.name = MPIPE_IPC_EP_NAME,
+	.cb = {
+		.bound = on_bound,
+		.received = on_received,
+	},
+};
+
+/* One request, one reply. Returns the round-trip time or a negative errno. */
+static int exchange_heartbeat(uint16_t id)
+{
+	uint32_t started;
+	int err;
+
+	expected_reply_id = id;
+	k_sem_reset(&reply_arrived);
+
+	started = k_cycle_get_32();
+
+	err = send_command(MPIPE_IPC_TYPE_HEARTBEAT, id);
+	if (err != 0) {
+		return err;
+	}
+
+	if (k_sem_take(&reply_arrived, K_MSEC(200)) != 0) {
+		return -ETIMEDOUT;
+	}
+
+	return (int)k_cyc_to_us_near32(k_cycle_get_32() - started);
+}
+
 int main(void)
 {
 	const struct device *ipc = DEVICE_DT_GET(IPC_NODE);
-	struct mpipe_ipc_transport transport;
 	unsigned int generation = 0;
+	uint16_t heartbeat_id = 0;
 	bool joined;
+	bool bound;
+	bool announced;
 	int err;
 
 	/*
@@ -103,6 +239,16 @@ int main(void)
 		LOG_ERR("transport init failed: %d", err);
 		return err;
 	}
+
+	/*
+	 * MU3 lives in AUDIOMIX and is clocked as a peripheral clock of the DSP
+	 * node, so it runs only while Linux holds the DSP runtime-resumed. A
+	 * host that opened first would configure an unclocked mailbox: the
+	 * writes vanish without an error, bring-up still succeeds, and the link
+	 * then runs one way forever because the host's receive interrupts were
+	 * never really enabled.
+	 */
+	(void)mpipe_ipc_transport_require_peer(&transport, true);
 
 	while (true) {
 		LOG_INF("gen %u: session %u (peer word 0x%08x)", generation,
@@ -150,7 +296,22 @@ int main(void)
 		 * restarted peer waits for this core to stand down and nothing
 		 * ever prompts it to look.
 		 */
+		/*
+		 * Register after the rings exist, and do not block on the bind:
+		 * a host that opened before its peer booted has nobody to pair
+		 * with yet, and rpmsg's name service completes the pairing
+		 * whenever the peer does arrive.
+		 */
+		k_sem_reset(&endpoint_bound);
+		err = ipc_service_register_endpoint(ipc, &endpoint, &endpoint_cfg);
+		if (err != 0) {
+			LOG_ERR("gen %u: cannot register endpoint: %d", generation, err);
+			return err;
+		}
+
 		joined = transport.session.connected;
+		bound = false;
+		announced = false;
 		do {
 			k_msleep(500);
 			err = mpipe_ipc_transport_poll(&transport);
@@ -159,6 +320,40 @@ int main(void)
 				joined = true;
 				LOG_INF("gen %u: peer joined: session %u", generation,
 					transport.session.remote_sid);
+			}
+
+			if (err == 0 && !bound &&
+			    k_sem_take(&endpoint_bound, K_NO_WAIT) == 0) {
+				bound = true;
+				LOG_INF("gen %u: endpoint '%s' bound", generation,
+					MPIPE_IPC_EP_NAME);
+			}
+
+			/*
+			 * The host drives; the remote answers from its receive
+			 * callback. Only the host needs the session to be
+			 * two-sided first, because only it can open without a
+			 * peer present.
+			 */
+			if (err == 0 && IS_HOST && bound && joined) {
+				int rtt = exchange_heartbeat(heartbeat_id);
+
+				if (rtt < 0) {
+					LOG_ERR("gen %u: heartbeat %u failed: %d",
+						generation, heartbeat_id, rtt);
+				} else if (!announced) {
+					announced = true;
+					LOG_INF("gen %u: FIRST ROUND TRIP: heartbeat %u "
+						"acknowledged in %d us",
+						generation, heartbeat_id, rtt);
+				} else if ((heartbeat_id % 10U) == 0U) {
+					LOG_INF("gen %u: %ld round trips, last %d us, "
+						"%ld dropped",
+						generation,
+						(long)atomic_get(&round_trips), rtt,
+						(long)atomic_get(&drops));
+				}
+				heartbeat_id++;
 			}
 		} while (err == 0);
 
@@ -169,6 +364,19 @@ int main(void)
 
 		LOG_WRN("gen %u: peer restarted; standing down so it can rebuild",
 			generation);
+
+		/*
+		 * Deregister before standing down. The backend refuses to close
+		 * an instance that still has a bound endpoint, and that refusal
+		 * leaves the instance wedged rather than merely failing, so the
+		 * order here is not a preference.
+		 */
+		err = ipc_service_deregister_endpoint(&endpoint);
+		if (err != 0) {
+			LOG_ERR("gen %u: cannot release the endpoint: %d", generation,
+				err);
+		}
+
 		err = mpipe_ipc_transport_quiesce(&transport);
 		if (err != 0) {
 			LOG_ERR("gen %u: standing down did not release the instance: %d",

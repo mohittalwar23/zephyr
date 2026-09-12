@@ -32,8 +32,17 @@
 	ipc0: ipc0 {
 		compatible = "zephyr,ipc-openamp-static-vrings";
 		memory-region = <&mpipe_ipc_shm>;
+		/*
+		 * The same two channels as the host, with the names swapped:
+		 * channel 0 is host-tx / remote-rx and channel 1 the reverse.
+		 * An i.MX MU delivers a trigger on channel N to the peer's
+		 * channel N, so naming both sides "tx", "rx" points each core's
+		 * doorbell at a channel the other is not listening on. Bring-up
+		 * polls shared memory and never notices; only endpoint traffic
+		 * does. This matches upstream's own static-vrings overlays.
+		 */
 		mboxes = <&mu3_b 0>, <&mu3_b 1>;
-		mbox-names = "tx", "rx";
+		mbox-names = "rx", "tx";
 		role = "remote";
 		status = "okay";
 	};

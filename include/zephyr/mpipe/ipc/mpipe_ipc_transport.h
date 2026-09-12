@@ -145,6 +145,8 @@ struct mpipe_ipc_transport {
 	 * -EALREADY.
 	 */
 	bool opened;
+	/** Host must not open until the peer has acknowledged it. */
+	bool require_peer;
 	/** Bring-up polls this core attempted before succeeding or giving up. */
 	uint32_t poll_count;
 };
@@ -165,6 +167,29 @@ int mpipe_ipc_transport_init(struct mpipe_ipc_transport *transport,
 			     volatile struct mpipe_ipc_shared *shared,
 			     const struct mpipe_ipc_ops *ops, void *context,
 			     bool is_host);
+
+/**
+ * @brief Make the host wait for a live peer before it opens the instance.
+ *
+ * Call after mpipe_ipc_transport_init() and before the first poll. Needed where
+ * the mailbox is powered by the peer's domain rather than this core's: on the
+ * i.MX8MP the MU3 this link uses sits in AUDIOMIX, clocked only while Linux
+ * holds the DSP runtime-resumed, so a host that opens before the DSP exists
+ * configures an unclocked mailbox. The writes are discarded without any error:
+ * bring-up succeeds, both cores publish READY, the host's sends are delivered --
+ * and no doorbell ever reaches the host, because its receive interrupts were
+ * never really enabled. Measured on the board: 21 of 21 doorbells lost one way,
+ * 21 of 21 delivered the other.
+ *
+ * This costs a host nothing, since it has nobody to talk to until its peer
+ * exists. It does not remove the need for the peer's domain to stay powered
+ * while this core is running: tearing down after the peer disappears still
+ * touches the mailbox.
+ *
+ * @retval 0       on success.
+ * @retval -EINVAL @p transport is NULL.
+ */
+int mpipe_ipc_transport_require_peer(struct mpipe_ipc_transport *transport, bool require);
 
 /**
  * @brief Rebuild the link after a peer restart, keeping this core's session.

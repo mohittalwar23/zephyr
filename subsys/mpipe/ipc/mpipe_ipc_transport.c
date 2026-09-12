@@ -86,6 +86,17 @@ int mpipe_ipc_transport_init(struct mpipe_ipc_transport *transport,
 	return 0;
 }
 
+int mpipe_ipc_transport_require_peer(struct mpipe_ipc_transport *transport, bool require)
+{
+	if (transport == NULL) {
+		return -EINVAL;
+	}
+
+	transport->require_peer = require;
+
+	return 0;
+}
+
 int mpipe_ipc_transport_rebuild(struct mpipe_ipc_transport *transport)
 {
 	if (transport == NULL || transport->state == MPIPE_IPC_TRANSPORT_IDLE) {
@@ -107,6 +118,7 @@ int mpipe_ipc_transport_rebuild(struct mpipe_ipc_transport *transport)
 	transport->session.peer_last_word = 0U;
 	transport->session.peer_last_state = 0U;
 	transport->poll_count = 0U;
+	/* require_peer is a property of the board, not of this incarnation. */
 
 	transport->state = MPIPE_IPC_TRANSPORT_WAITING;
 	transport->ops->store((volatile uint32_t *)&local_block(transport)->error, 0U);
@@ -183,7 +195,7 @@ int mpipe_ipc_transport_poll(struct mpipe_ipc_transport *transport)
 	transport->poll_count++;
 
 	action = mpipe_ipc_bringup_step(&transport->session, transport->is_host,
-					peer_word, peer_state);
+					transport->require_peer, peer_word, peer_state);
 
 	switch (action) {
 	case MPIPE_IPC_ACTION_WAIT:
