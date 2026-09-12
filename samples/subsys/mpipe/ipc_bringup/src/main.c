@@ -106,7 +106,20 @@ static int send_command(uint16_t type, uint16_t id)
 		return err;
 	}
 
-	return ipc_service_send(&endpoint, frame, written);
+	/*
+	 * ipc_service_send() reports the byte count on success, not zero.
+	 * Treating a non-zero return as an error -- or passing it on as one --
+	 * turns every successful send into a plausible-looking number.
+	 */
+	err = ipc_service_send(&endpoint, frame, written);
+	if (err < 0) {
+		return err;
+	}
+	if ((size_t)err != written) {
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static void on_bound(void *priv)
@@ -190,7 +203,7 @@ static int exchange_heartbeat(uint16_t id)
 	started = k_cycle_get_32();
 
 	err = send_command(MPIPE_IPC_TYPE_HEARTBEAT, id);
-	if (err != 0) {
+	if (err < 0) {
 		return err;
 	}
 
@@ -346,7 +359,7 @@ int main(void)
 					LOG_INF("gen %u: FIRST ROUND TRIP: heartbeat %u "
 						"acknowledged in %d us",
 						generation, heartbeat_id, rtt);
-				} else if ((heartbeat_id % 10U) == 0U) {
+				} else if ((heartbeat_id % 20U) == 0U) {
 					LOG_INF("gen %u: %ld round trips, last %d us, "
 						"%ld dropped",
 						generation,

@@ -126,8 +126,19 @@ Control messages cross MU3 in 4 us, verified against the peer's session on every
 receive, and the whole path -- including the endpoint -- rebuilds itself after
 the remote restarts. 270 consecutive round trips with 0 dropped in one run.
 
-**Open, minor:** the sample's round-trip counter advances more slowly than
-heartbeats are sent while reporting success and logging no error (10, 16, 16
-across 30 sends). The discrepancy is in the sample's instrumentation, not in the
-transport -- the link itself keeps working and recovers -- but it is not yet
-explained.
+**The counter discrepancy was a real bug, not instrumentation.**
+`ipc_service_send()` returns the *number of bytes sent* on success, not zero.
+`send_command()` passed that straight back, and the caller treated a non-zero
+return as "done" -- so every send returned 4, the four header bytes, which was
+then printed as a 4 us round-trip time. The reply was never waited for at all.
+
+With the peer stopped this reported eighteen consecutive successful 4 us round
+trips into a dead core, with no error and no timeout. Corrected:
+
+    before:  hb 16 -> 4 us, trips=15     (peer already gone)
+    after:   heartbeat 11 failed: -116   (ETIMEDOUT, honestly)
+
+Real round-trip time on this link is **23-26 us**, and the trip counter now
+tracks sends one for one. The lesson generalises past this sample: a Zephyr API
+that returns a count on success cannot be tested with `!= 0`, and here the wrong
+test produced a number plausible enough to be mistaken for a measurement.
