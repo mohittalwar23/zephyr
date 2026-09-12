@@ -183,6 +183,20 @@ int mpipe_ipc_transport_check_peer(struct mpipe_ipc_transport *transport);
  */
 int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport);
 
+/**
+ * @brief Default backend, wiring @ref mpipe_ipc_ops to Zephyr's IPC Service.
+ *
+ * The context passed to mpipe_ipc_transport_init() must be the
+ * `const struct device *` of the IPC instance. Shared-block accesses are plain
+ * volatile 32-bit loads and stores with no cache maintenance, which is correct
+ * here because the window is uncached on both cores: by MPU attribute on the
+ * Cortex-M7, and by the reset CACHEATTR bypass region on the HiFi4.
+ *
+ * Available only when `CONFIG_IPC_SERVICE` is enabled; the transport logic
+ * itself has no such dependency, which is what lets it be tested on a host.
+ */
+extern const struct mpipe_ipc_ops mpipe_ipc_zephyr_ops;
+
 /** @brief This core's published word, for diagnostics. */
 uint32_t mpipe_ipc_transport_local_word(const struct mpipe_ipc_transport *transport);
 

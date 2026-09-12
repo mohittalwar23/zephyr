@@ -1,0 +1,40 @@
+/*
+ * Copyright 2026 NXP
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+
+/ {
+	/*
+	 * The control block sits outside the region IPC Service owns. The
+	 * static-vrings host clears its whole vdev status area on open, which
+	 * would erase the retained session this design depends on.
+	 */
+	mpipe_ipc_ctrl: memory@a0000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0000000 DT_SIZE_K(4)>;
+		zephyr,memory-region = "MPIPE_IPC_CTRL";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	mpipe_ipc_shm: memory@a0001000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0001000 DT_SIZE_K(252)>;
+		zephyr,memory-region = "MPIPE_IPC_SHM";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	ipc0: ipc0 {
+		compatible = "zephyr,ipc-openamp-static-vrings";
+		memory-region = <&mpipe_ipc_shm>;
+		mboxes = <&mu3_a 0>, <&mu3_a 1>;
+		mbox-names = "tx", "rx";
+		role = "host";
+		status = "okay";
+	};
+};
+
+&mu3_a {
+	status = "okay";
+};

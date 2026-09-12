@@ -1,0 +1,44 @@
+/*
+ * Copyright 2026 NXP
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * No memory-attr here: that property is an Arm MPU attribute and Xtensa has no
+ * devicetree equivalent. The window is uncached on this core by the reset
+ * CACHEATTR instead -- soc/nxp/imx/imx8m/adsp/linker.ld installs 0x22212222,
+ * whose region 5 covering 0xa0000000-0xbfffffff is bypass.
+ */
+
+
+/ {
+	/*
+	 * The control block sits outside the region IPC Service owns. The
+	 * static-vrings host clears its whole vdev status area on open, which
+	 * would erase the retained session this design depends on.
+	 */
+	mpipe_ipc_ctrl: memory@a0000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0000000 DT_SIZE_K(4)>;
+		zephyr,memory-region = "MPIPE_IPC_CTRL";
+	};
+
+	mpipe_ipc_shm: memory@a0001000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0001000 DT_SIZE_K(252)>;
+		zephyr,memory-region = "MPIPE_IPC_SHM";
+	};
+
+	ipc0: ipc0 {
+		compatible = "zephyr,ipc-openamp-static-vrings";
+		memory-region = <&mpipe_ipc_shm>;
+		mboxes = <&mu3_b 0>, <&mu3_b 1>;
+		mbox-names = "tx", "rx";
+		role = "remote";
+		status = "okay";
+	};
+};
+
+&mu3_b {
+	status = "okay";
+};
