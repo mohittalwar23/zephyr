@@ -21,6 +21,86 @@
 
 ---
 
+## AMENDED 2026-09-12 — read this before any task below
+
+### The inference half is not ours to write
+
+Upstream PR #96657 (Thong Phan) already ports TensorFlow Lite Micro to the
+Xtensa HiFi4, adds the signal frontend and the quantised micro-speech model,
+and runs it on this exact silicon. Its architecture is:
+
+```
+[Linux: arecord] -> [RPMsg] ->  [ring/msgq] -> [frontend] -> [TFLM] -> [output]
+                                └─────────── on the HiFi4 ────────────┘
+```
+
+Only the left-hand side differs from ours: their audio arrives from Linux over
+RPMsg, ours arrives from the M7 over MU3. Everything to the right of the queue
+is what we need and already works.
+
+**Decision: supply our transport into their inference. Do not fork their
+sample, and do not reimplement the inference.** Task 5 below reads as a
+file-by-file import of model sources; treat the whole chain — frontend, model
+runner, model data — as the unit to reuse, not just the model.
+
+This is also the moment their own review is pushing toward. `kartben` asked for
+the sample to stop being board-specific — *"hard to justify adding thousands of
+lines of code for something that seems to only target one platform"* — and the
+author agreed to refactor the transport to follow
+`samples/subsys/ipc/openamp_rsc_table`. That refactor is exactly the seam we
+need: their sample gains a pluggable transport, and ours becomes a second one.
+Being a second consumer that proves the genericity is a far better position
+than maintaining a fork, and it is worth coordinating with the author rather
+than discovering the refactor after the fact.
+
+Attribution requirements are unchanged and non-negotiable: preserve Thong
+Phan's authored commits, keep the TensorFlow Authors copyright and Apache-2.0
+notices in the model assets, and coordinate before any upstream submission.
+
+### Two gaps verified on 2026-09-12, both larger than assumed
+
+- **`tflite-micro` is not fetched in this workspace at all.** It is absent from
+  `modules/lib`, and the manifest is deliberately frozen, so it must be fetched
+  as a single project rather than by `west update`.
+- **No `mp_ml_infer` element exists on any branch, in either workspace.**
+  Earlier notes referred to a model-agnostic inference element under the old
+  `subsys/mp/ml` layout. It is not findable; it may have been lost in the
+  September branch cleanup. Do not plan around it. What does exist on disk is
+  micro-speech model data (in `zephyr-audio-demos` and inside SOF), but not the
+  HiFi4 TFLM port, which is #96657's actual contribution.
+
+### Where the three legs stand
+
+| leg | state |
+| --- | --- |
+| Capture on the M7 | **done** — `mpipe_aud_dmic_src.c`, `mpipe_aud_i2s_src.c`, gain and codec sink exist and are hardware-proven, with 19.4 ms measured latency |
+| Transport | **about half** — protocol, session handshake and rendezvous barrier written and tested on two architectures; MU3 nodes landed; backend settled; window verified uncached on both cores. Remaining: the IPC Service adapter and a two-core hardware proof |
+| Inference on the HiFi4 | **not in this tree** — see the two gaps above |
+
+### Shortest path to a first end-to-end demo
+
+Not all nine verification stages. In order:
+
+1. The one-owner IPC Service adapter (transport plan, Task 4).
+2. Prove the transport core to core on hardware (transport plan, Task 6).
+3. The mpipe IPC sink on the M7 and IPC source on the HiFi4 (Tasks 1 and 2
+   below).
+4. Bring TFLM and micro-speech onto our HiFi4 build from #96657 (Task 5).
+5. Wire the existing DMIC graph through sink and source into inference, and run
+   it (Tasks 4 and 6).
+
+**The Linux pair supervisor is not required for this.** Both remotes were
+started and stopped by hand over SSH on 2026-09-12, and both ran
+simultaneously, so the supervisor is a productionisation concern rather than a
+prerequisite for seeing the pipeline work.
+
+Risk ranking for the above: step 4 is the genuine unknown, since TFLM on our
+HiFi4 build is proven possible by #96657 but has never been built here; step 2
+is where hardware surprises live; steps 1, 3 and 5 are mechanical given what is
+already in place.
+
+Where the task text below contradicts this section, this section wins.
+
 ### Task 1: Implement independent mpipe IPC sink instances
 
 **Files:**
