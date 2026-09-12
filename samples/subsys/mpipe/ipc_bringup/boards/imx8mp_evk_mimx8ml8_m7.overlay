@@ -7,6 +7,16 @@
 
 / {
 	/*
+	 * The whole reserved window is 256 KiB at 0xa0000000. Every region below
+	 * is a power-of-two size at a naturally aligned base, because the M7's
+	 * ARMv7-M MPU can express nothing else: it rounds a size up to the next
+	 * power of two and masks the base to match, so an odd region silently
+	 * covers something other than what was asked for.
+	 *
+	 *   0xa0000000   4 KiB   bring-up control block
+	 *   0xa0010000  64 KiB   IPC Service shared memory (control messages)
+	 *   0xa0020000 128 KiB   PCM ring (audio, off the message path)
+	 *
 	 * The control block sits outside the region IPC Service owns. The
 	 * static-vrings host clears its whole vdev status area on open, which
 	 * would erase the retained session this design depends on.
@@ -18,10 +28,17 @@
 		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
 	};
 
-	mpipe_ipc_shm: memory@a0001000 {
+	mpipe_ipc_shm: memory@a0010000 {
 		compatible = "zephyr,memory-region", "mmio-sram";
-		reg = <0xa0001000 DT_SIZE_K(252)>;
+		reg = <0xa0010000 DT_SIZE_K(64)>;
 		zephyr,memory-region = "MPIPE_IPC_SHM";
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+	};
+
+	mpipe_ipc_ring: memory@a0020000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0xa0020000 DT_SIZE_K(128)>;
+		zephyr,memory-region = "MPIPE_IPC_RING";
 		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
 	};
 
