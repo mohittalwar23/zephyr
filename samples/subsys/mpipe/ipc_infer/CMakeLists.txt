@@ -7,6 +7,10 @@ project(mpipe_ipc_infer)
 
 target_sources(app PRIVATE src/main.c)
 
+if(CONFIG_SAMPLE_IPC_INFER_LIVE_I2S)
+  target_sources(app PRIVATE src/pipeline.c)
+endif()
+
 if(CONFIG_SOC_MIMX8ML8_ADSP)
   # Inference runs only on the DSP. Building TFLM into the M7 image as well
   # would cost it a megabyte it has no use for.
@@ -48,6 +52,6 @@ if(CONFIG_SOC_MIMX8ML8_ADSP)
     ${SIGNAL_DIR}/micro/kernels/xtensa/filter_bank_square_root.cc
     ${SIGNAL_DIR}/micro/kernels/xtensa/xtensa_square_root.S
   )
-else()
+elseif(NOT CONFIG_SAMPLE_IPC_INFER_LIVE_I2S)
   target_sources(app PRIVATE src/test_clips.c)
 endif()

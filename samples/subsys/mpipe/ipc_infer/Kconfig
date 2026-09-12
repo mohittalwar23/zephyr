@@ -1,0 +1,30 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+source "Kconfig.zephyr"
+
+config SAMPLE_IPC_INFER_LIVE_I2S
+	bool "Capture live from the I2S receiver through a pipeline"
+	help
+	  Build the host side as an mpipe pipeline that captures from I2S and
+	  tees the audio two ways: to the codec so it can be heard, and to the
+	  peer core for inference. Without this the host sends baked-in clips,
+	  which is what lets the sample check the answers it gets back.
+
+config SAMPLE_IPC_INFER_RATE
+	int "Capture sample rate (Hz)"
+	default 16000
+	depends on SAMPLE_IPC_INFER_LIVE_I2S
+	help
+	  Pinned rather than negotiated. micro_speech is trained at 16 kHz, and
+	  the peer sized its ring periods to match; a negotiation that landed
+	  elsewhere would satisfy every element and still be the wrong audio.
+
+config SAMPLE_IPC_INFER_GAIN_PERCENT
+	int "Gain applied on the audible branch (percent)"
+	default 300
+	range 0 1000
+	depends on SAMPLE_IPC_INFER_LIVE_I2S
+	help
+	  Applied only to the branch that reaches the codec, so monitoring can
+	  be made loud enough to hear without changing what the model receives.
