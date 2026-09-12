@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026 Mohit Talwar
+ * Copyright 2026 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
  */
