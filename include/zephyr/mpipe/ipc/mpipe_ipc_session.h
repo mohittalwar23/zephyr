@@ -153,6 +153,66 @@ int mpipe_ipc_session_check(struct mpipe_ipc_session *session, uint32_t peer_wor
 bool mpipe_ipc_session_acknowledged(const struct mpipe_ipc_session *session,
 				    uint32_t peer_word);
 
+/**
+ * @brief Bring-up state each core publishes beside its session word.
+ *
+ * This exists because OpenAMP's host zeroes **both** shared vrings on every
+ * `ipc_service_open_instance()` (`virtio_create_virtqueues`), the remote writes
+ * nothing to shared memory at init, and `virtio_reset_device()` has no callers
+ * anywhere in OpenAMP or Zephyr. There is therefore no way to reconcile a ring
+ * whose indices moved underneath a live peer: whoever restarts must be kept
+ * away from the rings until the other side has stood down.
+ */
+enum mpipe_ipc_bringup_state {
+	/** Not initialised, or torn down after detecting a peer restart. */
+	MPIPE_IPC_BRINGUP_DOWN = 0,
+	/** Session published; standing by, not touching the rings. */
+	MPIPE_IPC_BRINGUP_CLAIMED = 1,
+	/** Rings initialised and in use. */
+	MPIPE_IPC_BRINGUP_READY = 2,
+};
+
+/** @brief What a core should do next, given what its peer is publishing. */
+enum mpipe_ipc_bringup_action {
+	/** Keep polling; it is not safe to proceed yet. */
+	MPIPE_IPC_ACTION_WAIT = 0,
+	/** Safe to call ipc_service_open_instance() now. */
+	MPIPE_IPC_ACTION_OPEN = 1,
+	/** The peer restarted, or is publishing something impossible. Tear down. */
+	MPIPE_IPC_ACTION_FAULT = 2,
+};
+
+/**
+ * @brief Decide the next bring-up step from the peer's published state.
+ *
+ * The two roles have opposite preconditions, which is what makes the barrier
+ * deadlock-free in both restart directions:
+ *
+ * - The **host** owns the rings and clears them, so it may open only while the
+ *   peer is *not* `READY`. That is what stops a restarted host wiping a live
+ *   remote's receive ring.
+ * - The **remote** writes nothing at init and reads rings the host built, so it
+ *   may open only once the peer *is* `READY`.
+ *
+ * A peer that has published no session at all is treated as absent, which lets
+ * the host come up first on a cold boot. Once a session has been latched, any
+ * change to the peer's request half faults, because that peer is a different
+ * incarnation from the one this core handshook with.
+ *
+ * @p session is updated in place: a first sighting latches the peer, and a
+ * restart clears the latch, so a caller that faults and re-enters the sequence
+ * starts from a clean state.
+ *
+ * @param session           This core's session, from mpipe_ipc_session_open().
+ * @param is_host           True on the static-vrings host.
+ * @param peer_session_word The peer's published handshake word.
+ * @param peer_state        The peer's published bring-up state.
+ */
+enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
+						     bool is_host,
+						     uint32_t peer_session_word,
+						     uint32_t peer_state);
+
 #ifdef __cplusplus
 }
 #endif

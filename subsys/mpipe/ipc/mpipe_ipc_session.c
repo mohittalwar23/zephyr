@@ -100,3 +100,55 @@ bool mpipe_ipc_session_acknowledged(const struct mpipe_ipc_session *session,
 
 	return MPIPE_IPC_HANDSHAKE_ACK(peer_word) == session->local_sid;
 }
+
+enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
+						     bool is_host,
+						     uint32_t peer_session_word,
+						     uint32_t peer_state)
+{
+	uint16_t peer_req;
+
+	if (session == NULL) {
+		return MPIPE_IPC_ACTION_FAULT;
+	}
+
+	peer_req = MPIPE_IPC_HANDSHAKE_REQ(peer_session_word);
+
+	if (peer_req == MPIPE_IPC_SID_NONE) {
+		/*
+		 * The peer has published nothing. A peer claiming to be READY
+		 * without a session is impossible and must not be trusted.
+		 */
+		if (peer_state == MPIPE_IPC_BRINGUP_READY) {
+			return MPIPE_IPC_ACTION_FAULT;
+		}
+		if (session->connected) {
+			session->connected = false;
+			session->remote_sid = MPIPE_IPC_SID_NONE;
+			return MPIPE_IPC_ACTION_FAULT;
+		}
+		/* Absent peer: the host owns the rings and may proceed alone. */
+		return is_host ? MPIPE_IPC_ACTION_OPEN : MPIPE_IPC_ACTION_WAIT;
+	}
+
+	if (session->connected) {
+		if (peer_req != session->remote_sid) {
+			session->connected = false;
+			session->remote_sid = MPIPE_IPC_SID_NONE;
+			return MPIPE_IPC_ACTION_FAULT;
+		}
+	} else {
+		session->remote_sid = peer_req;
+		session->connected = true;
+	}
+
+	if (is_host) {
+		/* Never clear rings a live remote is reading. */
+		return (peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_WAIT
+							       : MPIPE_IPC_ACTION_OPEN;
+	}
+
+	/* The remote may only attach to rings the host has already built. */
+	return (peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_OPEN
+						       : MPIPE_IPC_ACTION_WAIT;
+}
