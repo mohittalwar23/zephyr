@@ -35,6 +35,7 @@ int mpipe_ipc_session_open(struct mpipe_ipc_session *session, uint32_t previous_
 	memset(session, 0, sizeof(*session));
 	session->local_sid =
 		mpipe_ipc_session_next(MPIPE_IPC_HANDSHAKE_REQ(previous_word), peer_ack);
+	session->peer_seen = MPIPE_IPC_SID_NONE;
 	session->remote_sid = MPIPE_IPC_SID_NONE;
 	session->connected = false;
 
@@ -47,7 +48,13 @@ uint32_t mpipe_ipc_session_word(const struct mpipe_ipc_session *session)
 		return MPIPE_IPC_HANDSHAKE(MPIPE_IPC_SID_NONE, MPIPE_IPC_SID_NONE);
 	}
 
-	return MPIPE_IPC_HANDSHAKE(session->local_sid, session->remote_sid);
+	/*
+	 * The acknowledgement half carries what this core has seen, not what it
+	 * has accepted. Publishing the accepted value instead would deadlock a
+	 * cold boot: acceptance requires the peer's acknowledgement, so neither
+	 * side would ever acknowledge first.
+	 */
+	return MPIPE_IPC_HANDSHAKE(session->local_sid, session->peer_seen);
 }
 
 int mpipe_ipc_session_latch(struct mpipe_ipc_session *session, uint32_t peer_word)
@@ -63,6 +70,7 @@ int mpipe_ipc_session_latch(struct mpipe_ipc_session *session, uint32_t peer_wor
 		return -EAGAIN;
 	}
 
+	session->peer_seen = peer_req;
 	session->remote_sid = peer_req;
 	session->connected = true;
 
@@ -101,12 +109,38 @@ bool mpipe_ipc_session_acknowledged(const struct mpipe_ipc_session *session,
 	return MPIPE_IPC_HANDSHAKE_ACK(peer_word) == session->local_sid;
 }
 
+bool mpipe_ipc_session_observe(struct mpipe_ipc_session *session, uint32_t peer_word)
+{
+	uint16_t peer_req = MPIPE_IPC_HANDSHAKE_REQ(peer_word);
+
+	/* Echo unconditionally: this is the peer's only evidence we exist. */
+	session->peer_seen = peer_req;
+
+	return (peer_req != MPIPE_IPC_SID_NONE) &&
+	       (MPIPE_IPC_HANDSHAKE_ACK(peer_word) == session->local_sid);
+}
+
+/* Count consecutive polls in which the peer published nothing new. */
+static void track_stall(struct mpipe_ipc_session *session, uint32_t peer_word,
+			uint32_t peer_state)
+{
+	if (peer_word != session->peer_last_word ||
+	    peer_state != session->peer_last_state) {
+		session->peer_last_word = peer_word;
+		session->peer_last_state = peer_state;
+		session->peer_stall = 0U;
+	} else if (session->peer_stall < UINT16_MAX) {
+		session->peer_stall++;
+	}
+}
+
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
 						     bool is_host,
 						     uint32_t peer_session_word,
 						     uint32_t peer_state)
 {
 	uint16_t peer_req;
+	bool acked;
 
 	if (session == NULL) {
 		return MPIPE_IPC_ACTION_FAULT;
@@ -114,41 +148,46 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 
 	peer_req = MPIPE_IPC_HANDSHAKE_REQ(peer_session_word);
 
-	if (peer_req == MPIPE_IPC_SID_NONE) {
-		/*
-		 * The peer has published nothing. A peer claiming to be READY
-		 * without a session is impossible and must not be trusted.
-		 */
-		if (peer_state == MPIPE_IPC_BRINGUP_READY) {
-			return MPIPE_IPC_ACTION_FAULT;
-		}
-		if (session->connected) {
-			session->connected = false;
-			session->remote_sid = MPIPE_IPC_SID_NONE;
-			return MPIPE_IPC_ACTION_FAULT;
-		}
-		/* Absent peer: the host owns the rings and may proceed alone. */
-		return is_host ? MPIPE_IPC_ACTION_OPEN : MPIPE_IPC_ACTION_WAIT;
+	/* A peer claiming READY without a session is impossible; do not trust it. */
+	if (peer_req == MPIPE_IPC_SID_NONE && peer_state == MPIPE_IPC_BRINGUP_READY) {
+		return MPIPE_IPC_ACTION_FAULT;
 	}
 
+	acked = mpipe_ipc_session_observe(session, peer_session_word);
+	track_stall(session, peer_session_word, peer_state);
+
 	if (session->connected) {
-		if (peer_req != session->remote_sid) {
+		if (!acked || peer_req != session->remote_sid) {
 			session->connected = false;
 			session->remote_sid = MPIPE_IPC_SID_NONE;
 			return MPIPE_IPC_ACTION_FAULT;
 		}
-	} else {
+	} else if (acked) {
 		session->remote_sid = peer_req;
 		session->connected = true;
 	}
 
 	if (is_host) {
-		/* Never clear rings a live remote is reading. */
-		return (peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_WAIT
-							       : MPIPE_IPC_ACTION_OPEN;
+		/*
+		 * Never clear rings a live remote is reading. The wait does not
+		 * require an acknowledgement, because a remote that is live but
+		 * has not yet noticed this boot still holds those rings.
+		 */
+		if (peer_state != MPIPE_IPC_BRINGUP_READY) {
+			return MPIPE_IPC_ACTION_OPEN;
+		}
+		if (!acked && session->peer_stall >= MPIPE_IPC_RESIDUE_POLLS) {
+			/* Unmoving, and never acknowledged this boot: residue. */
+			return MPIPE_IPC_ACTION_OPEN;
+		}
+		return MPIPE_IPC_ACTION_WAIT;
 	}
 
-	/* The remote may only attach to rings the host has already built. */
-	return (peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_OPEN
-						       : MPIPE_IPC_ACTION_WAIT;
+	/*
+	 * The remote attaches to rings the host built, so it needs proof the
+	 * host is alive and finished -- a READY it has not been acknowledged by
+	 * may be the leftover word of a host that is gone.
+	 */
+	return (acked && peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_OPEN
+							       : MPIPE_IPC_ACTION_WAIT;
 }

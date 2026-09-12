@@ -64,6 +64,18 @@ struct mpipe_ipc_core_block {
 	uint32_t session;
 	/** One of @ref mpipe_ipc_bringup_state. */
 	uint32_t state;
+	/**
+	 * Why this core last reached DOWN, as a negative errno, or 0 if it
+	 * stood down deliberately.
+	 *
+	 * Published because a core that fails bring-up is otherwise mute: on
+	 * this hardware both cores share one UART, so at most one of them has a
+	 * console, and in a product neither does. Without this, a remote that
+	 * failed to open is indistinguishable from one that never started, and
+	 * the only visible symptom is a peer stuck at DOWN. Linux can read it
+	 * straight out of the reserved window.
+	 */
+	int32_t error;
 };
 
 /**
@@ -122,6 +134,17 @@ struct mpipe_ipc_transport {
 	struct mpipe_ipc_session session;
 	enum mpipe_ipc_transport_state state;
 	bool is_host;
+	/**
+	 * True while the backend instance is open.
+	 *
+	 * Deliberately not derived from @ref state. Detecting a peer restart
+	 * moves the transport out of RUNNING while the instance is still very
+	 * much open, so a close conditioned on RUNNING would silently skip the
+	 * one case that needs it -- which is what happened on the board, where
+	 * the instance was never handed back and the rebuild failed with
+	 * -EALREADY.
+	 */
+	bool opened;
 	/** Bring-up polls this core attempted before succeeding or giving up. */
 	uint32_t poll_count;
 };
@@ -144,6 +167,26 @@ int mpipe_ipc_transport_init(struct mpipe_ipc_transport *transport,
 			     bool is_host);
 
 /**
+ * @brief Rebuild the link after a peer restart, keeping this core's session.
+ *
+ * The counterpart to mpipe_ipc_transport_init(), and the distinction matters:
+ * `init` says *this core is a new incarnation*, `rebuild` says *the peer is*.
+ * Calling `init` to recover from a peer restart claims a fresh session, which
+ * the peer cannot tell apart from this core having rebooted -- so it faults and
+ * rebuilds too, which this core then reads as another restart. The two chase
+ * each other. Observed on the board: the remote came up, was accepted, and was
+ * immediately torn down by the host's recovery session.
+ *
+ * Requires the instance to have been released first, by
+ * mpipe_ipc_transport_quiesce().
+ *
+ * @retval 0         on success.
+ * @retval -EINVAL   @p transport is NULL or was never initialised.
+ * @retval -EBUSY    the instance is still open; quiesce it first.
+ */
+int mpipe_ipc_transport_rebuild(struct mpipe_ipc_transport *transport);
+
+/**
  * @brief Advance bring-up by one poll.
  *
  * Call until it stops returning @c -EAGAIN. On the step that is allowed to
@@ -154,6 +197,9 @@ int mpipe_ipc_transport_init(struct mpipe_ipc_transport *transport,
  * @retval -ECONNRESET the peer restarted or published something impossible.
  *                     The transport is faulted and must be re-initialised.
  * @retval -EINVAL     @p transport is NULL or was never initialised.
+ * @retval other       the backend refused to open, reported verbatim. The
+ *                     transport is faulted. This is a local misconfiguration,
+ *                     not a peer event, and is not recoverable by retrying.
  */
 int mpipe_ipc_transport_poll(struct mpipe_ipc_transport *transport);
 
@@ -178,8 +224,13 @@ int mpipe_ipc_transport_check_peer(struct mpipe_ipc_transport *transport);
  * restart must reach this state before that peer can safely open, because the
  * peer will clear rings this core would otherwise still be reading.
  *
- * @retval 0 on success.
+ * DOWN is published whether or not the backend closed cleanly, because the peer
+ * is blocked until it sees it.
+ *
+ * @retval 0       on success.
  * @retval -EINVAL if @p transport is NULL.
+ * @retval other   the backend's close error. DOWN was still published, but the
+ *                 instance was not handed back and the next open will fail.
  */
 int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport);
 

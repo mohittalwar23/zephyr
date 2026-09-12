@@ -62,8 +62,15 @@ consequences for this plan are:
    published a session and finished initialising.
 5. **Backend settled: `ipc_rpmsg_static_vrings`.** Both candidates build on
    both cores and their op tables are identical; static-vrings wins on vendor
-   neutrality, Xtensa coverage, cache-line assertions and having no heap.
-   Task 4 should not re-open this.
+   neutrality, Xtensa coverage and cache-line assertions. It is **not**
+   heap-free -- an earlier note here claimed that and was wrong.
+   `ipc_static_vrings_init()` calls `virtqueue_allocate()` twice, which reaches
+   `k_malloc()`, so a build with `CONFIG_HEAP_MEM_POOL_SIZE=0` fails
+   `ipc_service_open_instance()` with `-ENOMEM`. This was not a build error and
+   not visible in any unit test; it appeared only on the board. The heap
+   requirement scales with the descriptor count, which `optimal_num_desc()`
+   derives from the shared-region size, so it grows if the region grows.
+   Task 4 should not re-open the choice of backend.
 6. **Shared memory is non-cacheable with no cache maintenance**, matching NXP
    on both the M7 and Linux sides. Zephyr's alignment assertions only check
    the local core's line size, and the M7 and HiFi4 disagree.

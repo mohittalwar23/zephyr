@@ -331,9 +331,17 @@ ZTEST(mpipe_ipc, test_cold_boot_host_opens_alone_remote_waits)
 ZTEST(mpipe_ipc, test_remote_waits_for_host_ready)
 {
 	struct mpipe_ipc_session r;
-	uint32_t host_word = MPIPE_IPC_HANDSHAKE(11U, 0U);
+	uint32_t host_word;
 
 	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
+
+	/* A host that has not acknowledged this remote may be long gone. */
+	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, MPIPE_IPC_HANDSHAKE(11U, 0U),
+					     MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_WAIT, "an unacknowledged READY may be residue");
+	zassert_false(r.connected);
+
+	host_word = MPIPE_IPC_HANDSHAKE(11U, r.local_sid);
 
 	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, host_word,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
@@ -371,15 +379,18 @@ ZTEST(mpipe_ipc, test_restarted_host_must_not_wipe_a_live_remote)
 ZTEST(mpipe_ipc, test_restarted_remote_converges)
 {
 	struct mpipe_ipc_session h, r;
-	uint32_t remote_v1 = MPIPE_IPC_HANDSHAKE(77U, 0U);
-	uint32_t remote_v2 = MPIPE_IPC_HANDSHAKE(78U, 0U);
+	uint32_t remote_v1, remote_v2;
 	uint32_t host_word;
 
-	/* Steady state: both up. */
+	/* Steady state: both up, with the remote acknowledging this host boot. */
 	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	remote_v1 = MPIPE_IPC_HANDSHAKE(77U, h.local_sid);
+	remote_v2 = MPIPE_IPC_HANDSHAKE(78U, h.local_sid);
+
 	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, remote_v1,
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
+	zassert_true(h.connected);
 	host_word = mpipe_ipc_session_word(&h);
 
 	/* The remote reboots and publishes a new session. */
@@ -394,7 +405,12 @@ ZTEST(mpipe_ipc, test_restarted_remote_converges)
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 
-	zassert_ok(mpipe_ipc_session_open(&r, 0U, 0U));
+	/*
+	 * The remote's own session is 78 here, so the host's published
+	 * acknowledgement of 78 is what lets the remote accept it.
+	 */
+	zassert_ok(mpipe_ipc_session_open(&r, MPIPE_IPC_HANDSHAKE(77U, 0U), 0U));
+	zassert_equal(r.local_sid, 78U);
 	zassert_equal(mpipe_ipc_bringup_step(&r, REMOTE, mpipe_ipc_session_word(&h),
 					     MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_OPEN, "remote attaches to the rebuilt rings");
@@ -418,7 +434,8 @@ ZTEST(mpipe_ipc, test_peer_vanishing_after_latch_faults)
 	struct mpipe_ipc_session s;
 
 	zassert_ok(mpipe_ipc_session_open(&s, 0U, 0U));
-	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, MPIPE_IPC_HANDSHAKE(9U, 0U),
+	zassert_equal(mpipe_ipc_bringup_step(&s, HOST,
+					     MPIPE_IPC_HANDSHAKE(9U, s.local_sid),
 					     MPIPE_IPC_BRINGUP_CLAIMED),
 		      MPIPE_IPC_ACTION_OPEN);
 	zassert_true(s.connected);
@@ -432,4 +449,24 @@ ZTEST(mpipe_ipc, test_bringup_rejects_null)
 {
 	zassert_equal(mpipe_ipc_bringup_step(NULL, HOST, 0U, 0U),
 		      MPIPE_IPC_ACTION_FAULT);
+}
+
+/*
+ * The acknowledgement half is what separates a live peer from the word a dead
+ * one left behind, so a session that a peer could already have acknowledged
+ * must never be reissued.
+ */
+ZTEST(mpipe_ipc, test_an_unacknowledged_session_is_not_accepted)
+{
+	struct mpipe_ipc_session h;
+
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, MPIPE_IPC_HANDSHAKE(3U, 0U),
+					     MPIPE_IPC_BRINGUP_CLAIMED),
+		      MPIPE_IPC_ACTION_OPEN, "residue must not block the host");
+	zassert_false(h.connected, "and must not be mistaken for a peer");
+
+	/* But it is still echoed, which is how a real peer learns we are here. */
+	zassert_equal(MPIPE_IPC_HANDSHAKE_ACK(mpipe_ipc_session_word(&h)), 3U);
 }
