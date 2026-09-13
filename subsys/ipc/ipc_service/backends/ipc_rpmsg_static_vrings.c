@@ -636,6 +636,8 @@ static int close(const struct device *instance)
 	rpmsg_inst = &data->rpmsg_inst;
 
 	if (!check_endpoints_freed(rpmsg_inst)) {
+		/* Restore state: endpoints are still active, so the instance remains open. */
+		atomic_set(&data->state, STATE_INITED);
 		return -EBUSY;
 	}
 

@@ -251,6 +251,26 @@ static void suite_before(void *fixture)
 	}
 }
 
+static void suite_teardown(void *fixture)
+{
+	size_t ep_cnt = IS_ENABLED(CONFIG_IPC_SERVICE_API_TEST_SECOND_ENDPOINT) ? 2 : 1;
+	int ret;
+
+	ARG_UNUSED(fixture);
+
+	if (!IS_ENABLED(CONFIG_IPC_SERVICE_BACKEND_RPMSG)) {
+		return;
+	}
+
+	for (size_t i = 0; i < ep_cnt; i++) {
+		ret = ipc_service_deregister_endpoint(&test_ctx[i].ep);
+		zassert_ok(ret, "Endpoint %zu deregistration failed: %d", i, ret);
+	}
+
+	ret = ipc_service_close_instance(ipc_instance);
+	zassert_ok(ret, "Close after endpoint deregistration failed: %d", ret);
+}
+
 static void test_echo(struct test_context *ctx)
 {
 	int ret;
@@ -332,6 +352,19 @@ ZTEST(ipc_service_api, test_remote_deregister_endpoint)
 
 	ret = wait_for_msg(ctx, &rsp, sizeof(rsp), 100);
 	zassert_ok(ret, "No PONG after remote-initiated deregister and re-bind");
+}
+
+ZTEST(ipc_service_api, test_close_with_registered_endpoint_keeps_instance_usable)
+{
+	int ret;
+
+	Z_TEST_SKIP_IFNDEF(CONFIG_IPC_SERVICE_BACKEND_RPMSG);
+
+	ret = ipc_service_close_instance(ipc_instance);
+	zassert_equal(ret, -EBUSY,
+		      "Close with a registered endpoint should return -EBUSY, got %d", ret);
+
+	test_echo(ep0());
 }
 
 ZTEST(ipc_service_api, test_get_tx_buffer_size)
@@ -918,4 +951,4 @@ ZTEST(ipc_service_api, test_endpoint_priority)
 }
 #endif
 
-ZTEST_SUITE(ipc_service_api, NULL, suite_setup, suite_before, NULL, NULL);
+ZTEST_SUITE(ipc_service_api, NULL, suite_setup, suite_before, NULL, suite_teardown);
