@@ -316,3 +316,73 @@ not address and is the part of this work that is actually new.
 Known integration point: `phys_addr` is the buffer's own address, so the audio
 pool must sit in memory both cores can address. The M7's pool is in TCM today,
 which the HiFi4 cannot see, so it has to move into the shared DDR window.
+
+---
+
+## Addendum 2026-09-13: one pipeline across two cores
+
+The pipeline now spans the link. Captured on the M7, inferred on the HiFi4,
+with an audible branch in between:
+
+    i2s_src -> caps_filter -> tee -+-> gain -> i2s_codec_sink   (audible)
+                                   +-> ipc_sink ==MU3==> ipc_src -> micro_speech
+
+Running, read out of shared memory because the DSP has no console:
+
+    DSP: buffers=1056 windows=10 last='no' refused=0 bound=1 playing=1
+    DSP: buffers=2075 windows=20 last='no' refused=0 bound=1 playing=1
+
+2075 buffers in 22 s is 94 a second against 100 expected for 10 ms periods, and
+20 windows in 22 s is one inference per second. Nothing refused, nothing
+starved.
+
+## Root cause of the stall
+
+Two faults compounded, and the second hid the first.
+
+**The pipeline only knew how to pull.** `mpipe_pipeline.c` finds the first
+source, requires `acquire_buffer`, and calls it in a loop, treating a refusal as
+a flow error that stops everything. An IPC source cannot answer that: its
+buffers arrive when the peer sends them. Sources now declare a drive model --
+`MPIPE_SRC_DRIVE_PULL`, the default, or `MPIPE_SRC_DRIVE_PUSH` -- and a pushed
+source is not polled. This is not specific to IPC; a network source has the same
+shape.
+
+**Nothing was sized for a branching, cross-core pipeline.**
+`CONFIG_MPIPE_NET_BUF_POOL_COUNT` defaults to **1**, which is enough only for a
+pipeline that holds one buffer at a time. A tee references the same buffer on
+both branches at once, and the IPC branch then holds it for a whole round trip
+to the DSP and back. On top of that the sink's outstanding window was a fixed 16
+against a 12-buffer pool -- the sink could take every buffer in existence and
+the source that fills them could never allocate another.
+
+The outstanding window is now `CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS`, documented
+as a claim on the upstream pool, and the sample sizes its pools for the real
+demand.
+
+## Three faults found before those, each fatal
+
+  - **The endpoint configuration was a stack local.** IPC Service stores a
+    pointer to it, not a copy, so the first callback after registration jumped
+    through whatever had replaced it. It presents as an illegal instruction at
+    a nonsense PC inside the backend's bound handler, which is only traceable by
+    resolving the return address -- the PC itself is garbage.
+  - **The source's wrapper pool passed no destroy callback**, so a refcount
+    reaching zero never reached the pool's release hook and no buffer would ever
+    have gone back to the peer.
+  - **Registering the endpoint is what makes the peer start sending**, and that
+    happens before the rest of the pipeline is built. Buffers arriving in that
+    window were pushed into an unlinked pad.
+
+## Two traps worth recording
+
+  - **Do not link into a shared window.** Placing the pool there with a section
+    attribute gives the image a load segment covering memory it does not own,
+    and `imx_rproc` then refuses to start the core with a bare `-EINVAL`. The
+    region is addressed, never linked into; `zephyr,mpipe-aud-pool` says where.
+  - **Whoever owns the console owns the pin mux.** Building the M7 quiet so the
+    DSP could talk left nobody applying uart4's pinctrl, and a DSP that boots
+    and says nothing looks exactly like a DSP that crashed early. Separately,
+    the host's USB serial re-enumerated mid-session and several "no output"
+    runs were that, not the target. Shared-memory telemetry is the reliable
+    channel for a headless core.

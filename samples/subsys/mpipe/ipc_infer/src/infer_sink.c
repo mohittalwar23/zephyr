@@ -46,6 +46,7 @@ static int infer_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 
 	*out_buf = NULL;
 
+	infer->buffers++;
 	samples = (const int16_t *)in_buf->data;
 	frames = meta->bytes_used / (infer->channels * sizeof(int16_t));
 
@@ -84,6 +85,8 @@ static int infer_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 
 		LOG_INF("window %u: heard '%s' in %u ms", infer->windows,
 			micro_speech_category_label(category), ms);
+
+		infer->last_category = (uint32_t)category;
 
 		if (infer->on_result != NULL) {
 			infer->on_result(infer->windows, (uint32_t)category);

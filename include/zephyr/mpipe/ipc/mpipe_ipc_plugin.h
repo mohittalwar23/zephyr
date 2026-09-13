@@ -70,7 +70,7 @@ struct mpipe_ipc_sink {
 	 * much outstanding as the peer can be trusted with, and refuses rather
 	 * than overwrite memory the peer may still be reading.
 	 */
-	struct net_buf *pending[MPIPE_IPC_MAX_BUFFERS];
+	struct net_buf *pending[CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS];
 	/** Buffers dropped because the peer had not released any slot. */
 	uint32_t dropped;
 };

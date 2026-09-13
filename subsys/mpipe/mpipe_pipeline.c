@@ -289,12 +289,31 @@ static void mpipe_pipeline_thread_func(void *p1, void *p2, void *p3)
 		}
 	}
 
-	if (src == NULL || src->pool == NULL || src->pool->acquire_buffer == NULL) {
+	if (src == NULL) {
+		return;
+	}
+
+	/* A pulled source is only runnable if there is something to pull from. */
+	if (src->drive == MPIPE_SRC_DRIVE_PULL &&
+	    (src->pool == NULL || src->pool->acquire_buffer == NULL)) {
 		return;
 	}
 
 	while (mpipe_thread_wait(&pipeline->thread) == 0) {
 		int acq_ret = 0;
+
+		if (src->drive == MPIPE_SRC_DRIVE_PUSH) {
+			/*
+			 * Nothing to pull. This source delivers buffers from
+			 * whatever context they arrive in, so the pipeline's
+			 * thread has no work -- but it still parks rather than
+			 * exits, so pause, resume and teardown continue to have
+			 * a thread to act on.
+			 */
+			mpipe_thread_pause(&pipeline->thread);
+			continue;
+		}
+
 		bool reached_limit = (src->num_buffers != 0 && count == src->num_buffers);
 
 		if (!reached_limit) {

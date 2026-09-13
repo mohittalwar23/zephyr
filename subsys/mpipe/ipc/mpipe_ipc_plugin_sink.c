@@ -36,7 +36,7 @@ static void sink_received(const void *data, size_t len, void *priv)
 	}
 
 	id = msg->release.buffer_id;
-	if (id >= MPIPE_IPC_MAX_BUFFERS || sink->pending[id] == NULL) {
+	if (id >= CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS || sink->pending[id] == NULL) {
 		/*
 		 * Either the peer invented an identifier or it released one
 		 * twice. Neither is survivable by guessing, and dropping the
@@ -96,7 +96,7 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 		return 0;
 	}
 
-	for (int i = 0; i < MPIPE_IPC_MAX_BUFFERS; i++) {
+	for (int i = 0; i < CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS; i++) {
 		if (sink->pending[i] == NULL) {
 			id = i;
 			break;

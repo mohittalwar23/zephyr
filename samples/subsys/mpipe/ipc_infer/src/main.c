@@ -376,7 +376,8 @@ int main(void)
 
 			if (err == 0 && streaming) {
 #ifdef CONFIG_SOC_MIMX8ML8_ADSP
-				/* The pipeline runs itself; nothing to poll. */
+				/* The pipeline runs itself; publish progress. */
+				consumer_publish();
 #else
 #if !LIVE_AUDIO
 				produce();
