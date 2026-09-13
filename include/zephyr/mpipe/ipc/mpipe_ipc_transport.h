@@ -65,14 +65,14 @@ struct mpipe_ipc_core_block {
 	/** One of @ref mpipe_ipc_bringup_state. */
 	uint32_t state;
 	/**
-	 * Why this core last reached DOWN, as a negative errno, or 0 if it
-	 * stood down deliberately.
+	 * Why this core last reached FAULT, as a negative errno, or 0 after a
+	 * clean stand-down.
 	 *
 	 * Published because a core that fails bring-up is otherwise mute: on
 	 * this hardware both cores share one UART, so at most one of them has a
 	 * console, and in a product neither does. Without this, a remote that
 	 * failed to open is indistinguishable from one that never started, and
-	 * the only visible symptom is a peer stuck at DOWN. Linux can read it
+	 * the only visible symptom is a peer stuck at FAULT. Linux can read it
 	 * straight out of the reserved window.
 	 */
 	int32_t error;
@@ -122,7 +122,7 @@ enum mpipe_ipc_transport_state {
 	MPIPE_IPC_TRANSPORT_WAITING = 1,
 	/** Instance open and readiness published. */
 	MPIPE_IPC_TRANSPORT_RUNNING = 2,
-	/** The peer restarted or misbehaved; torn down. */
+	/** The peer restarted or misbehaved; the instance may still be open. */
 	MPIPE_IPC_TRANSPORT_FAULTED = 3,
 };
 
@@ -220,7 +220,7 @@ int mpipe_ipc_transport_rebuild(struct mpipe_ipc_transport *transport);
  * @retval 0           the instance is open and this core is READY.
  * @retval -EAGAIN     not yet safe; call again.
  * @retval -ECONNRESET the peer restarted or published something impossible.
- *                     The transport is faulted and must be re-initialised.
+ *                     The transport must be quiesced before it is rebuilt.
  * @retval -EINVAL     @p transport is NULL or was never initialised.
  * @retval other       the backend refused to open, reported verbatim. The
  *                     transport is faulted. This is a local misconfiguration,
@@ -243,19 +243,21 @@ int mpipe_ipc_transport_poll(struct mpipe_ipc_transport *transport);
 int mpipe_ipc_transport_check_peer(struct mpipe_ipc_transport *transport);
 
 /**
- * @brief Stand down: publish DOWN so a restarted peer may proceed.
+ * @brief Stand down after releasing the backend instance.
  *
  * This is the other half of the barrier. A survivor that has detected a peer
  * restart must reach this state before that peer can safely open, because the
  * peer will clear rings this core would otherwise still be reading.
  *
- * DOWN is published whether or not the backend closed cleanly, because the peer
- * is blocked until it sees it.
+ * DOWN is published only after the instance is confirmed closed. If closing
+ * fails or no close operation exists, FAULT remains published so the peer does
+ * not touch rings this core may still own.
  *
- * @retval 0       on success.
- * @retval -EINVAL if @p transport is NULL.
- * @retval other   the backend's close error. DOWN was still published, but the
- *                 instance was not handed back and the next open will fail.
+ * @retval 0        on success; DOWN was published.
+ * @retval -EINVAL  if @p transport is NULL.
+ * @retval -ENOTSUP the instance is open but no close operation exists; FAULT
+ *                  remains published.
+ * @retval other    the backend's close error; FAULT remains published.
  */
 int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport);
 

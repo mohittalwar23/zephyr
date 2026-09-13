@@ -205,12 +205,17 @@ bool mpipe_ipc_session_observe(struct mpipe_ipc_session *session, uint32_t peer_
  * away from the rings until the other side has stood down.
  */
 enum mpipe_ipc_bringup_state {
-	/** Not initialised, or torn down after detecting a peer restart. */
+	/** Not initialised, or safely torn down. The rings are no longer owned. */
 	MPIPE_IPC_BRINGUP_DOWN = 0,
 	/** Session published; standing by, not touching the rings. */
 	MPIPE_IPC_BRINGUP_CLAIMED = 1,
 	/** Rings initialised and in use. */
 	MPIPE_IPC_BRINGUP_READY = 2,
+	/**
+	 * Fault detected; the rings may still be owned and must not be opened.
+	 * Recovery requires the lifecycle authority.
+	 */
+	MPIPE_IPC_BRINGUP_FAULT = 3,
 };
 
 /** @brief What a core should do next, given what its peer is publishing. */
@@ -230,8 +235,8 @@ enum mpipe_ipc_bringup_action {
  * deadlock-free in both restart directions:
  *
  * - The **host** owns the rings and clears them, so it may open only while the
- *   peer is *not* `READY`. That is what stops a restarted host wiping a live
- *   remote's receive ring.
+ *   peer is `DOWN` or `CLAIMED`, never `READY` or `FAULT`. That is what stops a
+ *   restarted host wiping a live remote's receive ring.
  * - The **remote** writes nothing at init and reads rings the host built, so it
  *   may open only once the peer *is* `READY`.
  *
@@ -273,7 +278,8 @@ enum mpipe_ipc_bringup_action {
  * @param is_host           True on the static-vrings host.
  * @param require_peer      Host must not open until the peer acknowledges it.
  * @param peer_session_word The peer's published handshake word.
- * @param peer_state        The peer's published bring-up state.
+ * @param peer_state        The peer's published bring-up state. FAULT and
+ *                          unknown values produce @ref MPIPE_IPC_ACTION_FAULT.
  */
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
 						     bool is_host, bool require_peer,

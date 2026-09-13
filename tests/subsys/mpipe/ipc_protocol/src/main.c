@@ -312,6 +312,7 @@ ZTEST(mpipe_ipc, test_session_argument_rules)
 
 #define HOST   true
 #define REMOTE false
+#define EXPECTED_FAULT_STATE 3U
 
 /* Cold boot: host may proceed with no peer at all; the remote may not. */
 ZTEST(mpipe_ipc, test_cold_boot_host_opens_alone_remote_waits)
@@ -425,6 +426,26 @@ ZTEST(mpipe_ipc, test_ready_without_a_session_is_rejected)
 	zassert_equal(mpipe_ipc_bringup_step(&s, REMOTE, false, 0U, MPIPE_IPC_BRINGUP_READY),
 		      MPIPE_IPC_ACTION_FAULT);
 	zassert_equal(mpipe_ipc_bringup_step(&s, HOST, false, 0U, MPIPE_IPC_BRINGUP_READY),
+		      MPIPE_IPC_ACTION_FAULT);
+}
+
+/* A faulted peer may still own the rings, so neither role may open against it. */
+ZTEST(mpipe_ipc, test_fault_and_unknown_peer_states_never_authorize_open)
+{
+	struct mpipe_ipc_session h;
+	uint32_t peer_word;
+
+	zassert_ok(mpipe_ipc_session_open(&h, 0U, 0U));
+	peer_word = MPIPE_IPC_HANDSHAKE(9U, h.local_sid);
+
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, peer_word,
+				     EXPECTED_FAULT_STATE),
+		      MPIPE_IPC_ACTION_FAULT);
+	zassert_false(h.connected, "a faulted peer must not be latched");
+	zassert_equal(mpipe_ipc_bringup_step(&h, REMOTE, false, peer_word,
+				     EXPECTED_FAULT_STATE),
+		      MPIPE_IPC_ACTION_FAULT);
+	zassert_equal(mpipe_ipc_bringup_step(&h, HOST, false, peer_word, UINT32_MAX),
 		      MPIPE_IPC_ACTION_FAULT);
 }
 

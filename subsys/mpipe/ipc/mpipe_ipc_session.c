@@ -145,6 +145,10 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 	if (session == NULL) {
 		return MPIPE_IPC_ACTION_FAULT;
 	}
+	if (peer_state >= MPIPE_IPC_BRINGUP_FAULT) {
+		/* FAULT and unknown states cannot prove the rings are released. */
+		return MPIPE_IPC_ACTION_FAULT;
+	}
 
 	peer_req = MPIPE_IPC_HANDSHAKE_REQ(peer_session_word);
 
