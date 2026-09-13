@@ -19,6 +19,65 @@ LOG_MODULE_REGISTER(mpipe_src, CONFIG_MPIPE_LOG_LEVEL);
 
 #define MPIPE_PAD_SRC_ID 0
 
+bool mpipe_src_delivery_enter(struct mpipe_src *src)
+{
+	atomic_val_t old;
+
+	if (src == NULL || atomic_get(&src->delivery_active) == 0) {
+		return false;
+	}
+
+	atomic_inc(&src->deliveries_in_flight);
+	if (atomic_get(&src->delivery_active) != 0) {
+		return true;
+	}
+
+	/* Deactivation closed the gate between the first check and the count. */
+	old = atomic_dec(&src->deliveries_in_flight);
+	if (old == 1) {
+		k_sem_give(&src->deliveries_drained);
+	}
+
+	return false;
+}
+
+void mpipe_src_delivery_leave(struct mpipe_src *src)
+{
+	atomic_val_t old;
+
+	__ASSERT_NO_MSG(src != NULL);
+	if (src == NULL) {
+		return;
+	}
+
+	old = atomic_dec(&src->deliveries_in_flight);
+	__ASSERT_NO_MSG(old > 0);
+	if (old <= 0) {
+		/* Keep a caller bug from underflowing the gate in non-assert builds. */
+		atomic_inc(&src->deliveries_in_flight);
+		return;
+	}
+
+	if (old == 1 && atomic_get(&src->delivery_active) == 0) {
+		k_sem_give(&src->deliveries_drained);
+	}
+}
+
+static void mpipe_src_delivery_close(struct mpipe_src *src)
+{
+	atomic_set(&src->delivery_active, 0);
+
+	/*
+	 * Loop because a callback that loses the enter race may give the
+	 * semaphore after an earlier close already returned. A stale token wakes
+	 * this close once, but can never make a nonzero in-flight count look
+	 * drained.
+	 */
+	while (atomic_get(&src->deliveries_in_flight) != 0) {
+		(void)k_sem_take(&src->deliveries_drained, K_FOREVER);
+	}
+}
+
 int mpipe_src_set_property(struct mpipe_object *obj, uint32_t key, const void *val)
 {
 	struct mpipe_src *src = (struct mpipe_src *)obj;
@@ -250,6 +309,31 @@ enum mpipe_state_change_return mpipe_src_change_state(struct mpipe_element *self
 		}
 
 		break;
+	case MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING:
+		if (src->drive != MPIPE_SRC_DRIVE_PUSH) {
+			break;
+		}
+
+		/* Downstream is ready before a push source is allowed to deliver. */
+		atomic_set(&src->delivery_active, 1);
+		if (src->activate != NULL && src->activate(src) != 0) {
+			mpipe_src_delivery_close(src);
+			LOG_ERR("Failed to activate push source");
+			return MPIPE_STATE_CHANGE_FAILURE;
+		}
+		break;
+	case MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED:
+		if (src->drive != MPIPE_SRC_DRIVE_PUSH) {
+			break;
+		}
+
+		/* Stop admission and drain callbacks before resources are released. */
+		mpipe_src_delivery_close(src);
+		if (src->deactivate != NULL && src->deactivate(src) != 0) {
+			LOG_ERR("Failed to deactivate push source");
+			return MPIPE_STATE_CHANGE_FAILURE;
+		}
+		break;
 	case MPIPE_STATE_CHANGE_PAUSED_TO_READY:
 		/*
 		 * Stop the buffer pool on teardown. This is the counterpart of
@@ -301,6 +385,11 @@ int mpipe_src_init(struct mpipe_src *src, uint8_t id)
 	src->set_caps = mpipe_src_set_caps;
 	src->src_pad.query_fn = mpipe_src_query;
 	src->decide_buffer_pool = NULL;
+	src->activate = NULL;
+	src->deactivate = NULL;
+	atomic_set(&src->delivery_active, 0);
+	atomic_set(&src->deliveries_in_flight, 0);
+	k_sem_init(&src->deliveries_drained, 0, 1);
 
 	return 0;
 }
