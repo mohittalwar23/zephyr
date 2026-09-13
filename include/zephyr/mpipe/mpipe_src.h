@@ -37,6 +37,9 @@
  * @{
  */
 
+#include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
+
 #include <zephyr/mpipe/mpipe_buffer.h>
 #include <zephyr/mpipe/mpipe_element.h>
 #include <zephyr/mpipe/mpipe_pad.h>
@@ -111,6 +114,16 @@ struct mpipe_src {
 	 * pool rebuilds its config baseline here on every negotiation.
 	 */
 	int (*decide_buffer_pool)(struct mpipe_src *self, struct mpipe_dispatch *query);
+	/** Start the external producer after delivery admission opens. */
+	int (*activate)(struct mpipe_src *src);
+	/** Stop the external producer after admitted deliveries have drained. */
+	int (*deactivate)(struct mpipe_src *src);
+	/** Nonzero while externally driven callbacks may enter delivery. */
+	atomic_t delivery_active;
+	/** Callbacks that passed the admission gate and have not yet left. */
+	atomic_t deliveries_in_flight;
+	/** Wakes the thread waiting for the last accepted callback to leave. */
+	struct k_sem deliveries_drained;
 };
 
 /**
@@ -126,6 +139,32 @@ struct mpipe_src {
  * @return 0 on success, negative errno otherwise.
  */
 int mpipe_src_init(struct mpipe_src *src, uint8_t id);
+
+/**
+ * @brief Try to enter an externally driven source's delivery section.
+ *
+ * A push-source callback calls this before accessing resources that its
+ * deactivate hook may release. If it returns true, the callback must call
+ * mpipe_src_delivery_leave() on every exit path. If it returns false, the
+ * source is not PLAYING and the caller retains ownership of its input.
+ *
+ * This operation does not block and may be called from interrupt context.
+ *
+ * @param src Source receiving an external delivery.
+ *
+ * @retval true  Delivery was admitted.
+ * @retval false @p src is NULL or delivery admission is closed.
+ */
+bool mpipe_src_delivery_enter(struct mpipe_src *src);
+
+/**
+ * @brief Leave a delivery section entered by mpipe_src_delivery_enter().
+ *
+ * This operation does not block and may be called from interrupt context.
+ *
+ * @param src Source whose accepted delivery has completed.
+ */
+void mpipe_src_delivery_leave(struct mpipe_src *src);
 
 /**
  * @brief Change state function for base source element
