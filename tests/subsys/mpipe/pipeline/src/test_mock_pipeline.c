@@ -33,6 +33,30 @@ struct test_mock_pipeline_fixture {
 	struct mpipe_sink sink;
 };
 
+struct push_pipeline {
+	struct mpipe pipeline;
+	struct mpipe_fake_src source;
+	struct mpipe_sink sink;
+};
+
+static struct push_pipeline push_a;
+static struct push_pipeline push_b;
+
+static void push_pipeline_init(struct push_pipeline *ctx, uint8_t first_id)
+{
+	memset(ctx, 0, sizeof(*ctx));
+	zassert_ok(mpipe_pipeline_init(&ctx->pipeline, first_id));
+	zassert_ok(mpipe_fake_src_init(&ctx->source, first_id + 1U));
+	zassert_ok(mpipe_sink_init(&ctx->sink, first_id + 2U));
+	ctx->source.src.drive = MPIPE_SRC_DRIVE_PUSH;
+
+	zassert_ok(mpipe_bin_add(&ctx->pipeline.bin,
+				 (struct mpipe_element *)&ctx->source,
+				 (struct mpipe_element *)&ctx->sink, NULL));
+	zassert_ok(mpipe_element_link((struct mpipe_element *)&ctx->source,
+				      (struct mpipe_element *)&ctx->sink, NULL));
+}
+
 static void *pipeline_suite_setup(void)
 {
 	static struct test_mock_pipeline_fixture fixture;
@@ -125,4 +149,35 @@ ZTEST_F(test_mock_pipeline, test_pipeline_fake_src_transform_sink)
 	/* Detach the runtime observer */
 	zassert_ok(zbus_chan_rm_obs(bus, &test_pipeline_sub, K_FOREVER),
 		   "Failed to remove observer from pipeline channel");
+}
+
+/* Push sources bring their own callback context and consume no pipeline stack. */
+ZTEST(test_mock_pipeline, test_two_push_pipelines_need_no_pipeline_threads)
+{
+	enum mpipe_state_change_return ret_a;
+	enum mpipe_state_change_return ret_b;
+
+	push_pipeline_init(&push_a, 10U);
+	push_pipeline_init(&push_b, 20U);
+
+	ret_a = mpipe_element_set_state(&push_a.pipeline.bin.element,
+					MPIPE_STATE_PLAYING);
+	ret_b = mpipe_element_set_state(&push_b.pipeline.bin.element,
+					MPIPE_STATE_PLAYING);
+
+	/* Release any thread the unfixed implementation managed to allocate. */
+	if (ret_a == MPIPE_STATE_CHANGE_SUCCESS) {
+		zassert_equal(mpipe_element_set_state(&push_a.pipeline.bin.element,
+						      MPIPE_STATE_READY),
+			      MPIPE_STATE_CHANGE_SUCCESS);
+	}
+	if (ret_b == MPIPE_STATE_CHANGE_SUCCESS) {
+		zassert_equal(mpipe_element_set_state(&push_b.pipeline.bin.element,
+						      MPIPE_STATE_READY),
+			      MPIPE_STATE_CHANGE_SUCCESS);
+	}
+
+	zassert_equal(ret_a, MPIPE_STATE_CHANGE_SUCCESS);
+	zassert_equal(ret_b, MPIPE_STATE_CHANGE_SUCCESS,
+		      "a push pipeline consumed the only pull-thread stack");
 }
