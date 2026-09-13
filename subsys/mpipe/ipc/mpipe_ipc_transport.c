@@ -38,10 +38,10 @@ static void publish(struct mpipe_ipc_transport *transport, uint32_t state)
 static void fault(struct mpipe_ipc_transport *transport, int reason)
 {
 	transport->state = MPIPE_IPC_TRANSPORT_FAULTED;
-	/* Reason first: a peer that sees DOWN must find the cause already there. */
+	/* Reason first: a peer that sees FAULT must find the cause already there. */
 	transport->ops->store((volatile uint32_t *)&local_block(transport)->error,
 			      (uint32_t)reason);
-	publish(transport, MPIPE_IPC_BRINGUP_DOWN);
+	publish(transport, MPIPE_IPC_BRINGUP_FAULT);
 }
 
 int mpipe_ipc_transport_init(struct mpipe_ipc_transport *transport,
@@ -265,10 +265,14 @@ int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
 	 * why the next open fails -- and discarding it here leaves that failure
 	 * to surface much later, attributed to the wrong operation.
 	 */
-	if (transport->opened && transport->ops->close_instance != NULL) {
-		err = transport->ops->close_instance(transport->context);
-		if (err == 0) {
-			transport->opened = false;
+	if (transport->opened) {
+		if (transport->ops->close_instance == NULL) {
+			err = -ENOTSUP;
+		} else {
+			err = transport->ops->close_instance(transport->context);
+			if (err == 0) {
+				transport->opened = false;
+			}
 		}
 	}
 
@@ -280,15 +284,15 @@ int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
 	 * only trust a DOWN that is addressed to its own session.
 	 */
 	transport->state = MPIPE_IPC_TRANSPORT_FAULTED;
-	/* A deliberate stand-down is not a failure; say so. */
+	/* Publish the close result before the state that explains it. */
 	transport->ops->store((volatile uint32_t *)&local_block(transport)->error,
 			      (uint32_t)err);
-	publish(transport, MPIPE_IPC_BRINGUP_DOWN);
+	publish(transport, err == 0 ? MPIPE_IPC_BRINGUP_DOWN : MPIPE_IPC_BRINGUP_FAULT);
 
 	/*
-	 * DOWN is published either way. The peer is waiting to see it before it
-	 * rebuilds, and withholding it because the local close failed would
-	 * deadlock the peer as well as this core.
+	 * A peer may rebuild only after DOWN proves this core released the rings.
+	 * FAULT deliberately leaves it blocked until the lifecycle authority can
+	 * stop or reset the owner that failed to close.
 	 */
 	return err;
 }

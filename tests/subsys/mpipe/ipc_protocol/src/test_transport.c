@@ -11,6 +11,8 @@
 
 ZTEST_SUITE(mpipe_ipc_transport, NULL, NULL, NULL, NULL, NULL);
 
+#define EXPECTED_FAULT_STATE 3U
+
 /*
  * Both cores are driven against one shared block, because that is the only
  * way the barrier's real property — that the two roles converge rather than
@@ -21,6 +23,7 @@ static int host_opens;
 static int remote_opens;
 static int open_should_fail;
 static int host_closes;
+static int close_should_fail;
 
 static uint32_t fake_load(const volatile uint32_t *address)
 {
@@ -53,7 +56,7 @@ static int host_close(void *ctx)
 {
 	ARG_UNUSED(ctx);
 	host_closes++;
-	return 0;
+	return close_should_fail ? -EBUSY : 0;
 }
 
 static const struct mpipe_ipc_ops host_ops = {
@@ -61,7 +64,8 @@ static const struct mpipe_ipc_ops host_ops = {
 	.load = fake_load, .store = fake_store,
 };
 static const struct mpipe_ipc_ops remote_ops = {
-	.open_instance = remote_open, .load = fake_load, .store = fake_store,
+	.open_instance = remote_open, .close_instance = host_close,
+	.load = fake_load, .store = fake_store,
 };
 
 static void reset_world(void)
@@ -71,6 +75,7 @@ static void reset_world(void)
 	host_closes = 0;
 	remote_opens = 0;
 	open_should_fail = 0;
+	close_should_fail = 0;
 }
 
 /*
@@ -267,8 +272,8 @@ ZTEST(mpipe_ipc_transport, test_open_failure_faults_and_does_not_publish_ready)
 	zassert_equal(mpipe_ipc_transport_poll(&host), -EIO);
 	zassert_equal(host_opens, 0);
 	zassert_equal(host.state, MPIPE_IPC_TRANSPORT_FAULTED);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_DOWN,
-		      "a failed open must never advertise READY");
+	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE,
+		      "a failed open must block the peer from using the rings");
 }
 
 ZTEST(mpipe_ipc_transport, test_poll_is_idempotent_once_running)
@@ -400,6 +405,59 @@ ZTEST(mpipe_ipc_transport, test_quiesce_closes_an_instance_left_open_by_a_fault)
 	zassert_equal(host_opens, 2);
 }
 
+ZTEST(mpipe_ipc_transport, test_peer_restart_publishes_fault_until_quiesced)
+{
+	struct mpipe_ipc_transport host, remote;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	converge(&host, &remote);
+
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	zassert_equal(mpipe_ipc_transport_poll(&host), -ECONNRESET);
+	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE,
+		      "fault detection is not a completed teardown");
+	zassert_true(host.opened);
+
+	zassert_ok(mpipe_ipc_transport_quiesce(&host));
+	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_DOWN);
+	zassert_false(host.opened);
+}
+
+ZTEST(mpipe_ipc_transport, test_failed_close_does_not_publish_down)
+{
+	struct mpipe_ipc_transport host;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(settle(&host, 4));
+	close_should_fail = 1;
+
+	zassert_equal(mpipe_ipc_transport_quiesce(&host), -EBUSY);
+	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
+	zassert_equal(shared_block.host.error, -EBUSY);
+	zassert_true(host.opened, "a failed close leaves the instance open");
+}
+
+ZTEST(mpipe_ipc_transport, test_missing_close_does_not_publish_down)
+{
+	struct mpipe_ipc_transport host;
+	struct mpipe_ipc_ops no_close_ops = host_ops;
+
+	reset_world();
+	no_close_ops.close_instance = NULL;
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &no_close_ops, NULL, true));
+	zassert_ok(settle(&host, 4));
+
+	zassert_equal(mpipe_ipc_transport_quiesce(&host), -ENOTSUP);
+	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
+	zassert_equal(shared_block.host.error, -ENOTSUP);
+	zassert_true(host.opened, "an unclosable instance remains open");
+}
+
 /*
  * A core that fails bring-up must say why in shared memory. Both cores here
  * share a single UART, so at most one has a console; the published reason is
@@ -415,7 +473,7 @@ ZTEST(mpipe_ipc_transport, test_a_failure_reason_is_published_for_the_peer)
 	zassert_equal(shared_block.host.error, 0, "claiming a session clears the reason");
 
 	zassert_equal(mpipe_ipc_transport_poll(&host), -EIO);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_DOWN);
+	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
 	zassert_equal(shared_block.host.error, -EIO, "the peer can see the cause");
 
 	/* A fresh session must not inherit the previous life's reason. */
