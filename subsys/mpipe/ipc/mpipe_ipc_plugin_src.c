@@ -16,6 +16,26 @@
 
 LOG_MODULE_REGISTER(mpipe_ipc_plugin_src, CONFIG_MPIPE_LOG_LEVEL);
 
+static bool region_valid(const struct mpipe_ipc_region *region)
+{
+	uintptr_t base;
+
+	if (region == NULL || region->base == NULL || region->size == 0U ||
+	    region->size > UINT32_MAX || !is_power_of_two(region->align)) {
+		return false;
+	}
+
+	base = (uintptr_t)region->base;
+	return base <= UINTPTR_MAX - region->size && (base & (region->align - 1U)) == 0U;
+}
+
+static bool src_buffer_valid(const struct mpipe_ipc_src *src, uint32_t offset, uint32_t size)
+{
+	return size != 0U && offset <= src->region.size && size <= src->region.size - offset &&
+	       (offset & (src->region.align - 1U)) == 0U &&
+	       (size & (src->region.align - 1U)) == 0U;
+}
+
 /*
  * Wrappers, not storage.
  *
@@ -138,6 +158,7 @@ static void flush_releases(struct mpipe_ipc_src *src)
 {
 	for (unsigned int i = 0; i < CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS; i++) {
 		struct mpipe_ipc_msg msg = {
+			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_DATA_RELEASE,
 			.release = { .buffer_id = i },
 		};
@@ -157,6 +178,7 @@ static void flush_releases(struct mpipe_ipc_src *src)
 static void return_buffer(struct mpipe_ipc_src *src, uint32_t buffer_id)
 {
 	struct mpipe_ipc_msg msg = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = buffer_id },
 	};
@@ -182,6 +204,11 @@ static void src_received(const void *data, size_t len, void *priv)
 
 	if (len != sizeof(*msg)) {
 		LOG_ERR("message of %zu bytes, expected %zu", len, sizeof(*msg));
+		return;
+	}
+	if (msg->version != MPIPE_IPC_PLUGIN_VERSION) {
+		LOG_ERR("message version %u, expected %u", msg->version,
+			MPIPE_IPC_PLUGIN_VERSION);
 		return;
 	}
 
@@ -235,6 +262,11 @@ static void src_received(const void *data, size_t len, void *priv)
 		LOG_ERR("buffer id %u is out of range", msg->data.buffer_id);
 		return;
 	}
+	if (!src_buffer_valid(src, msg->data.offset, msg->data.size)) {
+		LOG_ERR("buffer %u is outside the shared payload region", msg->data.buffer_id);
+		return_buffer(src, msg->data.buffer_id);
+		return;
+	}
 
 	if (!mpipe_src_delivery_enter(&src->base)) {
 		return_buffer(src, msg->data.buffer_id);
@@ -254,7 +286,7 @@ static void src_received(const void *data, size_t len, void *priv)
 	}
 
 	/* Point at the peer's memory rather than copying out of it. */
-	buf->data = mpipe_ipc_phys_to_virt(msg->data.phys_addr);
+	buf->data = (uint8_t *)src->region.base + msg->data.offset;
 	buf->len = msg->data.size;
 	buf->size = msg->data.size;
 
@@ -295,15 +327,17 @@ bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src)
 }
 
 int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
-		       const struct device *instance, const char *name)
+		       const struct device *instance, const char *name,
+		       const struct mpipe_ipc_region *region)
 {
 	int ret;
 
-	if (src == NULL || instance == NULL || name == NULL) {
+	if (src == NULL || instance == NULL || name == NULL || !region_valid(region)) {
 		return -EINVAL;
 	}
 
 	memset(src, 0, sizeof(*src));
+	src->region = *region;
 
 	ret = mpipe_src_init(&src->base, id);
 	if (ret < 0) {

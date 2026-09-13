@@ -15,14 +15,11 @@
  * pipeline rather than as two programs that happen to share memory.
  *
  * From the libMP IPC plugin (Zephyr PR #114088), adapted to the mpipe element
- * model. Buffers cross by reference: the sink holds a reference and sends the
- * address, the source wraps that address in a buffer of its own and pushes it
- * downstream, and the reference is dropped only when the far side has finished
- * with it. The samples are never copied and never travel in a message.
- *
- * The pool the sink draws from must therefore live in memory the peer can
- * address. Nothing here can check that -- a local pointer is a valid pointer
- * either way -- so it is a property of how the pipeline is built.
+ * model. Buffers cross by reference: the sink holds a reference and sends an
+ * offset within an explicitly configured shared region, the source validates
+ * and wraps that offset, and the reference is dropped only when the far side
+ * has finished with it. The samples are never copied and never travel in a
+ * message.
  */
 
 #ifndef ZEPHYR_INCLUDE_MPIPE_IPC_MPIPE_IPC_PLUGIN_H_
@@ -36,6 +33,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <zephyr/device.h>
@@ -51,6 +49,16 @@
 extern "C" {
 #endif
 
+/** Memory window whose contents may be shared with the peer. */
+struct mpipe_ipc_region {
+	/** Local mapping of byte offset zero. */
+	void *base;
+	/** Number of bytes accessible from @ref base. */
+	size_t size;
+	/** Required alignment of buffer offsets and lengths; must be a power of two. */
+	size_t align;
+};
+
 /** @brief Sink that forwards buffers to a peer core. */
 struct mpipe_ipc_sink {
 	/** Base sink element. */
@@ -63,6 +71,8 @@ struct mpipe_ipc_sink {
 	 * so a caller's stack copy becomes a jump to whatever replaced it.
 	 */
 	struct ipc_ept_cfg cfg;
+	/** Only memory in this region may be handed to the peer. */
+	struct mpipe_ipc_region region;
 	/** True once the peer's source has bound to that endpoint. */
 	bool bound;
 	/**
@@ -91,6 +101,8 @@ struct mpipe_ipc_src {
 	struct ipc_ept ept;
 	/** Kept for the same reason as the sink's: the backend holds a pointer. */
 	struct ipc_ept_cfg cfg;
+	/** Local mapping of the peer-visible payload window. */
+	struct mpipe_ipc_region region;
 	/** True once bound to the peer's sink. */
 	bool bound;
 	/** Buffers received that could not be wrapped and were returned. */
@@ -112,13 +124,15 @@ struct mpipe_ipc_src {
  * @param id       Element identifier within the pipeline.
  * @param instance IPC Service instance, already opened.
  * @param name     Endpoint name; the peer source must use the same one.
+ * @param region   Local mapping of the shared payload window.
  *
  * @retval 0 on success.
  * @retval -EINVAL on a NULL argument.
  * @retval other from ipc_service_register_endpoint().
  */
 int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
-			const struct device *instance, const char *name);
+			const struct device *instance, const char *name,
+			const struct mpipe_ipc_region *region);
 
 /**
  * @brief Initialise an IPC source on an open IPC Service instance.
@@ -127,13 +141,15 @@ int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
  * @param id       Element identifier within the pipeline.
  * @param instance IPC Service instance, already opened.
  * @param name     Endpoint name; must match the peer sink's.
+ * @param region   Local mapping of the shared payload window.
  *
  * @retval 0 on success.
  * @retval -EINVAL on a NULL argument.
  * @retval other from ipc_service_register_endpoint().
  */
 int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
-		       const struct device *instance, const char *name);
+		       const struct device *instance, const char *name,
+		       const struct mpipe_ipc_region *region);
 
 /**
  * @brief Set the format the source presents downstream.
@@ -154,12 +170,6 @@ bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink);
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src);
-
-/** @brief Translate a local pointer to an address the peer can use. */
-uintptr_t mpipe_ipc_virt_to_phys(void *virt_addr);
-
-/** @brief Translate a peer address back into a local pointer. */
-void *mpipe_ipc_phys_to_virt(uintptr_t phys_addr);
 
 /** @} */
 

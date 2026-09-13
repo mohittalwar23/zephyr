@@ -15,6 +15,41 @@
 
 LOG_MODULE_REGISTER(mpipe_ipc_plugin_sink, CONFIG_MPIPE_LOG_LEVEL);
 
+static bool region_valid(const struct mpipe_ipc_region *region)
+{
+	uintptr_t base;
+
+	if (region == NULL || region->base == NULL || region->size == 0U ||
+	    region->size > UINT32_MAX || !is_power_of_two(region->align)) {
+		return false;
+	}
+
+	base = (uintptr_t)region->base;
+	return base <= UINTPTR_MAX - region->size && (base & (region->align - 1U)) == 0U;
+}
+
+static int sink_buffer_offset(const struct mpipe_ipc_sink *sink, const struct net_buf *buf,
+			      size_t size, uint32_t *offset)
+{
+	uintptr_t base = (uintptr_t)sink->region.base;
+	uintptr_t address = (uintptr_t)buf->data;
+	size_t delta;
+
+	if (size == 0U || size > buf->len || address < base) {
+		return -ERANGE;
+	}
+
+	delta = address - base;
+	if (delta > sink->region.size || size > sink->region.size - delta ||
+	    (delta & (sink->region.align - 1U)) != 0U ||
+	    (size & (sink->region.align - 1U)) != 0U) {
+		return -ERANGE;
+	}
+
+	*offset = (uint32_t)delta;
+	return 0;
+}
+
 static int sink_send(struct mpipe_ipc_sink *sink, const struct mpipe_ipc_msg *msg)
 {
 	int ret = ipc_service_send(&sink->ept, msg, sizeof(*msg));
@@ -39,6 +74,11 @@ static void sink_received(const void *data, size_t len, void *priv)
 	 */
 	if (len != sizeof(*msg)) {
 		LOG_ERR("message of %zu bytes, expected %zu", len, sizeof(*msg));
+		return;
+	}
+	if (msg->version != MPIPE_IPC_PLUGIN_VERSION) {
+		LOG_ERR("message version %u, expected %u", msg->version,
+			MPIPE_IPC_PLUGIN_VERSION);
 		return;
 	}
 
@@ -76,6 +116,7 @@ static void sink_bound(void *priv)
 	 */
 	if (sink->have_caps) {
 		struct mpipe_ipc_msg msg = {
+			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_CAPS,
 			.caps = sink->caps,
 		};
@@ -90,6 +131,7 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 	struct mpipe_ipc_sink *sink;
 	struct mpipe_buffer_meta *meta;
 	struct mpipe_ipc_msg msg;
+	uint32_t offset;
 	int id = -1;
 	int ret;
 
@@ -103,6 +145,14 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 
 	/* A sink is the end of the chain on this core. */
 	*out_buf = NULL;
+
+	ret = sink_buffer_offset(sink, in_buf, meta->bytes_used, &offset);
+	if (ret != 0) {
+		sink->dropped++;
+		net_buf_unref(in_buf);
+		LOG_ERR("buffer is outside the shared payload region");
+		return ret;
+	}
 
 	if (!sink->bound) {
 		/*
@@ -152,9 +202,10 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 	}
 
 	msg = (struct mpipe_ipc_msg){
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
-			.phys_addr = (uint32_t)mpipe_ipc_virt_to_phys(in_buf->data),
+			.offset = offset,
 			.size = meta->bytes_used,
 			.timestamp = meta->timestamp,
 			.buffer_id = (uint32_t)id,
@@ -182,7 +233,10 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 static int sink_set_caps(struct mpipe_sink *base, const struct mpipe_structure *caps)
 {
 	struct mpipe_ipc_sink *sink = (struct mpipe_ipc_sink *)base;
-	struct mpipe_ipc_msg msg = { .type = MPIPE_IPC_MSG_CAPS };
+	struct mpipe_ipc_msg msg = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
+		.type = MPIPE_IPC_MSG_CAPS,
+	};
 	int ret;
 
 	if (caps == NULL) {
@@ -231,6 +285,7 @@ static int sink_event_fn(struct mpipe_pad *pad, struct mpipe_dispatch *event)
 
 	if (event->type == MPIPE_DISPATCH_EOS && sink->bound) {
 		struct mpipe_ipc_msg msg = {
+			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_EVENT,
 			.event = { .event_type = MPIPE_DISPATCH_EOS },
 		};
@@ -247,15 +302,17 @@ bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink)
 }
 
 int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
-			const struct device *instance, const char *name)
+			const struct device *instance, const char *name,
+			const struct mpipe_ipc_region *region)
 {
 	int ret;
 
-	if (sink == NULL || instance == NULL || name == NULL) {
+	if (sink == NULL || instance == NULL || name == NULL || !region_valid(region)) {
 		return -EINVAL;
 	}
 
 	memset(sink, 0, sizeof(*sink));
+	sink->region = *region;
 
 	ret = mpipe_sink_init(&sink->base, id);
 	if (ret < 0) {

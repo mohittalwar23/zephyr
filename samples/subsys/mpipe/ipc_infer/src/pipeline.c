@@ -16,6 +16,7 @@
  * different question and the one that fails first.
  */
 
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -40,6 +41,12 @@ enum {
 	GAIN_ID,
 	I2S_SINK_ID,
 	IPC_SINK_ID,
+};
+
+static const struct mpipe_ipc_region shared_payload = {
+	.base = (void *)DT_REG_ADDR(DT_NODELABEL(mpipe_shared_pool)),
+	.size = DT_REG_SIZE(DT_NODELABEL(mpipe_shared_pool)),
+	.align = 4U,
 };
 
 /* Shared by the source and the audible sink, as in the loopback sample. */
@@ -91,7 +98,7 @@ int producer_start(const struct device *ipc)
 	 * reference, so the pool feeding this sink has to live in memory the
 	 * HiFi4 can address -- see the sample README.
 	 */
-	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ipc, "mpipe.audio");
+	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ipc, "mpipe.audio", &shared_payload);
 	if (ret < 0) {
 		goto err;
 	}

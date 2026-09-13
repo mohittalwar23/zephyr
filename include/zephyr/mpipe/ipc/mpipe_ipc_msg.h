@@ -15,7 +15,7 @@
  * this one carries a running pipeline across it.
  *
  * Audio does not travel in these messages. A buffer is handed over by
- * reference -- address, size and an identifier -- and the consumer reads the
+ * reference -- region offset, size and an identifier -- and the consumer reads the
  * samples in place out of shared memory, then returns the identifier so the
  * producer can free the buffer. The identifier, rather than the address, is
  * what comes back: it is what makes a release cheap to validate.
@@ -46,6 +46,9 @@ extern "C" {
  */
 #define MPIPE_IPC_MAX_BUFFERS 64
 
+/** Protocol version carried by every plugin message. */
+#define MPIPE_IPC_PLUGIN_VERSION 1U
+
 /** @brief Message types exchanged between an IPC sink and source. */
 enum mpipe_ipc_msg_type {
 	MPIPE_IPC_MSG_STATE_CHANGE = 0,
@@ -64,6 +67,7 @@ BUILD_ASSERT(sizeof(struct mpipe_structure) <= 128,
 
 /** @brief One message. Fixed size, so a short read is a protocol error. */
 struct mpipe_ipc_msg {
+	uint32_t version;
 	uint32_t type;
 	union {
 		struct {
@@ -78,7 +82,7 @@ struct mpipe_ipc_msg {
 
 		/** A buffer handed over by reference. */
 		struct {
-			uint32_t phys_addr;
+			uint32_t offset;
 			uint32_t size;
 			uint32_t timestamp;
 			uint32_t buffer_id;
