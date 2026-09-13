@@ -31,26 +31,25 @@ through IPC Service over MU3, and audio never touches that path.
 Inference sources
 *****************
 
-``src/inference/`` is a copy of the micro_speech inference code from Zephyr
-pull request #96657, *"samples: tflite-micro: add micro_speech application with
-OpenAMP on i.MX8MP"*, which is still open. It is copied rather than referenced
-because this sample needs one change that the pull request does not have:
+The model and its runner are not copied here. They come from the micro_speech
+sample at ``samples/modules/tflite-micro/micro_speech``, which is Zephyr pull
+request #96657 and is not merged yet; until it is, it has to be applied to the
+tree for this sample to build. The build fails with an explanation, and the
+command to fetch it, if it is missing.
 
-* ``micro_speech_process_audio()`` upstream returns 0, -1 or -2 and logs the
-  detected label internally, so a caller cannot act on the result. Here it
-  returns the category index, and ``micro_speech_category_label()`` names it.
-  A pipeline stage has to act on a classification, not read it in a log.
+Three changes that sample needs are made in it rather than in a copy, and
+belong upstream:
 
-The copy also drops ``#include "transport/rpmsg_transport.h"`` from
-``model_runner.cpp``: upstream couples inference to its Linux transport, and
-this link replaces that transport entirely.
-
-**Delete this copy and depend on the upstream sample once #96657 merges.** Both
-changes above are worth sending to that pull request.
+* ``micro_speech_process_audio()`` returned a status and logged the label
+  internally, so a caller could not act on the classification. It now returns
+  the category.
+* ``model_runner.cpp`` included that sample's rpmsg transport, tying inference
+  to the way audio happened to arrive.
+* Its CMakeLists found the TFLM signal sources through a path relative to
+  ``ZEPHYR_BASE``, which is wrong in a git worktree.
 
 The audio clips in ``src/test_clips.c`` are generated from tflite-micro's own
-``micro_speech`` test data by ``scripts/make_test_clips.py``; that script records
-where they came from and regenerates them.
+``micro_speech`` test data by ``scripts/make_test_clips.py``.
 
 Requirements
 ************
