@@ -19,16 +19,32 @@ if(CONFIG_SOC_MIMX8ML8_ADSP)
 
   set(SIGNAL_DIR ${ZEPHYR_TFLITE_MICRO_MODULE_DIR}/signal)
 
+  # The model and its runner come from the micro_speech sample rather than a
+  # copy of it. That sample is Zephyr PR #96657 and is not merged yet; until it
+  # is, it has to be applied to the tree for this one to build.
+  set(MICRO_SPEECH_DIR
+      ${ZEPHYR_BASE}/samples/modules/tflite-micro/micro_speech/src/inference)
+
+  if(NOT EXISTS ${MICRO_SPEECH_DIR}/model_runner.cpp)
+    message(FATAL_ERROR
+      "This sample needs the micro_speech sample from Zephyr PR #96657, which "
+      "is not in this tree. Apply it, or fetch it with:\n"
+      "  git fetch https://github.com/thong-phn/zephyr.git gsoc2025\n"
+      "  git cherry-pick -x <its three commits>")
+  endif()
+
   target_include_directories(app PRIVATE
     src
+    ${MICRO_SPEECH_DIR}
     ${SIGNAL_DIR}
     ${SIGNAL_DIR}/micro/kernels/
     ${SIGNAL_DIR}/src
   )
 
-  file(GLOB inference_sources src/inference/*)
   target_sources(app PRIVATE
-    ${inference_sources}
+    ${MICRO_SPEECH_DIR}/model_runner.cpp
+    ${MICRO_SPEECH_DIR}/audio_preprocessor_int8_model.cpp
+    ${MICRO_SPEECH_DIR}/micro_speech_quantized_model.cpp
     src/consumer.c
     src/infer_sink.c
 
