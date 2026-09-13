@@ -11,6 +11,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_plugin.h>
 #include <zephyr/mpipe/mpipe_buffer.h>
+#include <zephyr/mpipe/mpipe_dispatch.h>
 #include <zephyr/mpipe/mpipe_pipeline.h>
 
 LOG_MODULE_REGISTER(mpipe_ipc_plugin_src, CONFIG_MPIPE_LOG_LEVEL);
@@ -33,12 +34,12 @@ static struct mpipe_ipc_src *pool_owner;
  * the moment -- and the only moment -- at which the peer may reuse the memory,
  * so this is where the release goes out.
  */
+static void return_buffer(struct mpipe_ipc_src *src, uint32_t buffer_id);
+
 static int wrapper_released(struct mpipe_buffer_pool *pool, struct net_buf *buf)
 {
 	struct mpipe_ipc_src *src = pool_owner;
 	struct mpipe_buffer_meta *meta = mpipe_buffer_get_meta(buf);
-	struct mpipe_ipc_msg msg;
-	int ret;
 
 	ARG_UNUSED(pool);
 
@@ -46,21 +47,7 @@ static int wrapper_released(struct mpipe_buffer_pool *pool, struct net_buf *buf)
 		return 0;
 	}
 
-	msg = (struct mpipe_ipc_msg){
-		.type = MPIPE_IPC_MSG_DATA_RELEASE,
-		.release = { .buffer_id = (uint32_t)(uintptr_t)meta->priv },
-	};
-
-	ret = ipc_service_send(&src->ept, &msg, sizeof(msg));
-	if (ret < 0) {
-		/*
-		 * The peer now has a buffer it will never get back, and will
-		 * run out of slots. Nothing here can recover it, so say so
-		 * rather than let the stall look like a capture problem later.
-		 */
-		LOG_ERR("cannot release buffer %u to the peer: %d",
-			(uint32_t)(uintptr_t)meta->priv, ret);
-	}
+	return_buffer(src, (uint32_t)(uintptr_t)meta->priv);
 
 	return 0;
 }
@@ -126,6 +113,36 @@ static void src_bound(void *priv)
 	LOG_INF("peer sink bound");
 }
 
+/*
+ * A release that is not delivered is a buffer the peer never gets back.
+ *
+ * The control channel can refuse a send when its transmit buffers are
+ * momentarily exhausted, which under load is ordinary rather than exceptional.
+ * Dropping the release there leaks one of the peer's slots permanently, and
+ * enough of those starve the pipeline feeding the link -- slowly, so it looks
+ * like a throughput problem rather than a lost message. Failed releases are
+ * therefore remembered and retried.
+ */
+static void flush_releases(struct mpipe_ipc_src *src)
+{
+	for (unsigned int i = 0; i < CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS; i++) {
+		struct mpipe_ipc_msg msg = {
+			.type = MPIPE_IPC_MSG_DATA_RELEASE,
+			.release = { .buffer_id = i },
+		};
+
+		if ((src->unreleased & BIT(i)) == 0U) {
+			continue;
+		}
+
+		if (ipc_service_send(&src->ept, &msg, sizeof(msg)) < 0) {
+			return;
+		}
+
+		src->unreleased &= ~BIT(i);
+	}
+}
+
 static void return_buffer(struct mpipe_ipc_src *src, uint32_t buffer_id)
 {
 	struct mpipe_ipc_msg msg = {
@@ -133,7 +150,16 @@ static void return_buffer(struct mpipe_ipc_src *src, uint32_t buffer_id)
 		.release = { .buffer_id = buffer_id },
 	};
 
-	(void)ipc_service_send(&src->ept, &msg, sizeof(msg));
+	if (buffer_id >= CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS) {
+		return;
+	}
+
+	flush_releases(src);
+
+	if (ipc_service_send(&src->ept, &msg, sizeof(msg)) < 0) {
+		src->unreleased |= BIT(buffer_id);
+		src->deferred++;
+	}
 }
 
 static void src_received(const void *data, size_t len, void *priv)
@@ -145,6 +171,41 @@ static void src_received(const void *data, size_t len, void *priv)
 
 	if (len != sizeof(*msg)) {
 		LOG_ERR("message of %zu bytes, expected %zu", len, sizeof(*msg));
+		return;
+	}
+
+	flush_releases(src);
+
+	if (msg->type == MPIPE_IPC_MSG_CAPS) {
+		/*
+		 * The format the peer's half settled on. Applying it here is
+		 * what lets one negotiation cover both halves, instead of each
+		 * core being configured separately and trusted to match.
+		 */
+		struct mpipe_dispatch event = {
+			.type = MPIPE_DISPATCH_CAPS,
+			.caps = &src->caps,
+		};
+
+		src->caps = msg->caps;
+		src->have_caps = true;
+
+		(void)mpipe_pad_set_caps(&src->base.src_pad, &src->caps);
+
+		if (src->base.src_pad.peer != NULL) {
+			(void)mpipe_pad_send_event(src->base.src_pad.peer, &event);
+		}
+		return;
+	}
+
+	if (msg->type == MPIPE_IPC_MSG_EVENT) {
+		if (msg->event.event_type == MPIPE_DISPATCH_EOS &&
+		    src->base.src_pad.peer != NULL) {
+			struct mpipe_dispatch event = { .type = MPIPE_DISPATCH_EOS };
+
+			/* The stream ended on the other core; say so downstream. */
+			(void)mpipe_pad_send_event(src->base.src_pad.peer, &event);
+		}
 		return;
 	}
 
@@ -191,7 +252,14 @@ static void src_received(const void *data, size_t len, void *priv)
 	/* Carried so the release can name the buffer the peer knows. */
 	meta->priv = (void *)(uintptr_t)msg->data.buffer_id;
 
-	(void)mpipe_push_buffer(&src->base.src_pad, buf);
+	if (mpipe_push_buffer(&src->base.src_pad, buf) != 0) {
+		/*
+		 * Downstream would not take it. Dropping the reference is what
+		 * releases it back to the peer; leaving it held would strand
+		 * the slot exactly as a lost release does.
+		 */
+		net_buf_unref(buf);
+	}
 }
 
 int mpipe_ipc_src_start(struct mpipe_ipc_src *src)
@@ -213,6 +281,11 @@ int mpipe_ipc_src_set_format(struct mpipe_ipc_src *src,
 	}
 
 	return mpipe_pad_set_caps(&src->base.src_pad, caps);
+}
+
+bool mpipe_ipc_src_has_caps(const struct mpipe_ipc_src *src)
+{
+	return (src != NULL) && src->have_caps;
 }
 
 bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src)

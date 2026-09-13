@@ -43,6 +43,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_msg.h>
 #include <zephyr/mpipe/mpipe_sink.h>
+#include <zephyr/mpipe/mpipe_dispatch.h>
+#include <zephyr/mpipe/mpipe_structure.h>
 #include <zephyr/mpipe/mpipe_src.h>
 
 #ifdef __cplusplus
@@ -73,6 +75,12 @@ struct mpipe_ipc_sink {
 	struct net_buf *pending[CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS];
 	/** Buffers dropped because the peer had not released any slot. */
 	uint32_t dropped;
+	/** The format this half settled on, sent to the peer. */
+	struct mpipe_structure caps;
+	/** True once a format has been settled. */
+	bool have_caps;
+	/** The base sink's event handler, still run after forwarding. */
+	int (*base_event_fn)(struct mpipe_pad *pad, struct mpipe_dispatch *event);
 };
 
 /** @brief Source that receives buffers from a peer core. */
@@ -89,6 +97,14 @@ struct mpipe_ipc_src {
 	bool running;
 	/** Buffers received that could not be wrapped and were returned. */
 	uint32_t refused;
+	/** The format the peer announced. */
+	struct mpipe_structure caps;
+	/** True once the peer has announced one. */
+	bool have_caps;
+	/** Buffers whose release could not be sent, one bit each, retried later. */
+	uint32_t unreleased;
+	/** How many releases have had to be deferred. */
+	uint32_t deferred;
 };
 
 /**
@@ -124,12 +140,16 @@ int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
 /**
  * @brief Set the format the source presents downstream.
  *
- * The plugin does not negotiate a format across the link yet, so both halves
- * are told the same one. Getting this wrong is silent: every element agrees and
- * the audio is simply wrong.
+ * Rarely needed: the peer's sink announces the format it settled on, and the
+ * source applies that. Use this only to seed a format before the peer has
+ * attached -- a format configured independently on both cores is one the two
+ * can silently disagree about.
  */
 int mpipe_ipc_src_set_format(struct mpipe_ipc_src *src,
 			     const struct mpipe_structure *caps);
+
+/** @brief True once the peer has announced the format it settled on. */
+bool mpipe_ipc_src_has_caps(const struct mpipe_ipc_src *src);
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink);

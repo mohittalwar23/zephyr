@@ -386,3 +386,49 @@ demand.
     the host's USB serial re-enumerated mid-session and several "no output"
     runs were that, not the target. Shared-memory telemetry is the reliable
     channel for a headless core.
+
+---
+
+## Addendum 2026-09-13: the plugin's other half, and a lossy release
+
+The query, event and caps paths are ported, the micro_speech duplication is
+gone, and a leak that had been hiding as a throughput problem is fixed.
+
+**One negotiation now covers both halves.** The sink announces the format its
+pipeline settled on and the source applies it, instead of each core being
+configured separately and trusted to match. A format two cores are each *told*
+is a format they can silently disagree about: every element accepts and the
+audio is simply wrong. End of stream crosses the same way.
+
+Both are added by extending the base sink's handlers rather than replacing
+them. Replacing `event_fn` lost the pad's own caps bookkeeping and the bus
+message that tells a pipeline its stream ended -- visible as throughput
+collapsing to a twelfth of the rate, not as anything resembling a missing
+event.
+
+**Releases were lossy, and that reads as a throughput problem.** The control
+channel refuses a send when its transmit buffers are momentarily exhausted,
+which under load is ordinary. The release was dropped there, and a dropped
+release is one of the peer's slots leaked permanently. Enough of them starve
+the pipeline feeding the link, slowly:
+
+    before   M7 dropped 0 -> 457 in 10 s, delivery 54/s, one window per 12 s
+    after    M7 dropped 0,               delivery 100.6/s, one window per second
+
+100.6 buffers a second against 100 expected for 10 ms periods, and exactly one
+inference per second. Failed releases are now remembered and retried, and a
+push downstream that is refused drops its reference, which releases the buffer
+rather than stranding the slot the same way.
+
+**The duplication is gone.** micro_speech is cherry-picked to its own upstream
+path with its author's commits intact, this sample references it, and the three
+changes it needs sit in one commit that can be sent to #96657: return the
+category rather than log it, stop including the sample's rpmsg transport from
+the inference code, and find the TFLM signal sources through
+ZEPHYR_TFLITE_MICRO_MODULE_DIR rather than a path relative to ZEPHYR_BASE that
+is wrong in a git worktree. 2873 lines of copy removed.
+
+**Host note:** the USB serial bridge stopped delivering mid-session -- the
+device enumerates, reads return nothing. Several "the core printed nothing"
+runs were that and not the target. Both cores now publish progress into the
+reserved window, which is the channel that does not depend on a host cable.

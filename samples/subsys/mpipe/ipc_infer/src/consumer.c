@@ -62,9 +62,10 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result)
 	}
 
 	/*
-	 * The format is told to both halves rather than negotiated across the
-	 * link; the plugin cannot carry a negotiation yet. Disagreeing here is
-	 * silent -- every element accepts, and the audio is simply wrong.
+	 * Seeded only so the pipeline can link before the peer attaches. The
+	 * format that actually applies is the one the peer announces, which is
+	 * the whole point: one negotiation covering both halves rather than two
+	 * that are trusted to agree.
 	 */
 	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM,
 					  MPIPE_CAPS_FRAME_INTERVAL, MPIPE_TYPE_UINT, 10000,

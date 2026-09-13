@@ -11,8 +11,16 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_plugin.h>
 #include <zephyr/mpipe/mpipe_buffer.h>
+#include <zephyr/mpipe/mpipe_dispatch.h>
 
 LOG_MODULE_REGISTER(mpipe_ipc_plugin_sink, CONFIG_MPIPE_LOG_LEVEL);
+
+static int sink_send(struct mpipe_ipc_sink *sink, const struct mpipe_ipc_msg *msg)
+{
+	int ret = ipc_service_send(&sink->ept, msg, sizeof(*msg));
+
+	return (ret < 0) ? ret : 0;
+}
 
 static void sink_received(const void *data, size_t len, void *priv)
 {
@@ -57,6 +65,19 @@ static void sink_bound(void *priv)
 
 	sink->bound = true;
 	LOG_INF("peer source bound");
+
+	/*
+	 * The format was very likely settled before the peer attached, and it
+	 * cannot ask for it. Send what we have.
+	 */
+	if (sink->have_caps) {
+		struct mpipe_ipc_msg msg = {
+			.type = MPIPE_IPC_MSG_CAPS,
+			.caps = sink->caps,
+		};
+
+		(void)sink_send(sink, &msg);
+	}
 }
 
 static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
@@ -150,6 +171,72 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 	return 0;
 }
 
+/*
+ * Tell the peer what the pipeline settled on, instead of letting it be
+ * configured separately at the other end where the two can disagree silently.
+ */
+static int sink_set_caps(struct mpipe_sink *base, const struct mpipe_structure *caps)
+{
+	struct mpipe_ipc_sink *sink = (struct mpipe_ipc_sink *)base;
+	struct mpipe_ipc_msg msg = { .type = MPIPE_IPC_MSG_CAPS };
+	int ret;
+
+	if (caps == NULL) {
+		return -EINVAL;
+	}
+
+	/*
+	 * Record it on the pad first. That is what the base sink does, and it
+	 * is how the negotiation completes; announcing the format to the peer
+	 * is additional, not instead.
+	 */
+	ret = mpipe_pad_set_caps(&sink->base.sink_pad, caps);
+	if (ret < 0) {
+		return ret;
+	}
+
+	sink->caps = *caps;
+	sink->have_caps = true;
+
+	if (!sink->bound) {
+		/* Sent again on bind; the peer is not there to hear it yet. */
+		return 0;
+	}
+
+	msg.caps = *caps;
+
+	return sink_send(sink, &msg);
+}
+
+/*
+ * The end of the stream is part of the stream, so it crosses the link too --
+ * and then the base handler still runs. Replacing it rather than extending it
+ * loses the pad's caps bookkeeping and the bus message that tells this
+ * pipeline its stream ended, which is not a trade worth making to add one
+ * forwarding rule.
+ */
+static int sink_event_fn(struct mpipe_pad *pad, struct mpipe_dispatch *event)
+{
+	struct mpipe_ipc_sink *sink = CONTAINER_OF(pad->object.container,
+						   struct mpipe_ipc_sink,
+						   base.element.object);
+
+	if (event == NULL) {
+		return -EINVAL;
+	}
+
+	if (event->type == MPIPE_DISPATCH_EOS && sink->bound) {
+		struct mpipe_ipc_msg msg = {
+			.type = MPIPE_IPC_MSG_EVENT,
+			.event = { .event_type = MPIPE_DISPATCH_EOS },
+		};
+
+		(void)sink_send(sink, &msg);
+	}
+
+	return sink->base_event_fn(pad, event);
+}
+
 bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink)
 {
 	return (sink != NULL) && sink->bound;
@@ -172,6 +259,9 @@ int mpipe_ipc_sink_init(struct mpipe_ipc_sink *sink, uint8_t id,
 	}
 
 	sink->base.sink_pad.chain_fn = sink_chain_fn;
+	sink->base_event_fn = sink->base.sink_pad.event_fn;
+	sink->base.sink_pad.event_fn = sink_event_fn;
+	sink->base.set_caps = sink_set_caps;
 
 	sink->cfg = (struct ipc_ept_cfg){
 		.name = name,
