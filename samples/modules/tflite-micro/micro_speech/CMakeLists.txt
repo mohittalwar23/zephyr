@@ -10,7 +10,10 @@ set(NO_THREADSAFE_STATICS $<TARGET_PROPERTY:compiler-cpp,no_threadsafe_statics>)
 zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:${NO_THREADSAFE_STATICS}>)
 
 # Define common paths
-set(OPTIONAL_TFLITE_DIR $ENV{ZEPHYR_BASE}/../optional/modules/lib/tflite-micro/signal)
+# Ask the build where the module is rather than assuming the workspace layout:
+# $ENV{ZEPHYR_BASE}/.. is not the workspace root in a git worktree, and the
+# include paths below already use this variable.
+set(OPTIONAL_TFLITE_DIR ${ZEPHYR_TFLITE_MICRO_MODULE_DIR}/signal)
 
 file(
   GLOB
