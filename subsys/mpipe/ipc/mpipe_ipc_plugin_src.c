@@ -113,6 +113,17 @@ static void src_bound(void *priv)
 	LOG_INF("peer sink bound");
 }
 
+static int src_send(struct mpipe_ipc_src *src, const struct mpipe_ipc_msg *msg)
+{
+	int ret = ipc_service_send(&src->ept, msg, sizeof(*msg));
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	return ret == sizeof(*msg) ? 0 : -EMSGSIZE;
+}
+
 /*
  * A release that is not delivered is a buffer the peer never gets back.
  *
@@ -131,15 +142,15 @@ static void flush_releases(struct mpipe_ipc_src *src)
 			.release = { .buffer_id = i },
 		};
 
-		if ((src->unreleased & BIT(i)) == 0U) {
+		if (!atomic_test_bit(src->unreleased, i)) {
 			continue;
 		}
 
-		if (ipc_service_send(&src->ept, &msg, sizeof(msg)) < 0) {
+		if (src_send(src, &msg) != 0) {
 			return;
 		}
 
-		src->unreleased &= ~BIT(i);
+		atomic_clear_bit(src->unreleased, i);
 	}
 }
 
@@ -156,8 +167,8 @@ static void return_buffer(struct mpipe_ipc_src *src, uint32_t buffer_id)
 
 	flush_releases(src);
 
-	if (ipc_service_send(&src->ept, &msg, sizeof(msg)) < 0) {
-		src->unreleased |= BIT(buffer_id);
+	if (src_send(src, &msg) != 0) {
+		atomic_set_bit(src->unreleased, buffer_id);
 		src->deferred++;
 	}
 }
@@ -215,12 +226,17 @@ static void src_received(const void *data, size_t len, void *priv)
 	}
 
 	/*
-	 * Registering the endpoint is what makes the peer start sending, and
-	 * that happens before the rest of the pipeline exists. Until it is
-	 * built and playing there is nowhere to push, so hand the buffer back
-	 * rather than deliver into a pad that is not linked yet.
+	 * Registering the endpoint is what makes the peer start sending, before
+	 * the graph necessarily reaches PLAYING. The source lifecycle gate opens
+	 * only in PLAYING and drains on pause, so hand back anything that arrives
+	 * outside that interval.
 	 */
-	if (!src->running) {
+	if (msg->data.buffer_id >= CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS) {
+		LOG_ERR("buffer id %u is out of range", msg->data.buffer_id);
+		return;
+	}
+
+	if (!mpipe_src_delivery_enter(&src->base)) {
 		return_buffer(src, msg->data.buffer_id);
 		return;
 	}
@@ -233,6 +249,7 @@ static void src_received(const void *data, size_t len, void *priv)
 		 */
 		src->refused++;
 		return_buffer(src, msg->data.buffer_id);
+		mpipe_src_delivery_leave(&src->base);
 		return;
 	}
 
@@ -252,25 +269,9 @@ static void src_received(const void *data, size_t len, void *priv)
 	/* Carried so the release can name the buffer the peer knows. */
 	meta->priv = (void *)(uintptr_t)msg->data.buffer_id;
 
-	if (mpipe_push_buffer(&src->base.src_pad, buf) != 0) {
-		/*
-		 * Downstream would not take it. Dropping the reference is what
-		 * releases it back to the peer; leaving it held would strand
-		 * the slot exactly as a lost release does.
-		 */
-		net_buf_unref(buf);
-	}
-}
-
-int mpipe_ipc_src_start(struct mpipe_ipc_src *src)
-{
-	if (src == NULL) {
-		return -EINVAL;
-	}
-
-	src->running = true;
-
-	return 0;
+	/* mpipe_push_buffer() consumes the reference on both success and failure. */
+	(void)mpipe_push_buffer(&src->base.src_pad, buf);
+	mpipe_src_delivery_leave(&src->base);
 }
 
 int mpipe_ipc_src_set_format(struct mpipe_ipc_src *src,

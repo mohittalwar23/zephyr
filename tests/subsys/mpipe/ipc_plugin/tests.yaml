@@ -1,0 +1,8 @@
+tests:
+  mpipe.ipc_plugin:
+    tags:
+      - subsys
+      - mpipe
+      - ipc
+    platform_allow:
+      - native_sim/native/64

@@ -93,8 +93,6 @@ struct mpipe_ipc_src {
 	struct ipc_ept_cfg cfg;
 	/** True once bound to the peer's sink. */
 	bool bound;
-	/** True once the rest of the pipeline exists and can be pushed to. */
-	bool running;
 	/** Buffers received that could not be wrapped and were returned. */
 	uint32_t refused;
 	/** The format the peer announced. */
@@ -102,7 +100,7 @@ struct mpipe_ipc_src {
 	/** True once the peer has announced one. */
 	bool have_caps;
 	/** Buffers whose release could not be sent, one bit each, retried later. */
-	uint32_t unreleased;
+	ATOMIC_DEFINE(unreleased, CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS);
 	/** How many releases have had to be deferred. */
 	uint32_t deferred;
 };
@@ -153,16 +151,6 @@ bool mpipe_ipc_src_has_caps(const struct mpipe_ipc_src *src);
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_sink_is_bound(const struct mpipe_ipc_sink *sink);
-
-/**
- * @brief Let the source begin delivering downstream.
- *
- * Call once the pipeline is built and playing. Registering the endpoint is what
- * makes the peer start sending, and that necessarily happens before the rest of
- * the pipeline exists; until this is called, arriving buffers are handed
- * straight back instead of pushed into a pad that is not linked yet.
- */
-int mpipe_ipc_src_start(struct mpipe_ipc_src *src);
 
 /** @brief True once both halves have bound to each other. */
 bool mpipe_ipc_src_is_bound(const struct mpipe_ipc_src *src);

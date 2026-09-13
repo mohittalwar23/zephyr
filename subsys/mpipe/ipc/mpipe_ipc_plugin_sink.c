@@ -19,7 +19,11 @@ static int sink_send(struct mpipe_ipc_sink *sink, const struct mpipe_ipc_msg *ms
 {
 	int ret = ipc_service_send(&sink->ept, msg, sizeof(*msg));
 
-	return (ret < 0) ? ret : 0;
+	if (ret < 0) {
+		return ret;
+	}
+
+	return ret == sizeof(*msg) ? 0 : -EMSGSIZE;
 }
 
 static void sink_received(const void *data, size_t len, void *priv)
@@ -157,8 +161,8 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 		},
 	};
 
-	ret = ipc_service_send(&sink->ept, &msg, sizeof(msg));
-	if (ret < 0) {
+	ret = sink_send(sink, &msg);
+	if (ret != 0) {
 		net_buf_unref(sink->pending[id]);
 		sink->pending[id] = NULL;
 		net_buf_unref(in_buf);
