@@ -29,7 +29,9 @@ extern Features g_features;
 
 extern "C" {
 void model_runner_init(void);
+/* Returns the detected category index (>= 0), or negative on failure. */
 int micro_speech_process_audio(const int16_t *audio_data, size_t audio_data_size);
+const char *micro_speech_category_label(int category);
 }
 
 #endif /* MICRO_SPEECH_OPENAMP_MODEL_RUNNER_H_ */

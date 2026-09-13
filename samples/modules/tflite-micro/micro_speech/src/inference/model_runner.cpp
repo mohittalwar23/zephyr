@@ -29,7 +29,6 @@ LOG_MODULE_REGISTER(model_runner);
 #include "audio_preprocessor_int8_model.hpp"
 #include "micro_speech_quantized_model.hpp"
 
-#include "transport/rpmsg_transport.h"
 
 #include <zephyr/kernel.h>
 #include <algorithm>
@@ -225,7 +224,8 @@ TfLiteStatus generate_features(const int16_t* audio_data,
     return kTfLiteOk;
 }
 
-TfLiteStatus run_micro_speech_inference(const Features& features) {
+TfLiteStatus run_micro_speech_inference(const Features& features,
+                                        int *out_category) {
     if (!g_interpreters_initialized) {
         LOG_ERR("Interpreters not initialized");
         return kTfLiteError;
@@ -281,6 +281,10 @@ TfLiteStatus run_micro_speech_inference(const Features& features) {
 
     LOG_INF("Detected: %s", kCategoryLabels[prediction_index]);
 
+    if (out_category != nullptr) {
+        *out_category = prediction_index;
+    }
+
     return kTfLiteOk;
 }
 
@@ -305,11 +309,26 @@ int micro_speech_process_audio(const int16_t *audio_data,
         return -1;
     }
     /* Run inference */
-    if (run_micro_speech_inference(g_features) != kTfLiteOk) {
+    int category = -1;
+
+    if (run_micro_speech_inference(g_features, &category) != kTfLiteOk) {
         LOG_ERR("Inference failed");
         return -2;
     }
-    return 0;
+
+    /* Return what was detected. A caller that only gets a status cannot act
+     * on the classification at all, and a pipeline stage has to.
+     */
+    return category;
+}
+
+extern "C" const char *micro_speech_category_label(int category)
+{
+    if (category < 0 || category >= kCategoryCount) {
+        return "?";
+    }
+
+    return kCategoryLabels[category];
 }
 
 } /* extern "C" */

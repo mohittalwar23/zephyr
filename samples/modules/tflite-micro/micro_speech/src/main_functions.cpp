@@ -150,7 +150,11 @@ void app_audio_processing_thread(void *arg1, void *arg2, void *arg3)
 		if (samples_to_process > 0) {
                         LOG_DBG("Running inferences with %zu samples", samples_to_process);
 
-			if (micro_speech_process_audio(processing_buffer, samples_to_process) != 0) {
+			/* A classification is now returned, so only a negative
+			 * value is a failure -- "silence" is category zero.
+			 */
+			if (micro_speech_process_audio(processing_buffer,
+						       samples_to_process) < 0) {
 				LOG_DBG("Failed to process audio");
 			}
 			/* Clear the buffer after processing */
