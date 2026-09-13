@@ -1,0 +1,3 @@
+description: Fake IPC backend for the mpipe IPC plugin tests
+
+compatible: "zephyr,mpipe-ipc-test"

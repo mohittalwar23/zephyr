@@ -1,0 +1,6 @@
+/ {
+	fake_ipc: fake_ipc_device {
+		compatible = "zephyr,mpipe-ipc-test";
+		status = "okay";
+	};
+};

@@ -103,12 +103,6 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result)
 	LOG_INF("inference pipeline: ipc_src -> micro_speech at %u Hz", CONSUMER_RATE_HZ);
 	mpipe_player_play(&player);
 
-	/* Only now is there somewhere for an arriving buffer to go. */
-	ret = mpipe_ipc_src_start(&source);
-	if (ret < 0) {
-		goto err;
-	}
-
 	return 0;
 
 err:
