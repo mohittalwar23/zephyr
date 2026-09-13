@@ -120,3 +120,35 @@ bool consumer_is_bound(void)
 {
 	return mpipe_ipc_src_is_bound(&source);
 }
+
+/*
+ * Progress, published where Linux can read it.
+ *
+ * This core has no console on this board -- both cores' consoles are the same
+ * UART and the M7 keeps it -- so anything that goes wrong before a result is
+ * produced is otherwise invisible. The area sits past the 256 bytes the
+ * transport owns, inside the same reserved page.
+ */
+struct consumer_telemetry {
+	uint32_t buffers;
+	uint32_t windows;
+	uint32_t last_category;
+	uint32_t refused;
+	uint32_t bound;
+	uint32_t playing;
+};
+
+#define CONSUMER_TELEMETRY_ADDR (DT_REG_ADDR(DT_NODELABEL(mpipe_ipc_ctrl)) + 0x200U)
+
+void consumer_publish(void)
+{
+	volatile struct consumer_telemetry *t =
+		(volatile struct consumer_telemetry *)CONSUMER_TELEMETRY_ADDR;
+
+	t->buffers = infer.buffers;
+	t->windows = infer.windows;
+	t->last_category = infer.last_category;
+	t->refused = source.refused;
+	t->bound = mpipe_ipc_src_is_bound(&source) ? 1U : 0U;
+	t->playing = 1U;
+}

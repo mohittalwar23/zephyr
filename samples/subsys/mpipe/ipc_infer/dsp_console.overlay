@@ -4,9 +4,15 @@
  *
  * Debug only: hand the shared UART to the DSP. Both cores' consoles are on
  * uart4, so the board overlay normally leaves it to the M7 and the DSP reports
- * through the control link instead. Build the M7 with quiet.overlay when using
- * this, or the two interleave.
+ * through the control link instead.
+ *
+ * The pin mux has to come with it. Normally the M7 owns the port and applies
+ * it; with the M7 built quiet nobody does, and the DSP drives a UART whose pins
+ * are still someone else's -- which looks exactly like a core that booted and
+ * said nothing.
  */
 &uart4 {
+	pinctrl-0 = <&uart4_default>;
+	pinctrl-names = "default";
 	status = "okay";
 };

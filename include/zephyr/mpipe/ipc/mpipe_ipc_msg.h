@@ -34,8 +34,14 @@ extern "C" {
 /** @brief Largest serialized payload carried inside a message. */
 #define MPIPE_IPC_MAX_SERIALIZED_PAYLOAD 64
 
-/** @brief Buffers a sink may have in flight before it must wait. */
-#define MPIPE_IPC_MAX_BUFFERS 16
+/**
+ * @brief Largest buffer identifier the protocol can carry.
+ *
+ * A ceiling on the wire format, not a policy: how many a sink actually keeps
+ * outstanding is CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS, which is bounded by the
+ * pool it draws from.
+ */
+#define MPIPE_IPC_MAX_BUFFERS 64
 
 /** @brief Message types exchanged between an IPC sink and source. */
 enum mpipe_ipc_msg_type {

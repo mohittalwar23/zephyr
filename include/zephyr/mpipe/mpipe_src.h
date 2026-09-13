@@ -59,6 +59,32 @@ enum mpipe_prop_src {
  * The source element is responsible for generating data and pushing it downstream.
  * It contains a source pad for output.
  */
+/**
+ * @brief How a source produces buffers.
+ *
+ * The pipeline has to know this before it can run a source, because the two
+ * models put the producing thread in different places. Pulling is the default
+ * so that a source which says nothing behaves as it always has.
+ */
+enum mpipe_src_drive {
+	/**
+	 * The pipeline pulls. It calls @ref mpipe_buffer_pool::acquire_buffer in
+	 * a loop on its own thread and pushes whatever comes back downstream.
+	 * A source that reads a device on demand -- a file, an I2S receiver --
+	 * works this way.
+	 */
+	MPIPE_SRC_DRIVE_PULL = 0,
+	/**
+	 * The source pushes. Buffers arrive on a schedule the source does not
+	 * control -- a peer core sending them, a network packet, an interrupt --
+	 * and it calls @ref mpipe_push_buffer itself from whatever context they
+	 * arrive in. The pipeline does not poll such a source: there is no
+	 * question it could answer, and asking would turn "nothing has arrived
+	 * yet" into a flow error.
+	 */
+	MPIPE_SRC_DRIVE_PUSH,
+};
+
 struct mpipe_src {
 	/** Base element structure */
 	struct mpipe_element element;
@@ -66,6 +92,11 @@ struct mpipe_src {
 	struct mpipe_pad src_pad;
 	/** Buffer pool for managing output buffers */
 	struct mpipe_buffer_pool *pool;
+	/**
+	 * How this source produces. Left at @ref MPIPE_SRC_DRIVE_PULL unless the
+	 * source sets it, so existing sources are unaffected.
+	 */
+	enum mpipe_src_drive drive;
 	/**
 	 * Number of buffers that the source outputs before sending EOS;
 	 * 0 means will run forever

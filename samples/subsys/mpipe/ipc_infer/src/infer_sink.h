@@ -23,6 +23,9 @@ struct infer_sink {
 	int16_t window[INFER_WINDOW_SAMPLES];
 	uint32_t fill;
 	uint32_t windows;
+	/** Buffers received from the peer, whether or not a window completed. */
+	uint32_t buffers;
+	uint32_t last_category;
 	uint32_t channels;
 	infer_result_cb on_result;
 };

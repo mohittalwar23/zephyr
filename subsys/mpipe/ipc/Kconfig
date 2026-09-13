@@ -22,3 +22,20 @@ config MPIPE_IPC_PLUGIN
 	  two cores: it ends on one in an IPC sink and resumes on the other in
 	  an IPC source. Buffers cross by reference, so the pool the sink draws
 	  from must live in memory the peer can address.
+
+config MPIPE_IPC_PLUGIN_MAX_BUFFERS
+	int "Buffers an IPC sink may have outstanding with its peer"
+	depends on MPIPE_IPC_PLUGIN
+	default 8
+	range 1 64
+	help
+	  How many buffers the sink hands over before it must wait for one to
+	  come back. This is the pipeline's flow control across the link, and it
+	  is a claim on the upstream buffer pool: every outstanding buffer is one
+	  the source feeding this pipeline cannot reuse until the peer is done
+	  with it, a whole cross-core round trip later.
+
+	  The pool must therefore be larger than this by the rest of the
+	  pipeline's in-flight demand. Setting it at or above the pool size
+	  deadlocks: the sink takes every buffer and the source that fills them
+	  can never allocate another.

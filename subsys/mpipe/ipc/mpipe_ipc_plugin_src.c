@@ -22,7 +22,7 @@ LOG_MODULE_REGISTER(mpipe_ipc_plugin_src, CONFIG_MPIPE_LOG_LEVEL);
  * no payload of its own: the samples stay where the peer wrote them and are
  * read in place.
  */
-NET_BUF_POOL_FIXED_DEFINE(ipc_src_wrappers, MPIPE_IPC_MAX_BUFFERS, 0,
+NET_BUF_POOL_FIXED_DEFINE(ipc_src_wrappers, CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS, 0,
 			  sizeof(struct mpipe_buffer_meta), mpipe_buffer_destroy);
 
 /* The source owning the pool, so a release can be sent from the pool hook. */
@@ -236,6 +236,11 @@ int mpipe_ipc_src_init(struct mpipe_ipc_src *src, uint8_t id,
 		return ret;
 	}
 
+	/*
+	 * Buffers arrive when the peer sends them, so this source is not
+	 * something the pipeline can pull from.
+	 */
+	src->base.drive = MPIPE_SRC_DRIVE_PUSH;
 	src->base.pool = &wrapper_pool;
 	pool_owner = src;
 

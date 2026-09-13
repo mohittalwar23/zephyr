@@ -19,4 +19,7 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result);
 /** True once the peer's sink has bound to this source. */
 bool consumer_is_bound(void);
 
+/** Publish progress into shared memory, for a core with no console. */
+void consumer_publish(void);
+
 #endif /* MPIPE_IPC_INFER_CONSUMER_H_ */
