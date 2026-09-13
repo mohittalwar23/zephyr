@@ -186,3 +186,25 @@ uint32_t producer_dropped(void)
 {
 	return forward.dropped;
 }
+
+/*
+ * The mirror of the consumer's telemetry: with no console on either core that
+ * can be relied on, shared memory is how both halves are observed at once.
+ */
+struct producer_telemetry {
+	uint32_t dropped;
+	uint32_t bound;
+	uint32_t have_caps;
+};
+
+#define PRODUCER_TELEMETRY_ADDR (DT_REG_ADDR(DT_NODELABEL(mpipe_ipc_ctrl)) + 0x240U)
+
+void producer_publish(void)
+{
+	volatile struct producer_telemetry *t =
+		(volatile struct producer_telemetry *)PRODUCER_TELEMETRY_ADDR;
+
+	t->dropped = forward.dropped;
+	t->bound = mpipe_ipc_sink_is_bound(&forward) ? 1U : 0U;
+	t->have_caps = forward.have_caps ? 1U : 0U;
+}

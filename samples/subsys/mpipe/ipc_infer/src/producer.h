@@ -19,4 +19,7 @@ int producer_start(const struct device *ipc);
 /** Periods the peer could not keep up with. */
 uint32_t producer_dropped(void);
 
+/** Publish progress into shared memory, for a core with no usable console. */
+void producer_publish(void);
+
 #endif /* MPIPE_IPC_INFER_PRODUCER_H_ */

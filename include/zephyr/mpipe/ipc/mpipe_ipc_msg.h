@@ -27,6 +27,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <zephyr/mpipe/mpipe_structure.h>
+#include <zephyr/toolchain.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -50,10 +53,14 @@ enum mpipe_ipc_msg_type {
 	MPIPE_IPC_MSG_DATA_BUFFER,
 	MPIPE_IPC_MSG_DATA_RELEASE,
 	MPIPE_IPC_MSG_EVENT,
+	MPIPE_IPC_MSG_CAPS,
 	MPIPE_IPC_MSG_QUERY_REQ,
 	MPIPE_IPC_MSG_QUERY_RESP,
 	MPIPE_IPC_MSG_BUS,
 };
+
+BUILD_ASSERT(sizeof(struct mpipe_structure) <= 128,
+	     "a caps structure must stay small enough to carry in one message");
 
 /** @brief One message. Fixed size, so a short read is a protocol error. */
 struct mpipe_ipc_msg {
@@ -86,6 +93,19 @@ struct mpipe_ipc_msg {
 			uint8_t event_type;
 			uint8_t payload[MPIPE_IPC_MAX_SERIALIZED_PAYLOAD];
 		} event;
+
+		/**
+		 * The format the sink's half of the pipeline settled on.
+		 *
+		 * Sent rather than configured separately on both cores. A
+		 * format the two halves are each told is a format they can
+		 * silently disagree about: every element accepts, and the audio
+		 * is simply wrong.
+		 *
+		 * A structure is flat and holds no pointers, so it travels as
+		 * itself.
+		 */
+		struct mpipe_structure caps;
 
 		struct {
 			uint8_t query_type;

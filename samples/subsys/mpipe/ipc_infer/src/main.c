@@ -379,7 +379,9 @@ int main(void)
 				/* The pipeline runs itself; publish progress. */
 				consumer_publish();
 #else
-#if !LIVE_AUDIO
+#if LIVE_AUDIO
+				producer_publish();
+#else
 				produce();
 #endif
 
