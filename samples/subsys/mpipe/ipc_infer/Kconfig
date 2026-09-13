@@ -3,16 +3,6 @@
 
 source "Kconfig.zephyr"
 
-config SAMPLE_IPC_INFER_LIVE_CAPTURE
-	bool "Capture live audio through a pipeline"
-	help
-	  Build the host side as an mpipe pipeline that captures audio and tees
-	  it two ways: to the codec so it can be heard, and to the peer core for
-	  inference. Without this the host sends baked-in clips, which is what
-	  lets the sample check the answers it gets back.
-
-if SAMPLE_IPC_INFER_LIVE_CAPTURE
-
 choice SAMPLE_IPC_INFER_SOURCE
 	prompt "Where the live audio comes from"
 	default SAMPLE_IPC_INFER_SOURCE_I2S
@@ -25,12 +15,9 @@ config SAMPLE_IPC_INFER_SOURCE_DMIC
 
 endchoice
 
-endif
-
 config SAMPLE_IPC_INFER_RATE
 	int "Capture sample rate (Hz)"
 	default 16000
-	depends on SAMPLE_IPC_INFER_LIVE_CAPTURE
 	help
 	  Pinned rather than negotiated. micro_speech is trained at 16 kHz, and
 	  the peer sized its ring periods to match; a negotiation that landed
@@ -40,7 +27,6 @@ config SAMPLE_IPC_INFER_GAIN_PERCENT
 	int "Gain applied on the audible branch (percent)"
 	default 300
 	range 0 1000
-	depends on SAMPLE_IPC_INFER_LIVE_CAPTURE
 	help
 	  Applied only to the branch that reaches the codec, so monitoring can
 	  be made loud enough to hear without changing what the model receives.

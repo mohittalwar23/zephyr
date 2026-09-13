@@ -21,7 +21,6 @@
 #include <zephyr/sys/byteorder.h>
 
 #include <zephyr/mpipe/ipc/mpipe_ipc_protocol.h>
-#include <zephyr/mpipe/ipc/mpipe_ipc_ring.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 
 #ifdef CONFIG_SOC_MIMX8ML8_ADSP
@@ -38,7 +37,6 @@ void model_runner_init(void);
 int micro_speech_process_audio(const int16_t *audio_data, size_t audio_data_size);
 const char *micro_speech_category_label(int category);
 
-#define LIVE_AUDIO 0
 
 static void signal_linux_ready(void)
 {
@@ -49,18 +47,7 @@ static void signal_linux_ready(void)
 #else
 static inline void signal_linux_ready(void) { }
 
-/*
- * Either capture live through a pipeline, or send the baked clips. The clip
- * path is what makes the sample self-checking -- it knows the right answer --
- * so it stays the default; live capture is what makes it a demo.
- */
-#define LIVE_AUDIO IS_ENABLED(CONFIG_SAMPLE_IPC_INFER_LIVE_CAPTURE)
-
-#if LIVE_AUDIO
 #include "producer.h"
-#else
-#include "test_clips.h"
-#endif
 #endif
 
 #ifndef CONFIG_SOC_MIMX8ML8_ADSP
@@ -75,34 +62,13 @@ static const char *category_label(uint32_t category)
 
 #define IPC_NODE    DT_NODELABEL(ipc0)
 #define SHARED_NODE DT_NODELABEL(mpipe_ipc_ctrl)
-#define RING_NODE   DT_NODELABEL(mpipe_ipc_ring)
 
 #define IS_HOST (DT_ENUM_IDX_OR(IPC_NODE, role, 0) == 0)
 
 static volatile struct mpipe_ipc_shared *const shared =
 	(volatile struct mpipe_ipc_shared *)DT_REG_ADDR(SHARED_NODE);
-static volatile struct mpipe_ipc_ring_shared *const ring_shared =
-	(volatile struct mpipe_ipc_ring_shared *)DT_REG_ADDR(RING_NODE);
-
-/*
- * micro_speech wants 16 kHz mono, and it decides on one second at a time. A
- * 10 ms period keeps the ring's pacing the same as the audio format's, so one
- * decision is exactly 100 periods.
- */
-#define SAMPLE_RATE_HZ     16000U
-#define PERIOD_SAMPLES     160U
-#define RING_PERIOD_BYTES  (PERIOD_SAMPLES * sizeof(int16_t))
-#define RING_PERIOD_COUNT  64U
-#define PERIODS_PER_WINDOW (SAMPLE_RATE_HZ / PERIOD_SAMPLES)
-#define WINDOW_SAMPLES     (PERIODS_PER_WINDOW * PERIOD_SAMPLES)
-
-BUILD_ASSERT(DT_REG_SIZE(RING_NODE) >=
-		     MPIPE_IPC_RING_DATA_OFFSET +
-			     (RING_PERIOD_BYTES * RING_PERIOD_COUNT),
-	     "the reserved ring region is too small for this geometry");
 
 static struct mpipe_ipc_transport transport;
-static struct mpipe_ipc_ring ring;
 static struct ipc_ept endpoint;
 
 static K_SEM_DEFINE(endpoint_bound, 0, 1);
@@ -114,21 +80,6 @@ static K_SEM_DEFINE(endpoint_bound, 0, 1);
 
 static atomic_t reported_window = ATOMIC_INIT(-1);
 static atomic_t reported_category;
-
-static uint32_t ring_load(const volatile uint32_t *address)
-{
-	return *address;
-}
-
-static void ring_store(volatile uint32_t *address, uint32_t value)
-{
-	*address = value;
-}
-
-static const struct mpipe_ipc_ring_ops ring_ops = {
-	.load = ring_load,
-	.store = ring_store,
-};
 
 static int send_result(uint32_t window, uint32_t category)
 {
@@ -209,63 +160,6 @@ static void on_inference_result(uint32_t window, uint32_t category)
 	}
 }
 
-#elif !LIVE_AUDIO
-
-/*
- * Send a different word each window, and remember which. Streaming one clip on
- * repeat would prove only that the remote keeps answering -- not that it is
- * listening: a stuck classifier scores the same as a working one. Cycling the
- * three clips makes a wrong answer visible.
- */
-static const struct {
-	const int16_t *samples;
-	const char *name;
-	uint32_t category;
-} clips[] = {
-	{ yes_clip, "yes", 2U },
-	{ no_clip,  "no",  3U },
-};
-
-/*
- * Two words, not three: the M7's rodata lives in ITCM, which cannot hold a
- * third second of 16-bit PCM. Distinguishing "yes" from "no" is the part that
- * matters anyway -- both are speech, so a classifier that has stopped listening
- * cannot score on it by accident.
- */
-
-static uint32_t periods_sent;
-
-/* Which clip window N carries, so the answer can be checked against it. */
-static uint32_t clip_for_window(uint32_t window)
-{
-	return window % ARRAY_SIZE(clips);
-}
-
-static void produce(void)
-{
-	for (uint32_t i = 0; i < 8U; i++) {
-		int16_t *slot = mpipe_ipc_ring_claim_write(&ring);
-		uint32_t window;
-		uint32_t offset;
-		const int16_t *clip;
-
-		if (slot == NULL) {
-			mpipe_ipc_ring_record_overrun(&ring);
-			return;
-		}
-
-		/* Each window is exactly one clip, start to end. */
-		window = periods_sent / PERIODS_PER_WINDOW;
-		offset = (periods_sent % PERIODS_PER_WINDOW) * PERIOD_SAMPLES;
-		clip = clips[clip_for_window(window)].samples;
-
-		memcpy(slot, &clip[offset], RING_PERIOD_BYTES);
-		periods_sent++;
-
-		(void)mpipe_ipc_ring_commit_write(&ring);
-	}
-}
-
 #endif /* CONFIG_SOC_MIMX8ML8_ADSP */
 
 int main(void)
@@ -274,13 +168,6 @@ int main(void)
 	unsigned int generation = 0;
 	bool streaming;
 	bool bound;
-#if !defined(CONFIG_SOC_MIMX8ML8_ADSP) && LIVE_AUDIO
-	bool capturing = false;
-#endif
-#if !defined(CONFIG_SOC_MIMX8ML8_ADSP) && !LIVE_AUDIO
-	uint32_t correct = 0;
-	uint32_t wrong = 0;
-#endif
 	int err;
 
 	signal_linux_ready();
@@ -346,31 +233,17 @@ int main(void)
 
 			if (err == 0 && transport.session.connected && !streaming) {
 #ifdef CONFIG_SOC_MIMX8ML8_ADSP
-				int ring_err = consumer_start(ipc,
-							      on_inference_result);
+				int start_err = consumer_start(ipc, on_inference_result);
 #else
-				int ring_err = mpipe_ipc_ring_init(
-					&ring, ring_shared, &ring_ops, IS_HOST,
-					RING_PERIOD_BYTES, RING_PERIOD_COUNT,
-					DT_REG_SIZE(RING_NODE));
+				int start_err = producer_start(ipc);
 #endif
 
-				if (ring_err == 0) {
+				if (start_err == 0) {
 					streaming = true;
-					LOG_INF("gen %u: ring up, %u x %u bytes",
-						generation, RING_PERIOD_COUNT,
-						(unsigned int)RING_PERIOD_BYTES);
-#if LIVE_AUDIO
-					if (!capturing) {
-						if (producer_start(ipc) != 0) {
-							return -EIO;
-						}
-						capturing = true;
-					}
-#endif
-				} else if (ring_err != -EAGAIN) {
-					LOG_ERR("gen %u: ring refused: %d",
-						generation, ring_err);
+				} else {
+					LOG_ERR("gen %u: cannot start: %d", generation,
+						start_err);
+					return start_err;
 				}
 			}
 
@@ -379,11 +252,7 @@ int main(void)
 				/* The pipeline runs itself; publish progress. */
 				consumer_publish();
 #else
-#if LIVE_AUDIO
 				producer_publish();
-#else
-				produce();
-#endif
 
 				if (atomic_get(&reported_window) >= 0) {
 					uint32_t w =
@@ -392,7 +261,6 @@ int main(void)
 						(uint32_t)atomic_get(&reported_category);
 
 					atomic_set(&reported_window, -1);
-#if LIVE_AUDIO
 					/*
 					 * No expected answer with live audio.
 					 * The audible branch is the microphone
@@ -400,27 +268,6 @@ int main(void)
 					 */
 					LOG_INF("[%u] heard \"%s\"   (%u buffers dropped)",
 						w, category_label(c), producer_dropped());
-#else
-					{
-						uint32_t sent = clip_for_window(w);
-
-						if (c == clips[sent].category) {
-							correct++;
-						} else {
-							wrong++;
-							LOG_ERR("window %u: sent '%s', "
-								"remote heard category %u",
-								w, clips[sent].name, c);
-						}
-
-						if ((correct + wrong) % 15U == 0U) {
-							LOG_INF("gen %u: %u windows "
-								"correct, %u wrong",
-								generation, correct,
-								wrong);
-						}
-					}
-#endif
 				}
 #endif
 			}

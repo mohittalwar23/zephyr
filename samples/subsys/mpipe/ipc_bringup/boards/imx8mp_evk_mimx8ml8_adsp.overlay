@@ -21,7 +21,7 @@
 	 *
 	 *   0xa0000000   4 KiB   bring-up control block
 	 *   0xa0010000  64 KiB   IPC Service shared memory (control messages)
-	 *   0xa0020000 128 KiB   PCM ring (audio, off the message path)
+	 *   0xa0020000 128 KiB   audio buffer pool, readable by both cores
 	 *
 	 * The control block sits outside the region IPC Service owns. The
 	 * static-vrings host clears its whole vdev status area on open, which
@@ -39,10 +39,10 @@
 		zephyr,memory-region = "MPIPE_IPC_SHM";
 	};
 
-	mpipe_ipc_ring: memory@a0020000 {
+	mpipe_shared_pool: memory@a0020000 {
 		compatible = "zephyr,memory-region", "mmio-sram";
 		reg = <0xa0020000 DT_SIZE_K(128)>;
-		zephyr,memory-region = "MPIPE_IPC_RING";
+		zephyr,memory-region = "MPIPE_SHARED_POOL";
 	};
 
 	ipc0: ipc0 {
