@@ -14,6 +14,7 @@
  * copied across.
  */
 
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -40,6 +41,11 @@ static struct mpipe pipe;
 static struct mpipe_ipc_src source;
 static struct infer_sink infer;
 static struct mpipe_player player;
+static const struct mpipe_ipc_region shared_payload = {
+	.base = (void *)DT_REG_ADDR(DT_NODELABEL(mpipe_shared_pool)),
+	.size = DT_REG_SIZE(DT_NODELABEL(mpipe_shared_pool)),
+	.align = 4U,
+};
 
 int consumer_start(const struct device *ipc, infer_result_cb on_result)
 {
@@ -52,7 +58,7 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result)
 	}
 
 	/* Same endpoint name as the peer's sink; that pairing is the link. */
-	ret = mpipe_ipc_src_init(&source, IPC_SRC_ID, ipc, "mpipe.audio");
+	ret = mpipe_ipc_src_init(&source, IPC_SRC_ID, ipc, "mpipe.audio", &shared_payload);
 	if (ret < 0) {
 		goto err;
 	}

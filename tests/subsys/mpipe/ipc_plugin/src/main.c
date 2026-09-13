@@ -30,6 +30,12 @@ struct fake_ipc_context {
 static struct fake_ipc_context fake;
 static unsigned int chain_received;
 static uint8_t next_element_id = 1U;
+static uint32_t shared_payload[4];
+static const struct mpipe_ipc_region test_region = {
+	.base = shared_payload,
+	.size = sizeof(shared_payload),
+	.align = sizeof(uint32_t),
+};
 
 static int fake_register_endpoint(const struct device *instance, void **token,
 				  const struct ipc_ept_cfg *cfg)
@@ -109,6 +115,7 @@ static int consume_chain(struct mpipe_pad *pad, struct net_buf *in_buf,
 static void configure_source_pipeline(struct mpipe *pipeline, struct mpipe_ipc_src *source,
 				      struct mpipe_sink *sink)
 {
+	const struct device *ipc = DEVICE_DT_GET(FAKE_IPC_NODE);
 	struct mpipe_structure caps;
 	uint8_t first_id = next_element_id;
 	int ret;
@@ -119,7 +126,7 @@ static void configure_source_pipeline(struct mpipe *pipeline, struct mpipe_ipc_s
 	memset(sink, 0, sizeof(*sink));
 
 	zassert_ok(mpipe_pipeline_init(pipeline, first_id));
-	ret = mpipe_ipc_src_init(source, first_id + 1U, DEVICE_DT_GET(FAKE_IPC_NODE), "audio");
+	ret = mpipe_ipc_src_init(source, first_id + 1U, ipc, "audio", &test_region);
 	zassert_ok(ret);
 	zassert_ok(mpipe_sink_init(sink, first_id + 2U));
 	sink->sink_pad.chain_fn = consume_chain;
@@ -150,15 +157,15 @@ ZTEST_SUITE(mpipe_ipc_plugin, NULL, NULL, before, NULL, NULL);
 
 ZTEST(mpipe_ipc_plugin, test_data_follows_push_source_lifecycle)
 {
-	static uint32_t payload;
 	struct mpipe pipeline;
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
-			.phys_addr = (uint32_t)(uintptr_t)&payload,
-			.size = sizeof(payload),
+			.offset = 0U,
+			.size = sizeof(uint32_t),
 			.buffer_id = 0U,
 		},
 	};
@@ -181,15 +188,15 @@ ZTEST(mpipe_ipc_plugin, test_data_follows_push_source_lifecycle)
 
 ZTEST(mpipe_ipc_plugin, test_failed_push_releases_wrapper_once)
 {
-	static uint32_t payload;
 	struct mpipe pipeline;
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
-			.phys_addr = (uint32_t)(uintptr_t)&payload,
-			.size = sizeof(payload),
+			.offset = 0U,
+			.size = sizeof(uint32_t),
 			.buffer_id = 7U,
 		},
 	};
@@ -205,18 +212,74 @@ ZTEST(mpipe_ipc_plugin, test_failed_push_releases_wrapper_once)
 	zassert_equal(fake.sent[0].release.buffer_id, 7U);
 }
 
+ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
+{
+	struct mpipe pipeline;
+	struct mpipe_ipc_src source;
+	struct mpipe_sink sink;
+	static const struct {
+		uint32_t offset;
+		uint32_t size;
+	} invalid[] = {
+		{ .offset = 0U, .size = 0U },
+		{ .offset = 1U, .size = sizeof(uint32_t) },
+		{ .offset = 12U, .size = 8U },
+		{ .offset = UINT32_MAX - 1U, .size = 8U },
+	};
+	struct mpipe_ipc_msg wrong_version = {
+		.version = MPIPE_IPC_PLUGIN_VERSION + 1U,
+		.type = MPIPE_IPC_MSG_DATA_BUFFER,
+		.data = {
+			.offset = 0U,
+			.size = sizeof(uint32_t),
+			.buffer_id = 10U,
+		},
+	};
+
+	configure_source_pipeline(&pipeline, &source, &sink);
+	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
+		      MPIPE_STATE_CHANGE_SUCCESS);
+	for (unsigned int i = 0; i < ARRAY_SIZE(invalid); i++) {
+		struct mpipe_ipc_msg msg = {
+			.version = MPIPE_IPC_PLUGIN_VERSION,
+			.type = MPIPE_IPC_MSG_DATA_BUFFER,
+			.data = {
+				.offset = invalid[i].offset,
+				.size = invalid[i].size,
+				.buffer_id = 5U + i,
+			},
+		};
+
+		fake_receive(&msg);
+	}
+	fake_receive(&wrong_version);
+
+	zassert_equal(chain_received, 0U, "out-of-range peer address reached downstream");
+	zassert_equal(fake.send_count, ARRAY_SIZE(invalid),
+		      "rejected descriptors did not return their slots");
+	for (unsigned int i = 0; i < ARRAY_SIZE(invalid); i++) {
+		zassert_equal(fake.sent[i].release.buffer_id, 5U + i);
+	}
+	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
+		      MPIPE_STATE_CHANGE_SUCCESS);
+}
+
 ZTEST(mpipe_ipc_plugin, test_short_release_for_id_63_is_retried)
 {
 	const struct device *ipc = DEVICE_DT_GET(FAKE_IPC_NODE);
 	struct mpipe_ipc_src source;
 	struct mpipe_ipc_msg data = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .buffer_id = 63U },
 	};
-	struct mpipe_ipc_msg tick = { .type = UINT32_MAX };
+	struct mpipe_ipc_msg tick = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
+		.type = UINT32_MAX,
+	};
 	int ret;
 
-	ret = mpipe_ipc_src_init(&source, next_element_id++, ipc, "audio");
+	ret = mpipe_ipc_src_init(&source, next_element_id++, ipc, "audio", &test_region);
 	zassert_ok(ret);
 	fake_bound();
 	fake.send_result = sizeof(struct mpipe_ipc_msg) - 1;
@@ -238,19 +301,26 @@ ZTEST(mpipe_ipc_plugin, test_short_data_send_is_an_error)
 	struct mpipe_ipc_sink sink;
 	struct net_buf *buf;
 	struct net_buf *out_buf;
+	struct mpipe_ipc_region region;
 	struct mpipe_ipc_msg release = {
+		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U },
 	};
 	int ret;
 
-	ret = mpipe_ipc_sink_init(&sink, next_element_id++, DEVICE_DT_GET(FAKE_IPC_NODE),
-				  "audio");
-	zassert_ok(ret);
-	fake_bound();
 	buf = net_buf_alloc(&test_buffers, K_NO_WAIT);
 	zassert_not_null(buf);
 	net_buf_add_u8(buf, 0x5a);
+	region = (struct mpipe_ipc_region){
+		.base = buf->data,
+		.size = 1U,
+		.align = 1U,
+	};
+	ret = mpipe_ipc_sink_init(&sink, next_element_id++, DEVICE_DT_GET(FAKE_IPC_NODE),
+				  "audio", &region);
+	zassert_ok(ret);
+	fake_bound();
 	meta = mpipe_buffer_get_meta(buf);
 	meta->bytes_used = 1U;
 	fake.send_result = sizeof(struct mpipe_ipc_msg) - 1;

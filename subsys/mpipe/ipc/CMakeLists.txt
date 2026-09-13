@@ -17,7 +17,6 @@ if(CONFIG_MPIPE_IPC)
   # IPC plugin (Zephyr PR #114088), adapted to the mpipe element model.
   zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_plugin_sink.c)
   zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_plugin_src.c)
-  zephyr_library_sources_ifdef(CONFIG_MPIPE_IPC_PLUGIN mpipe_ipc_translation.c)
 
   # The only piece that needs a real backend.
   zephyr_library_sources_ifdef(CONFIG_IPC_SERVICE mpipe_ipc_backend.c)
