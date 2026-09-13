@@ -21,10 +21,12 @@
  * A pipeline is the outermost @ref mpipe_bin. Being the outermost is what gives
  * it three jobs no inner bin has.
  *
- * It **owns the thread**. One thread sits at the head of the graph acquiring
- * buffers from the source and pushing each one downstream through the chain
- * functions until a sink consumes it. An element that needs its own thread -
- * to decouple two halves of a graph - gets one by putting a queue between them.
+ * It **owns the pull-source thread**. For a pull-driven source, one thread sits
+ * at the head of the graph acquiring buffers and pushing each one downstream
+ * through the chain functions until a sink consumes it. A push-driven source
+ * already runs in its callback context and gets no pipeline thread. An element
+ * that needs its own thread - to decouple two halves of a graph - gets one by
+ * putting a queue between them.
  *
  * It **orders the teardown**. Going down from PAUSED to READY, the pipeline
  * raises a flushing gate on every pad before the children dismantle their pools,

@@ -138,6 +138,21 @@ static uint32_t mpipe_pipeline_count_sinks(struct mpipe_bin *bin)
 	return count;
 }
 
+static struct mpipe_src *mpipe_pipeline_find_src(struct mpipe_bin *bin)
+{
+	struct mpipe_object *obj;
+
+	SYS_DLIST_FOR_EACH_CONTAINER(&bin->children, obj, node) {
+		struct mpipe_element *element = (struct mpipe_element *)obj;
+
+		if (sys_dlist_is_empty(&element->sink_pads)) {
+			return (struct mpipe_src *)element;
+		}
+	}
+
+	return NULL;
+}
+
 static void mpipe_pipeline_set_flushing(struct mpipe_bin *bin, bool flush)
 {
 	struct mpipe_object *obj;
@@ -271,23 +286,14 @@ static void mpipe_pipeline_thread_func(void *p1, void *p2, void *p3)
 {
 	struct mpipe_bin *bin = p1;
 	struct mpipe *pipeline = p1;
-	struct mpipe_object *obj;
-	struct mpipe_element *element;
-	struct mpipe_src *src = NULL;
+	struct mpipe_src *src;
 	struct net_buf *buffer = NULL;
 	uint32_t count = 0;
 
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-	/* Find the 1st source element */
-	SYS_DLIST_FOR_EACH_CONTAINER(&bin->children, obj, node) {
-		element = (struct mpipe_element *)obj;
-		if (sys_dlist_is_empty(&element->sink_pads)) {
-			src = (struct mpipe_src *)element;
-			break;
-		}
-	}
+	src = mpipe_pipeline_find_src(bin);
 
 	if (src == NULL) {
 		return;
@@ -301,18 +307,6 @@ static void mpipe_pipeline_thread_func(void *p1, void *p2, void *p3)
 
 	while (mpipe_thread_wait(&pipeline->thread) == 0) {
 		int acq_ret = 0;
-
-		if (src->drive == MPIPE_SRC_DRIVE_PUSH) {
-			/*
-			 * Nothing to pull. This source delivers buffers from
-			 * whatever context they arrive in, so the pipeline's
-			 * thread has no work -- but it still parks rather than
-			 * exits, so pause, resume and teardown continue to have
-			 * a thread to act on.
-			 */
-			mpipe_thread_pause(&pipeline->thread);
-			continue;
-		}
 
 		bool reached_limit = (src->num_buffers != 0 && count == src->num_buffers);
 
@@ -362,6 +356,8 @@ static enum mpipe_state_change_return
 mpipe_pipeline_change_state(struct mpipe_element *element, enum mpipe_state_change transition)
 {
 	struct mpipe *pipeline = (struct mpipe *)element;
+	struct mpipe_src *src = mpipe_pipeline_find_src(&pipeline->bin);
+	bool pull_driven = src == NULL || src->drive == MPIPE_SRC_DRIVE_PULL;
 	enum mpipe_state_change_return ret;
 
 	/*
@@ -371,24 +367,26 @@ mpipe_pipeline_change_state(struct mpipe_element *element, enum mpipe_state_chan
 	switch (transition) {
 	case MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED:
 		/*
-		 * Only pause the source thread here (no join). Buffers already
-		 * queued downstream are preserved so a subsequent resume to
-		 * PLAYING continues without data loss. The source is guaranteed
-		 * to be paused before this returns, so it stops producing.
+		 * Pause a pull source here (no join). A push source closes its
+		 * callback admission gate during the child transition below.
+		 * Buffers already queued downstream are preserved so a subsequent
+		 * resume to PLAYING continues without data loss.
 		 *
 		 * Do not set the flushing flag here: this is a pause, not a teardown, so in-flight
 		 * and queued buffers must be kept intact for a subsequent resume.
 		 */
-		mpipe_thread_pause(&pipeline->thread);
+		if (pull_driven) {
+			mpipe_thread_pause(&pipeline->thread);
+		}
 		break;
 	case MPIPE_STATE_CHANGE_PAUSED_TO_READY:
 		/*
 		 * Teardown: raise the per-pad flushing gate BEFORE the children dismantle their
-		 * caps and buffer pools. The source thread was paused on PLAYING -> PAUSED but may
-		 * still be parked mid-chain holding a buffer. Once that buffer resumes (e.g.
-		 * threads woke up to extit), the flushing gate in mpipe_push_buffer() drops
-		 * it instead of pushing it through an element whose caps have been reset or whose
-		 * pool has been freed.
+		 * caps and buffer pools. A pull source thread was paused and a push
+		 * source's callback gate was drained on PLAYING -> PAUSED. A pull
+		 * thread may still be parked mid-chain holding a buffer; once it
+		 * resumes to exit, the flushing gate in mpipe_push_buffer() drops it
+		 * instead of pushing it through torn-down elements.
 		 */
 		mpipe_pipeline_set_flushing(&pipeline->bin, true);
 		break;
@@ -404,15 +402,16 @@ mpipe_pipeline_change_state(struct mpipe_element *element, enum mpipe_state_chan
 	}
 
 	/*
-	 * DOWN (PAUSED -> READY): join the pipeline thread AFTER the children have
-	 * transitioned. The source is already paused (from PLAYING -> PAUSED), so it
-	 * is not producing new buffers. Draining the children first (each queue drains
-	 * and unrefs its buffers on PAUSED -> READY) frees msgq slots and releases the
-	 * pipeline thread if it was blocked in a full queue's k_msgq_put(K_FOREVER).
-	 * Only then can the join complete, avoiding a teardown deadlock.
+	 * DOWN (PAUSED -> READY): join a pull-source thread AFTER the children
+	 * transitioned. The source is already paused, so it is not producing new
+	 * buffers. Draining the children first (each queue drains and unrefs its
+	 * buffers) frees msgq slots and releases a thread blocked in a full queue's
+	 * k_msgq_put(K_FOREVER). Only then can the join complete without deadlock.
 	 */
 	if (transition == MPIPE_STATE_CHANGE_PAUSED_TO_READY) {
-		mpipe_thread_join(&pipeline->thread, K_FOREVER);
+		if (pull_driven) {
+			mpipe_thread_join(&pipeline->thread, K_FOREVER);
+		}
 		/* Reset EOS counter for a clean re-run. */
 		atomic_set(&pipeline->eos_count, 0);
 	}
@@ -427,12 +426,14 @@ mpipe_pipeline_change_state(struct mpipe_element *element, enum mpipe_state_chan
 		mpipe_pipeline_set_flushing(&pipeline->bin, false);
 
 		/*
-		 * Start now; wait() gates it on the PAUSED state until resumed.
+		 * Start a pull source now; wait() gates it on PAUSED until resumed.
+		 * A push source already has a callback context and needs no thread.
 		 * Creating it delayed (K_FOREVER) + k_wakeup() to start races with
 		 * the start-delay timeout and can leave the source unstarted after
 		 * a replay.
 		 */
-		if (mpipe_thread_create(&pipeline->thread, mpipe_pipeline_thread_func, element,
+		if (pull_driven &&
+		    mpipe_thread_create(&pipeline->thread, mpipe_pipeline_thread_func, element,
 					NULL, NULL, pipeline->thread.priority, K_NO_WAIT) == NULL) {
 			LOG_ERR("Failed to create a new pipeline thread");
 			return MPIPE_STATE_CHANGE_FAILURE;
@@ -447,7 +448,9 @@ mpipe_pipeline_change_state(struct mpipe_element *element, enum mpipe_state_chan
 		break;
 
 	case MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING:
-		mpipe_thread_resume(&pipeline->thread);
+		if (pull_driven) {
+			mpipe_thread_resume(&pipeline->thread);
+		}
 		break;
 	default:
 		break;
