@@ -293,6 +293,9 @@ int mpipe_src_init(struct mpipe_src *src, uint8_t id)
 	self->object.get_property = mpipe_src_get_property;
 	self->change_state = mpipe_src_change_state;
 
+	src->pool = NULL;
+	src->drive = MPIPE_SRC_DRIVE_PULL;
+	src->num_buffers = 0U;
 	src->set_caps = mpipe_src_set_caps;
 	src->src_pad.query_fn = mpipe_src_query;
 	src->decide_buffer_pool = NULL;
