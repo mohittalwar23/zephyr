@@ -14,10 +14,9 @@
 	chosen {
 		/*
 		 * Buffers cross to the HiFi4 by address, so the pool must live
-		 * where the HiFi4 can read it. This is the 128 KiB the ring
-		 * used; in plugin mode nothing else wants it.
+		 * where the HiFi4 can read it.
 		 */
-		zephyr,mpipe-aud-pool = &mpipe_ipc_ring;
+		zephyr,mpipe-aud-pool = &mpipe_shared_pool;
 	};
 
 	aliases {

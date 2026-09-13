@@ -12,7 +12,6 @@ if(CONFIG_MPIPE_IPC)
   zephyr_library_sources(mpipe_ipc_protocol.c)
   zephyr_library_sources(mpipe_ipc_session.c)
   zephyr_library_sources(mpipe_ipc_transport.c)
-  zephyr_library_sources(mpipe_ipc_ring.c)
 
   # Pipeline elements that carry a pipeline between two cores. From the libMP
   # IPC plugin (Zephyr PR #114088), adapted to the mpipe element model.
