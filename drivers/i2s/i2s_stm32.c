@@ -581,11 +581,20 @@ static void dma_rx_callback(const struct device *dma_dev, void *arg,
 			    uint32_t channel, int status)
 {
 	const struct device *dev = get_dev_from_rx_dma_channel(channel);
-	const struct i2s_stm32_cfg *cfg = dev->config;
-	struct i2s_stm32_data *const dev_data = dev->data;
-	struct stream *stream = &dev_data->rx;
+	const struct i2s_stm32_cfg *cfg;
+	struct i2s_stm32_data *dev_data;
+	struct stream *stream;
 	void *mblk_tmp;
 	int ret;
+
+	/* The stream was disabled while this transfer was still in flight. */
+	if (dev == NULL) {
+		return;
+	}
+
+	cfg = dev->config;
+	dev_data = dev->data;
+	stream = &dev_data->rx;
 
 	if (status < 0) {
 		ret = -EIO;
@@ -653,11 +662,20 @@ static void dma_tx_callback(const struct device *dma_dev, void *arg,
 			    uint32_t channel, int status)
 {
 	const struct device *dev = get_dev_from_tx_dma_channel(channel);
-	const struct i2s_stm32_cfg *cfg = dev->config;
-	struct i2s_stm32_data *const dev_data = dev->data;
-	struct stream *stream = &dev_data->tx;
+	const struct i2s_stm32_cfg *cfg;
+	struct i2s_stm32_data *dev_data;
+	struct stream *stream;
 	size_t mem_block_size = 0;
 	int ret;
+
+	/* The stream was disabled while this transfer was still in flight. */
+	if (dev == NULL) {
+		return;
+	}
+
+	cfg = dev->config;
+	dev_data = dev->data;
+	stream = &dev_data->tx;
 
 	if (status < 0) {
 		ret = -EIO;
