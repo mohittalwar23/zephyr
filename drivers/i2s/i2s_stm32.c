@@ -7,6 +7,7 @@
 #define DT_DRV_COMPAT st_stm32_i2s
 
 #include <string.h>
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/dma/dma_stm32.h>
@@ -468,8 +469,45 @@ static int i2s_stm32_write(const struct device *dev, void *mem_block, size_t siz
 	return ret;
 }
 
+static int i2s_stm32_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
+{
+	struct i2s_stm32_data *const dev_data = dev->data;
+	uint32_t buffers;
+
+	switch (dir) {
+	case I2S_DIR_TX:
+		/* The callback frees the sent block before fetching the next. */
+		buffers = dev_data->tx.msgq->max_msgs + 1U;
+		break;
+	case I2S_DIR_RX:
+		/* The next block is allocated before the finished one is queued. */
+		buffers = dev_data->rx.msgq->max_msgs + 2U;
+		break;
+	case I2S_DIR_BOTH:
+		return -ENOSYS;
+	default:
+		return -EINVAL;
+	}
+
+	memset(caps, 0, sizeof(*caps));
+	/* i2s_stm32_configure() forces two channels for the I2S format. */
+	caps->min_total_channels = 2U;
+	caps->max_total_channels = 2U;
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_22050 | AUDIO_SAMPLE_RATE_32000 |
+				       AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24 | AUDIO_BIT_WIDTH_32;
+	caps->min_num_buffers = buffers;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(i2s, i2s_stm32_driver_api) = {
 	.configure = i2s_stm32_configure,
+	.get_caps = i2s_stm32_get_caps,
 	.config_get = i2s_stm32_config_get,
 	.read = i2s_stm32_read,
 	.write = i2s_stm32_write,
