@@ -29,6 +29,7 @@ tests:
       - mimxrt595_evk/mimxrt595s/cm33
       - mcx_n5xx_evk/mcxn547/cpu0
       - native_sim/native/64
+      - nucleo_f401re
     extra_configs:
       - CONFIG_SAMPLE_AUDIO_SOURCE_I2S=y
     harness: console

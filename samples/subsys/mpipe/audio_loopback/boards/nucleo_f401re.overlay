@@ -1,0 +1,59 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * An I2S microphone on I2S2 to an I2S amplifier with no control interface on
+ * I2S3. See the README for the wiring.
+ */
+
+/ {
+	aliases {
+		i2s-codec-rx = &i2s2;
+		i2s-codec-tx = &i2s3;
+	};
+};
+
+/*
+ * 1 MHz in, 256 MHz VCO, 51.2 MHz out. With a 32-bit channel length the bit
+ * clock is 64 x fs, so this divides exactly by 50 for 16 kHz, by 25 for 32 kHz
+ * and by 100 for 8 kHz. Both instances divide this one clock by the same
+ * integer, so capture and playback cannot drift apart.
+ */
+&plli2s {
+	div-m = <8>;
+	mul-n = <256>;
+	div-r = <5>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&i2s2 {
+	pinctrl-0 = <&i2s2_ws_pb12 &i2s2_ck_pb13 &i2s2_sd_pb15>;
+	pinctrl-names = "default";
+	/* The microphone needs a 32-bit slot but supplies its data at the top. */
+	channel-length-32;
+	clocks = <&rcc STM32_CLOCK(APB1, 14)>,
+		 <&rcc STM32_SRC_PLLI2S_R I2S_SEL(0)>;
+	status = "okay";
+};
+
+&i2s3 {
+	pinctrl-0 = <&i2s3_ws_pa4 &i2s3_ck_pc10 &i2s3_sd_pc12>;
+	pinctrl-names = "default";
+	clocks = <&rcc STM32_CLOCK(APB1, 15)>,
+		 <&rcc STM32_SRC_PLLI2S_R I2S_SEL(0)>;
+	status = "okay";
+};
+
+/* PB12-PB15 are the spi2 pins the board enables by default. */
+&spi2 {
+	status = "disabled";
+};
+
+/* Both instances stream through DMA1, which the board leaves disabled. */
+&dma1 {
+	status = "okay";
+};
