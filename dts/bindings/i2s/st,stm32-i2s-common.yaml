@@ -33,3 +33,11 @@ properties:
   ioswp:
     type: boolean
     description: Swap I2S data input and output pins
+
+  channel-length-32:
+    type: boolean
+    description: |
+      Pad each channel to 32 bits while keeping 16-bit data, so a frame
+      carries 64 bit clocks. Devices such as I2S MEMS microphones require a
+      32-bit slot but supply fewer data bits. Has no effect unless the
+      configured word size is 16.

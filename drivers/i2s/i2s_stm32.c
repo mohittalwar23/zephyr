@@ -154,9 +154,15 @@ static int i2s_stm32_configure(const struct device *dev, enum i2s_dir dir,
 {
 	const struct i2s_stm32_cfg *const cfg = dev->config;
 	struct i2s_stm32_data *const dev_data = dev->data;
+	/*
+	 * Some devices need a 32-bit channel even for 16-bit data, so that a
+	 * frame carries 64 bit clocks. The padding is on the wire only: the
+	 * data register still moves one 16-bit word per sample.
+	 */
+	const bool chlen32 = cfg->chlen32 && (i2s_cfg->word_size == 16U);
 	/* For words greater than 16-bit the channel length is considered 32-bit */
-	const uint32_t channel_length = i2s_cfg->word_size > 16U ? 32U : 16U;
-	const uint32_t word_size_bytes = channel_length / 8;
+	const uint32_t channel_length = (i2s_cfg->word_size > 16U || chlen32) ? 32U : 16U;
+	const uint32_t word_size_bytes = i2s_cfg->word_size > 16U ? 4U : 2U;
 	/*
 	 * comply with the i2s_config driver remark:
 	 * When I2S data format is selected parameter channels is ignored,
@@ -242,7 +248,8 @@ static int i2s_stm32_configure(const struct device *dev, enum i2s_dir dir,
 	 * 16-bit data extended on 32-bit channel length excluded
 	 */
 	if (i2s_cfg->word_size == 16U) {
-		LL_I2S_SetDataFormat(cfg->i2s, STM32_I2S_DATA_FORMAT_16_BIT);
+		LL_I2S_SetDataFormat(cfg->i2s, chlen32 ? STM32_I2S_DATA_FORMAT_16_BIT_EXTENDED
+						       : STM32_I2S_DATA_FORMAT_16_BIT);
 	} else if (i2s_cfg->word_size == 24U) {
 		LL_I2S_SetDataFormat(cfg->i2s, STM32_I2S_DATA_FORMAT_24_BIT);
 	} else if (i2s_cfg->word_size == 32U) {
@@ -1049,47 +1056,45 @@ static const struct device *get_dev_from_tx_dma_channel(uint32_t dma_channel)
 		.msgq = &dir##_##index##_queue,					\
 	}
 
-#define I2S_STM32_INIT(index)							\
-										\
-	static void i2s_stm32_irq_config_func_##index(const struct device *dev);\
-										\
-	PINCTRL_DT_INST_DEFINE(index);						\
-										\
-	static const struct stm32_pclken clk_##index[] = STM32_DT_INST_CLOCKS(index); \
-										\
-	static const struct i2s_stm32_cfg i2s_stm32_config_##index = {		\
-		.i2s = (SPI_TypeDef *)DT_INST_REG_ADDR(index),			\
-		.pclken = clk_##index,						\
-		.pclk_len = DT_INST_NUM_CLOCKS(index),				\
-		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(index),			\
-		.irq_config = i2s_stm32_irq_config_func_##index,		\
-		.master_clk_sel = DT_INST_PROP(index, mck_enabled),		\
-		.ioswp = DT_INST_PROP(index, ioswp),				\
-	};									\
-										\
-	K_MSGQ_DEFINE_STATIC_TYPE(rx_##index##_queue, struct queue_item,	\
-				  CONFIG_I2S_STM32_RX_BLOCK_COUNT);		\
-	K_MSGQ_DEFINE_STATIC_TYPE(tx_##index##_queue, struct queue_item,	\
-				  CONFIG_I2S_STM32_TX_BLOCK_COUNT);		\
-										\
-	static struct i2s_stm32_data i2s_stm32_data_##index = {			\
+#define I2S_STM32_INIT(index)                                                                      \
+                                                                                                   \
+	static void i2s_stm32_irq_config_func_##index(const struct device *dev);                   \
+                                                                                                   \
+	PINCTRL_DT_INST_DEFINE(index);                                                             \
+                                                                                                   \
+	static const struct stm32_pclken clk_##index[] = STM32_DT_INST_CLOCKS(index);              \
+                                                                                                   \
+	static const struct i2s_stm32_cfg i2s_stm32_config_##index = {                             \
+		.i2s = (SPI_TypeDef *)DT_INST_REG_ADDR(index),                                     \
+		.pclken = clk_##index,                                                             \
+		.pclk_len = DT_INST_NUM_CLOCKS(index),                                             \
+		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(index),                                     \
+		.irq_config = i2s_stm32_irq_config_func_##index,                                   \
+		.master_clk_sel = DT_INST_PROP(index, mck_enabled),                                \
+		.ioswp = DT_INST_PROP(index, ioswp),                                               \
+		.chlen32 = DT_INST_PROP(index, channel_length_32),                                 \
+	};                                                                                         \
+                                                                                                   \
+	K_MSGQ_DEFINE_STATIC_TYPE(rx_##index##_queue, struct queue_item,                           \
+				  CONFIG_I2S_STM32_RX_BLOCK_COUNT);                                \
+	K_MSGQ_DEFINE_STATIC_TYPE(tx_##index##_queue, struct queue_item,                           \
+				  CONFIG_I2S_STM32_TX_BLOCK_COUNT);                                \
+                                                                                                   \
+	static struct i2s_stm32_data i2s_stm32_data_##index = {                                    \
 		IF_ENABLED(DT_INST_DMAS_HAS_NAME(index, rx),			\
-			   (I2S_DMA_CHANNEL_INIT(index, rx, RX, PERIPHERAL, MEMORY))),\
-		IF_ENABLED(DT_INST_DMAS_HAS_NAME(index, tx),			\
-			   (I2S_DMA_CHANNEL_INIT(index, tx, TX, MEMORY, PERIPHERAL))),\
-	};									\
-	DEVICE_DT_INST_DEFINE(index,						\
-			      &i2s_stm32_initialize, NULL,			\
-			      &i2s_stm32_data_##index,				\
-			      &i2s_stm32_config_##index, POST_KERNEL,		\
-			      CONFIG_I2S_INIT_PRIORITY, &i2s_stm32_driver_api);	\
-										\
-	static void i2s_stm32_irq_config_func_##index(const struct device *dev)	\
-	{									\
-		IRQ_CONNECT(DT_INST_IRQN(index),				\
-			    DT_INST_IRQ(index, priority),			\
-			    i2s_stm32_isr, DEVICE_DT_INST_GET(index), 0);	\
-		irq_enable(DT_INST_IRQN(index));				\
+			   (I2S_DMA_CHANNEL_INIT(index, rx, RX, PERIPHERAL, MEMORY))),          \
+			IF_ENABLED(DT_INST_DMAS_HAS_NAME(index, tx),			\
+			   (I2S_DMA_CHANNEL_INIT(index, tx, TX, MEMORY, PERIPHERAL))),  \
+			};                                                                         \
+	DEVICE_DT_INST_DEFINE(index, &i2s_stm32_initialize, NULL, &i2s_stm32_data_##index,         \
+			      &i2s_stm32_config_##index, POST_KERNEL, CONFIG_I2S_INIT_PRIORITY,    \
+			      &i2s_stm32_driver_api);                                              \
+                                                                                                   \
+	static void i2s_stm32_irq_config_func_##index(const struct device *dev)                    \
+	{                                                                                          \
+		IRQ_CONNECT(DT_INST_IRQN(index), DT_INST_IRQ(index, priority), i2s_stm32_isr,      \
+			    DEVICE_DT_INST_GET(index), 0);                                         \
+		irq_enable(DT_INST_IRQN(index));                                                   \
 	}
 
 DT_INST_FOREACH_STATUS_OKAY(I2S_STM32_INIT)
