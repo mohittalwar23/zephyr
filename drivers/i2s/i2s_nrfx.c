@@ -7,6 +7,7 @@
 #define DT_DRV_COMPAT nordic_nrf_i2s
 
 #include <stdlib.h>
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -875,8 +876,47 @@ static void init_clock_manager(const struct device *dev)
 #endif
 }
 
+static int i2s_nrfx_get_caps(const struct device *dev, struct audio_caps *caps, enum i2s_dir dir)
+{
+	struct i2s_nrfx_drv_data *drv_data = dev->data;
+	uint32_t queue;
+
+	switch (dir) {
+	case I2S_DIR_TX:
+		queue = drv_data->tx_queue.max_msgs;
+		break;
+	case I2S_DIR_RX:
+		queue = drv_data->rx_queue.max_msgs;
+		break;
+	case I2S_DIR_BOTH:
+		queue = MAX(drv_data->tx_queue.max_msgs, drv_data->rx_queue.max_msgs);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_22050 | AUDIO_SAMPLE_RATE_32000 |
+				       AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_8 | AUDIO_BIT_WIDTH_16 | AUDIO_BIT_WIDTH_24;
+#if defined(I2S_CONFIG_SWIDTH_SWIDTH_32Bit)
+	caps->supported_bit_widths |= AUDIO_BIT_WIDTH_32;
+#endif
+	/* Queued blocks plus the current and next block held by the peripheral. */
+	caps->min_num_buffers = queue + 2U;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(i2s, i2s_nrf_drv_api) = {
 	.configure = i2s_nrfx_configure,
+	.get_caps = i2s_nrfx_get_caps,
 	.config_get = i2s_nrfx_config_get,
 	.read = i2s_nrfx_read,
 	.write = i2s_nrfx_write,
