@@ -71,7 +71,72 @@ struct i2s_nrfx_drv_cfg {
 		PCLK32M_HFXO,
 		ACLK
 	} clk_src;
+	uint32_t mck_frequency;
 };
+
+/* Sets MCK to the frequency closest to mck_freq and picks the MCK/LRCK ratio
+ * that gives the frame clock frequency closest to the one requested.
+ */
+static void find_ratio_for_mck(uint32_t base_freq, uint32_t mck_freq, nrfx_i2s_config_t *config,
+			       const struct i2s_config *i2s_cfg)
+{
+	static const uint16_t ratios[] = {32, 48, 64, 96, 128, 192, 256, 384, 512};
+	static const nrf_i2s_ratio_t ratio_enums[] = {
+		NRF_I2S_RATIO_32X,  NRF_I2S_RATIO_48X,  NRF_I2S_RATIO_64X,
+		NRF_I2S_RATIO_96X,  NRF_I2S_RATIO_128X, NRF_I2S_RATIO_192X,
+		NRF_I2S_RATIO_256X, NRF_I2S_RATIO_384X, NRF_I2S_RATIO_512X,
+	};
+	uint32_t best_diff = UINT32_MAX;
+	uint32_t actual_mck;
+
+#if defined(I2S_MCKFREQ_FACTOR)
+	uint32_t factor = MAX(1U, (uint32_t)(((uint64_t)mck_freq * I2S_MCKFREQ_FACTOR) /
+					     (base_freq + mck_freq / 2U)));
+
+	config->prescalers.mck_setup = (nrf_i2s_mck_t)(factor * 4096U);
+	actual_mck = base_freq / (I2S_MCKFREQ_FACTOR / factor);
+#else
+	static const uint8_t dividers[] = {8, 10, 11, 15, 16, 21, 23, 30, 31, 32, 42, 63, 125};
+	static const nrf_i2s_mck_t divider_enums[] = {
+		NRF_I2S_MCK_32MDIV8,  NRF_I2S_MCK_32MDIV10, NRF_I2S_MCK_32MDIV11,
+		NRF_I2S_MCK_32MDIV15, NRF_I2S_MCK_32MDIV16, NRF_I2S_MCK_32MDIV21,
+		NRF_I2S_MCK_32MDIV23, NRF_I2S_MCK_32MDIV30, NRF_I2S_MCK_32MDIV31,
+		NRF_I2S_MCK_32MDIV32, NRF_I2S_MCK_32MDIV42, NRF_I2S_MCK_32MDIV63,
+		NRF_I2S_MCK_32MDIV125,
+	};
+
+	actual_mck = 0U;
+	for (size_t i = 0; i < ARRAY_SIZE(dividers); i++) {
+		uint32_t diff = NRFX_DIFF(base_freq / dividers[i], mck_freq);
+
+		if (diff < best_diff) {
+			best_diff = diff;
+			actual_mck = base_freq / dividers[i];
+			config->prescalers.mck_setup = divider_enums[i];
+		}
+	}
+	best_diff = UINT32_MAX;
+#endif
+
+	for (size_t i = 0; i < ARRAY_SIZE(ratios); i++) {
+		uint32_t diff;
+
+		/* The ratio must be a multiple of the frame width. */
+		if ((ratios[i] % (2U * i2s_cfg->word_size)) != 0U) {
+			continue;
+		}
+
+		diff = NRFX_DIFF(actual_mck / ratios[i], i2s_cfg->frame_clk_freq);
+		if (diff < best_diff) {
+			best_diff = diff;
+			config->prescalers.ratio = ratio_enums[i];
+		}
+	}
+
+#if NRF_I2S_HAS_CLKCONFIG
+	config->prescalers.enable_bypass = false;
+#endif
+}
 
 /* Finds the clock settings that give the frame clock frequency closest to
  * the one requested, taking into account the hardware limitations.
@@ -110,6 +175,12 @@ static void find_suitable_clock(const struct i2s_nrfx_drv_cfg *drv_cfg,
 		.swidth = config->sample_width,
 		.allow_bypass = IS_ENABLED(CONFIG_I2S_NRFX_ALLOW_MCK_BYPASS),
 	};
+
+	if (drv_cfg->mck_frequency != 0U) {
+		find_ratio_for_mck(clk_params.base_clock_freq, drv_cfg->mck_frequency, config,
+				   i2s_cfg);
+		return;
+	}
 
 	if (nrfx_i2s_prescalers_calc(&clk_params, &config->prescalers) != 0) {
 		LOG_ERR("Failed to find suitable I2S clock configuration.");
@@ -943,6 +1014,7 @@ static DEVICE_API(i2s, i2s_nrf_drv_api) = {
 		.nrfx_def_cfg.skip_psel_cfg = true,                                                \
 		.pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_DRV_INST(inst)),                              \
 		.clk_src = I2S_CLK_SRC(inst),                                                      \
+		.mck_frequency = DT_INST_PROP_OR(inst, mck_frequency, 0),                          \
 	};                                                                                         \
 	static struct i2s_nrfx_drv_data i2s_nrfx_data##inst = {                                    \
 		.state = I2S_STATE_READY,                                                          \
