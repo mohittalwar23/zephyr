@@ -262,6 +262,22 @@ int mpipe_ipc_transport_check_peer(struct mpipe_ipc_transport *transport);
 int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport);
 
 /**
+ * @brief Stand down while preserving an error from earlier teardown work.
+ *
+ * The backend instance is still closed. If @p prior_error is nonzero, FAULT
+ * and that first error are published even when the close succeeds; DOWN is
+ * reserved for a teardown in which every preceding step and the close worked.
+ *
+ * @param transport   Transport to stand down.
+ * @param prior_error First teardown error, as a negative errno, or zero.
+ *
+ * @return @p prior_error when nonzero, otherwise the close result.
+ * @retval -EINVAL if an argument is invalid.
+ */
+int mpipe_ipc_transport_quiesce_with_error(struct mpipe_ipc_transport *transport,
+					   int prior_error);
+
+/**
  * @brief Default backend, wiring @ref mpipe_ipc_ops to Zephyr's IPC Service.
  *
  * The context passed to mpipe_ipc_transport_init() must be the

@@ -47,7 +47,7 @@ extern "C" {
 #define MPIPE_IPC_MAX_BUFFERS 64
 
 /** Protocol version carried by every plugin message. */
-#define MPIPE_IPC_PLUGIN_VERSION 1U
+#define MPIPE_IPC_PLUGIN_VERSION 2U
 
 /** @brief Message types exchanged between an IPC sink and source. */
 enum mpipe_ipc_msg_type {
@@ -86,11 +86,15 @@ struct mpipe_ipc_msg {
 			uint32_t size;
 			uint32_t timestamp;
 			uint32_t buffer_id;
+			/** Session of the core that owns the referenced storage. */
+			uint32_t generation;
 		} data;
 
 		/** The consumer is done with a buffer. */
 		struct {
 			uint32_t buffer_id;
+			/** Ownership generation copied from the matching DATA. */
+			uint32_t generation;
 		} release;
 
 		struct {

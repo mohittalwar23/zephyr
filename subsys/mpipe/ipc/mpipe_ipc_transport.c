@@ -251,11 +251,13 @@ int mpipe_ipc_transport_check_peer(struct mpipe_ipc_transport *transport)
 	return err;
 }
 
-int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
+int mpipe_ipc_transport_quiesce_with_error(struct mpipe_ipc_transport *transport,
+					   int prior_error)
 {
-	int err = 0;
+	int close_error = 0;
+	int result;
 
-	if (transport == NULL) {
+	if (transport == NULL || prior_error > 0) {
 		return -EINVAL;
 	}
 
@@ -267,14 +269,15 @@ int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
 	 */
 	if (transport->opened) {
 		if (transport->ops->close_instance == NULL) {
-			err = -ENOTSUP;
+			close_error = -ENOTSUP;
 		} else {
-			err = transport->ops->close_instance(transport->context);
-			if (err == 0) {
+			close_error = transport->ops->close_instance(transport->context);
+			if (close_error == 0) {
 				transport->opened = false;
 			}
 		}
 	}
+	result = prior_error != 0 ? prior_error : close_error;
 
 	transport->session.connected = false;
 	transport->session.remote_sid = MPIPE_IPC_SID_NONE;
@@ -286,15 +289,21 @@ int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
 	transport->state = MPIPE_IPC_TRANSPORT_FAULTED;
 	/* Publish the close result before the state that explains it. */
 	transport->ops->store((volatile uint32_t *)&local_block(transport)->error,
-			      (uint32_t)err);
-	publish(transport, err == 0 ? MPIPE_IPC_BRINGUP_DOWN : MPIPE_IPC_BRINGUP_FAULT);
+			      (uint32_t)result);
+	publish(transport,
+		result == 0 ? MPIPE_IPC_BRINGUP_DOWN : MPIPE_IPC_BRINGUP_FAULT);
 
 	/*
 	 * A peer may rebuild only after DOWN proves this core released the rings.
 	 * FAULT deliberately leaves it blocked until the lifecycle authority can
 	 * stop or reset the owner that failed to close.
 	 */
-	return err;
+	return result;
+}
+
+int mpipe_ipc_transport_quiesce(struct mpipe_ipc_transport *transport)
+{
+	return mpipe_ipc_transport_quiesce_with_error(transport, 0);
 }
 
 uint32_t mpipe_ipc_transport_local_word(const struct mpipe_ipc_transport *transport)

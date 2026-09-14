@@ -10,11 +10,16 @@
 #include <stdbool.h>
 
 #include <zephyr/device.h>
+#include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 
 #include "infer_sink.h"
 
 /** Build and start the DSP-side pipeline. Called once the link is up. */
-int consumer_start(const struct device *ipc, infer_result_cb on_result);
+int consumer_start(const struct device *ipc, struct mpipe_ipc_transport *transport,
+		   infer_result_cb on_result);
+
+/** Stop the pipeline and deregister its audio endpoint. */
+int consumer_stop(void);
 
 /** True once the peer's sink has bound to this source. */
 bool consumer_is_bound(void);

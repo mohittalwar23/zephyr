@@ -62,6 +62,21 @@ Everything the bring-up sample requires applies here too -- the reserved shared
 window, the start order, and the MU3 clock's dependence on the DSP being
 runtime-resumed. See :zephyr:code-sample:`mpipe-ipc-bringup`.
 
+Restart policy
+**************
+
+This sample deliberately uses paired fail-stop recovery. If either core's
+transport session changes, the survivor stops and joins its pipeline, cancels
+plugin retry work, deregisters ``mpipe.audio`` and then ``mpipe.ctrl``, and
+closes the IPC Service instance. It then remains in ``DOWN`` (or ``FAULT`` if
+teardown failed) without rebuilding the static vrings.
+
+Linux must restart both the Cortex-M7 and HiFi4. Restarting only one core is not
+supported: a session change rejects stale messages, but cannot prove that the
+failed peer stopped reading a zero-copy buffer. Outstanding producer references
+therefore remain quarantined until the paired reset supplies that lifetime
+boundary.
+
 Memory
 ******
 
@@ -91,11 +106,11 @@ On the M7::
 
    *** Booting Zephyr OS build v4.4.0 ***
    <inf> mpipe_ipc_infer: mpipe IPC inference: role=host
-   <inf> mpipe_ipc_infer: gen 0: link up, session 2 <-> 1
-   <inf> mpipe_ipc_infer: gen 0: endpoint bound
-   <inf> mpipe_ipc_infer: gen 0: ring up, 64 x 320 bytes
-   <inf> mpipe_ipc_infer: gen 0: 30 windows correct, 0 wrong
-   <inf> mpipe_ipc_infer: gen 0: 195 windows correct, 0 wrong
+   <inf> mpipe_ipc_infer: link up, session 2 <-> 1
+   <inf> mpipe_ipc_infer: control endpoint bound
+   <inf> mpipe_ipc_infer: ring up, 64 x 320 bytes
+   <inf> mpipe_ipc_infer: 30 windows correct, 0 wrong
+   <inf> mpipe_ipc_infer: 195 windows correct, 0 wrong
 
 The HiFi4 has no console on this board -- both cores' consoles are on ``uart4``
 and the DSP overlay gives it up -- so its side is visible through the counters

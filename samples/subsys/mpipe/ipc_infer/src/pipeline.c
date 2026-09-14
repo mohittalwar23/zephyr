@@ -60,8 +60,10 @@ static struct mpipe_aud_gain gain;
 static struct mpipe_aud_i2s_codec_sink audible;
 static struct mpipe_ipc_sink forward;
 static struct mpipe_player player;
+static bool forward_initialized;
+static bool player_initialized;
 
-int producer_start(const struct device *ipc)
+int producer_start(const struct device *ipc, struct mpipe_ipc_transport *transport)
 {
 	int gain_percent = CONFIG_SAMPLE_IPC_INFER_GAIN_PERCENT;
 	struct mpipe_structure caps;
@@ -98,10 +100,12 @@ int producer_start(const struct device *ipc)
 	 * reference, so the pool feeding this sink has to live in memory the
 	 * HiFi4 can address -- see the sample README.
 	 */
-	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ipc, "mpipe.audio", &shared_payload);
+	ret = mpipe_ipc_sink_init(&forward, IPC_SINK_ID, ipc, "mpipe.audio", &shared_payload,
+				  transport);
 	if (ret < 0) {
 		goto err;
 	}
+	forward_initialized = true;
 
 	ret = mpipe_object_set_properties((struct mpipe_object *)&source,
 					  MPIPE_PROP_AUD_SRC_SLAB_PTR, &mem_slab,
@@ -176,22 +180,50 @@ int producer_start(const struct device *ipc)
 	if (ret < 0) {
 		goto err;
 	}
+	player_initialized = true;
 
 	LOG_INF("capture pipeline: i2s -> tee -> [speaker, HiFi4] at %u Hz",
 		CONFIG_SAMPLE_IPC_INFER_RATE);
-	mpipe_player_play(&player);
+	ret = mpipe_player_play(&player);
+	if (ret < 0) {
+		goto err;
+	}
 
 	return 0;
 
 err:
 	LOG_ERR("cannot build the capture pipeline: %d", ret);
-
 	return ret != 0 ? ret : -EIO;
+}
+
+int producer_stop(void)
+{
+	int first_error = 0;
+	int ret;
+
+	if (player_initialized) {
+		ret = mpipe_player_deinit(&player);
+		player_initialized = false;
+		if (ret != 0) {
+			first_error = ret;
+		}
+	}
+
+	if (forward_initialized) {
+		ret = mpipe_ipc_sink_deinit(&forward);
+		if (ret == 0) {
+			forward_initialized = false;
+		} else if (first_error == 0) {
+			first_error = ret;
+		}
+	}
+
+	return first_error;
 }
 
 uint32_t producer_dropped(void)
 {
-	return forward.dropped;
+	return (uint32_t)atomic_get(&forward.dropped);
 }
 
 /*
@@ -211,7 +243,7 @@ void producer_publish(void)
 	volatile struct producer_telemetry *t =
 		(volatile struct producer_telemetry *)PRODUCER_TELEMETRY_ADDR;
 
-	t->dropped = forward.dropped;
+	t->dropped = (uint32_t)atomic_get(&forward.dropped);
 	t->bound = mpipe_ipc_sink_is_bound(&forward) ? 1U : 0U;
-	t->have_caps = forward.have_caps ? 1U : 0U;
+	t->have_caps = atomic_get(&forward.have_caps) != 0 ? 1U : 0U;
 }
