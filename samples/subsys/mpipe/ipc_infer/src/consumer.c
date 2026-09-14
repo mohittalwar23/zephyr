@@ -41,13 +41,16 @@ static struct mpipe pipe;
 static struct mpipe_ipc_src source;
 static struct infer_sink infer;
 static struct mpipe_player player;
+static bool source_initialized;
+static bool player_initialized;
 static const struct mpipe_ipc_region shared_payload = {
 	.base = (void *)DT_REG_ADDR(DT_NODELABEL(mpipe_shared_pool)),
 	.size = DT_REG_SIZE(DT_NODELABEL(mpipe_shared_pool)),
 	.align = 4U,
 };
 
-int consumer_start(const struct device *ipc, infer_result_cb on_result)
+int consumer_start(const struct device *ipc, struct mpipe_ipc_transport *transport,
+		   infer_result_cb on_result)
 {
 	struct mpipe_structure caps;
 	int ret;
@@ -58,10 +61,12 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result)
 	}
 
 	/* Same endpoint name as the peer's sink; that pairing is the link. */
-	ret = mpipe_ipc_src_init(&source, IPC_SRC_ID, ipc, "mpipe.audio", &shared_payload);
+	ret = mpipe_ipc_src_init(&source, IPC_SRC_ID, ipc, "mpipe.audio", &shared_payload,
+				 transport);
 	if (ret < 0) {
 		goto err;
 	}
+	source_initialized = true;
 	ret = infer_sink_init(&infer, INFER_SINK_ID, CONSUMER_CHANNELS, on_result);
 	if (ret < 0) {
 		goto err;
@@ -105,16 +110,44 @@ int consumer_start(const struct device *ipc, infer_result_cb on_result)
 	if (ret < 0) {
 		goto err;
 	}
+	player_initialized = true;
 
 	LOG_INF("inference pipeline: ipc_src -> micro_speech at %u Hz", CONSUMER_RATE_HZ);
-	mpipe_player_play(&player);
+	ret = mpipe_player_play(&player);
+	if (ret < 0) {
+		goto err;
+	}
 
 	return 0;
 
 err:
 	LOG_ERR("cannot build the inference pipeline: %d", ret);
-
 	return ret != 0 ? ret : -EIO;
+}
+
+int consumer_stop(void)
+{
+	int first_error = 0;
+	int ret;
+
+	if (player_initialized) {
+		ret = mpipe_player_deinit(&player);
+		player_initialized = false;
+		if (ret != 0) {
+			first_error = ret;
+		}
+	}
+
+	if (source_initialized) {
+		ret = mpipe_ipc_src_deinit(&source);
+		if (ret == 0) {
+			source_initialized = false;
+		} else if (first_error == 0) {
+			first_error = ret;
+		}
+	}
+
+	return first_error;
 }
 
 bool consumer_is_bound(void)
@@ -149,7 +182,7 @@ void consumer_publish(void)
 	t->buffers = infer.buffers;
 	t->windows = infer.windows;
 	t->last_category = infer.last_category;
-	t->refused = source.refused;
+	t->refused = (uint32_t)atomic_get(&source.refused);
 	t->bound = mpipe_ipc_src_is_bound(&source) ? 1U : 0U;
 	t->playing = 1U;
 }

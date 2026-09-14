@@ -81,6 +81,7 @@ static K_SEM_DEFINE(endpoint_bound, 0, 1);
 static atomic_t reported_window = ATOMIC_INIT(-1);
 static atomic_t reported_category;
 
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
 static int send_result(uint32_t window, uint32_t category)
 {
 	uint8_t frame[MPIPE_IPC_HEADER_LENGTH + RESULT_PAYLOAD_BYTES];
@@ -92,6 +93,10 @@ static int send_result(uint32_t window, uint32_t category)
 	};
 	size_t written;
 	int err;
+
+	if (mpipe_ipc_transport_check_peer(&transport) != 0) {
+		return -ECONNRESET;
+	}
 
 	sys_put_le32(window, &payload[RESULT_OFF_WINDOW]);
 	sys_put_le32(category, &payload[RESULT_OFF_CATEGORY]);
@@ -109,6 +114,7 @@ static int send_result(uint32_t window, uint32_t category)
 
 	return ((size_t)err == written) ? 0 : -EIO;
 }
+#endif
 
 static void on_bound(void *priv)
 {
@@ -165,9 +171,12 @@ static void on_inference_result(uint32_t window, uint32_t category)
 int main(void)
 {
 	const struct device *ipc = DEVICE_DT_GET(IPC_NODE);
-	unsigned int generation = 0;
-	bool streaming;
-	bool bound;
+	bool control_registered = false;
+	bool streaming = false;
+	bool role_start_attempted = false;
+	bool bound = false;
+	int run_error = 0;
+	int teardown_error = 0;
 	int err;
 
 	signal_linux_ready();
@@ -194,97 +203,118 @@ int main(void)
 	/* MU3 is clocked only while the DSP is up; see the bring-up sample. */
 	(void)mpipe_ipc_transport_require_peer(&transport, true);
 
-	while (true) {
-		do {
-			err = mpipe_ipc_transport_poll(&transport);
-			if (err == -EAGAIN) {
-				k_msleep(20);
-			}
-		} while (err == -EAGAIN);
-
-		if (err != 0) {
-			LOG_ERR("gen %u: bring-up failed: %d", generation, err);
-			return err;
+	do {
+		err = mpipe_ipc_transport_poll(&transport);
+		if (err == -EAGAIN) {
+			k_msleep(20);
 		}
+	} while (err == -EAGAIN);
 
-		LOG_INF("gen %u: link up, session %u <-> %u", generation,
-			transport.session.local_sid, transport.session.remote_sid);
-
-		k_sem_reset(&endpoint_bound);
-		err = ipc_service_register_endpoint(ipc, &endpoint, &endpoint_cfg);
-		if (err != 0) {
-			LOG_ERR("gen %u: cannot register endpoint: %d", generation,
-				err);
-			return err;
-		}
-
-		streaming = false;
-		bound = false;
-
-		do {
-			k_msleep(10);
-			err = mpipe_ipc_transport_poll(&transport);
-
-			if (err == 0 && !bound &&
-			    k_sem_take(&endpoint_bound, K_NO_WAIT) == 0) {
-				bound = true;
-				LOG_INF("gen %u: endpoint bound", generation);
-			}
-
-			if (err == 0 && transport.session.connected && !streaming) {
-#ifdef CONFIG_SOC_MIMX8ML8_ADSP
-				int start_err = consumer_start(ipc, on_inference_result);
-#else
-				int start_err = producer_start(ipc);
-#endif
-
-				if (start_err == 0) {
-					streaming = true;
-				} else {
-					LOG_ERR("gen %u: cannot start: %d", generation,
-						start_err);
-					return start_err;
-				}
-			}
-
-			if (err == 0 && streaming) {
-#ifdef CONFIG_SOC_MIMX8ML8_ADSP
-				/* The pipeline runs itself; publish progress. */
-				consumer_publish();
-#else
-				producer_publish();
-
-				if (atomic_get(&reported_window) >= 0) {
-					uint32_t w =
-						(uint32_t)atomic_get(&reported_window);
-					uint32_t c =
-						(uint32_t)atomic_get(&reported_category);
-
-					atomic_set(&reported_window, -1);
-					/*
-					 * No expected answer with live audio.
-					 * The audible branch is the microphone
-					 * check; this is the model's verdict.
-					 */
-					LOG_INF("[%u] heard \"%s\"   (%u buffers dropped)",
-						w, category_label(c), producer_dropped());
-				}
-#endif
-			}
-		} while (err == 0);
-
-		LOG_WRN("gen %u: peer restarted; standing down", generation);
-		(void)ipc_service_deregister_endpoint(&endpoint);
-		(void)mpipe_ipc_transport_quiesce(&transport);
-		k_msleep(200);
-		generation++;
-
-		err = mpipe_ipc_transport_rebuild(&transport);
-		if (err != 0) {
-			LOG_ERR("gen %u: cannot rebuild: %d", generation, err);
-			return err;
-		}
+	if (err != 0) {
+		LOG_ERR("bring-up failed: %d", err);
+		return err;
 	}
 
-	return 0;
+	LOG_INF("link up, session %u <-> %u", transport.session.local_sid,
+		transport.session.remote_sid);
+
+	k_sem_reset(&endpoint_bound);
+	err = ipc_service_register_endpoint(ipc, &endpoint, &endpoint_cfg);
+	if (err != 0) {
+		LOG_ERR("cannot register control endpoint: %d", err);
+		run_error = err;
+		goto teardown;
+	}
+	control_registered = true;
+
+	do {
+		k_msleep(10);
+		err = mpipe_ipc_transport_poll(&transport);
+
+		if (err == 0 && !bound && k_sem_take(&endpoint_bound, K_NO_WAIT) == 0) {
+			bound = true;
+			LOG_INF("control endpoint bound");
+		}
+
+		if (err == 0 && transport.session.connected && !streaming) {
+			role_start_attempted = true;
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
+			int start_err = consumer_start(ipc, &transport, on_inference_result);
+#else
+			int start_err = producer_start(ipc, &transport);
+#endif
+
+			if (start_err == 0) {
+				streaming = true;
+			} else {
+				LOG_ERR("cannot start pipeline: %d", start_err);
+				run_error = start_err;
+				break;
+			}
+		}
+
+		if (err == 0 && streaming) {
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
+			/* The pipeline runs itself; publish progress. */
+			consumer_publish();
+#else
+			producer_publish();
+
+			if (atomic_get(&reported_window) >= 0) {
+				uint32_t w = (uint32_t)atomic_get(&reported_window);
+				uint32_t c = (uint32_t)atomic_get(&reported_category);
+
+				atomic_set(&reported_window, -1);
+				LOG_INF("[%u] heard \"%s\"   (%u buffers dropped)", w,
+					category_label(c), producer_dropped());
+			}
+#endif
+		}
+	} while (err == 0);
+
+	if (err == -ECONNRESET) {
+		LOG_WRN("peer restarted; stopping both halves of the link");
+	} else if (err != 0) {
+		run_error = err;
+		LOG_ERR("transport failed: %d", err);
+	}
+
+teardown:
+	if (role_start_attempted) {
+#ifdef CONFIG_SOC_MIMX8ML8_ADSP
+		err = consumer_stop();
+#else
+		err = producer_stop();
+#endif
+		if (err != 0 && teardown_error == 0) {
+			teardown_error = err;
+		}
+	}
+	if (control_registered) {
+		err = ipc_service_deregister_endpoint(&endpoint);
+		if (err != 0 && teardown_error == 0) {
+			teardown_error = err;
+		}
+	}
+	err = mpipe_ipc_transport_quiesce_with_error(&transport, teardown_error);
+	if (err != 0 && teardown_error == 0) {
+		teardown_error = err;
+	}
+
+	if (teardown_error == 0) {
+		if (run_error == 0) {
+			LOG_INF("link is DOWN; waiting for Linux to restart the M7/HiFi4 pair");
+		} else {
+			LOG_ERR("link stopped with error %d and is DOWN; waiting for paired reset",
+				run_error);
+		}
+	} else {
+		LOG_ERR("link teardown failed (%d); FAULT requires paired reset",
+			teardown_error);
+	}
+
+	/* DOWN and FAULT are terminal here. Only the system owner may reset rings. */
+	k_sleep(K_FOREVER);
+
+	return teardown_error != 0 ? teardown_error : run_error;
 }

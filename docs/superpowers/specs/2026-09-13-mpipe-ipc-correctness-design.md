@@ -23,8 +23,8 @@ specified and implemented end to end.
   teardown semantics.
 - Stop callbacks and retire buffer ownership before deregistering endpoints or
   publishing a quiescent state.
-- Make every plugin message versioned, generation-scoped, fixed-width, and
-  explicitly little-endian.
+- Validate the transport session before delivering any plugin message, and
+  generation-scope zero-copy DATA/RELEASE ownership.
 - Reject malformed or out-of-region payload descriptors before cache
   maintenance or memory access.
 - Make source and sink state per-instance and safe across callback, pipeline,
@@ -99,37 +99,50 @@ section before returning.
 Tests shall cover transitions through `READY`, `PAUSED`, `PLAYING`, and `NULL`,
 including an arrival racing deactivation.
 
-### 3. Plugin wire and memory contract
+### 3. Plugin session, wire, and memory contract
 
-The plugin shall use an explicit codec rather than transmitting C structures.
-Every message contains:
+The plugin is bound to the transport that owns its IPC Service instance. Every
+receive callback checks that transport's current peer session before parsing or
+acting on a plugin message. This follows the same ordering as IPC Service's
+ICMsg backend: detect a changed session and disconnect before using a queued
+message from the old incarnation.
 
-- protocol version;
-- message type;
-- sender session/generation;
-- fixed-width message-specific fields encoded little-endian.
+The current fixed-size plugin message remains versioned. A future change may
+replace the C structure with an explicit codec, but that wire cleanup is not a
+prerequisite for paired fail-stop recovery and is not mixed into the lifecycle
+patch. Unlike the earlier draft of this design, CAPS and EVENT are not given a
+redundant per-message session tuple: transport validation already supplies that
+authority.
 
-DATA carries a payload-region offset, size, buffer identifier, and timestamp.
-The plugin instance receives a shared-region description containing local base,
-peer base or translation operation, region size, and required alignment. Before
+DATA carries a payload-region offset, size, buffer identifier, timestamp, and
+the sender's local session as the ownership generation. RELEASE echoes that
+generation. The generation is checked against the outstanding slot before its
+reference is dropped, preventing a delayed release from freeing a buffer after
+the same numeric identifier has been reused.
+
+The plugin instance receives a shared-region description containing its local
+mapping, region size, and required alignment. Both cores use offsets from the
+same physical shared-window origin. Before
 allocating a wrapper, invalidating cache, or dereferencing memory, receive code
 must prove without integer overflow that:
 
-- the generation is the currently negotiated peer generation;
+- the transport still recognizes the peer session;
+- a DATA ownership generation is the transport's negotiated remote session;
 - the buffer identifier is inside the configured window;
 - the offset is inside the region;
 - the size is nonzero and no larger than the remaining region;
 - offset and size satisfy the negotiated alignment and audio-format rules.
 
-Unknown versions, message types, enum values, field counts, and trailing or
-short payloads are rejected. Send succeeds only when IPC Service reports the
-exact encoded byte count.
+Unknown versions, message types, and short or trailing messages are rejected.
+Send succeeds only when IPC Service reports the exact message byte count.
 
 ### 4. Per-instance ownership and reliable release
 
-Global wrapper ownership is removed. Each source instance owns its wrapper
-records, release bitmap, endpoint configuration, synchronization primitive,
-retry work, counters, and negotiated state.
+Global wrapper ownership is removed. A common allocation pool may supply the
+small wrapper objects, but each wrapper's `mpipe_buffer_pool` points back to the
+source instance that accepted it. Each source owns its release and live-ID
+bitmaps, endpoint configuration, synchronization primitive, retry work,
+counters, and negotiated state.
 
 One DATA identifier represents at most one live ownership record in a given
 generation. A wrapper destructor queues one RELEASE exactly once. The mpipe push
@@ -151,26 +164,31 @@ upstream pool has a particular size.
 The transport state exposed to the peer distinguishes these conditions:
 
 - `READY`: endpoint registration and data-plane use are allowed;
-- `STOPPING`: local callbacks and pipelines are being drained;
 - `DOWN`: all endpoints are deregistered and the instance is closed;
 - `FAULT`: teardown or close failed, so the peer must not reset shared rings.
 
-Shared control publication uses architecture-correct ordering and stable
-snapshots. A sequence counter surrounds each per-core record: the writer makes
-the sequence odd, writes the fields, executes the required publication barrier,
-and makes it even; the reader accepts only two equal even sequence reads around
-the fields. State values outside the defined enum are faults.
+The current control block keeps a single writer for each naturally aligned
+32-bit field and publishes the session before the state. A sequence-counter
+snapshot format is deferred together with any future wire-format revision; the
+paired fail-stop patch does not need a transient shared `STOPPING` state because
+the survivor remains `FAULT` until every local teardown step and close succeed.
 
-When a peer generation change is detected, the sample requests pipeline
-shutdown, drains locally owned references, deregisters the audio endpoint and
-then the control endpoint, and closes the instance. A successful close publishes
-`DOWN`; any failure publishes `FAULT` and asks the Linux lifecycle authority for
-paired recovery. The Zephyr process does not call local `rebuild()` in this
-version.
+When a peer generation change is detected, the sample closes plugin admission,
+stops and joins its pipeline worker, cancels release retry work, deregisters the
+audio endpoint and then the control endpoint, and closes the instance. A
+successful close publishes `DOWN`; any failure publishes `FAULT` and asks the
+Linux lifecycle authority for paired recovery. The Zephyr process does not call
+local `rebuild()` or touch the shared rings again in this version.
+
+Sink buffers whose DATA was delivered but whose matching RELEASE did not arrive
+stay referenced in their slots. They are intentionally quarantined until the
+paired reset; a peer session change is not proof that the failed peer stopped
+reading shared memory.
 
 ## Concurrency and ownership rules
 
-- Endpoint callbacks may enter concurrently with pipeline state changes.
+- Endpoint callbacks may enter concurrently with pipeline state changes and
+  endpoint teardown.
 - Per-instance mutable state is protected by a lock or an explicitly documented
   atomic protocol; plain `volatile` is not synchronization.
 - No plugin lock is held across `ipc_service_send()` or downstream mpipe calls.
@@ -180,6 +198,8 @@ version.
   identifier and generation.
 - The receiver owns one wrapper reference after accepting DATA; mpipe push
   consumes that reference regardless of its return value.
+- Endpoint deinitialization closes callback admission and waits for callbacks
+  already admitted before deregistering the endpoint.
 - A generation change invalidates protocol traffic but does not by itself prove
   that memory owned by the previous generation is safe to reuse. Paired restart
   supplies that lifecycle boundary.
@@ -205,34 +225,34 @@ against the preceding revision before adding the minimal implementation.
 Native coverage includes:
 
 - retrying close after an endpoint-caused `-EBUSY`;
-- stable shared-state snapshots across every writer interleaving;
 - explicit source initialization from nonzero memory;
 - no pushes outside `PLAYING` and no callback surviving teardown;
-- fixed wire vectors and rejection of incompatible versions/layouts;
+- rejection of incompatible versions/layouts;
 - short sends and transient send exhaustion;
 - buffer IDs 0, 31, 32, and 63;
-- two simultaneous source and sink instances;
+- two simultaneous source instances returning wrappers to their own endpoint;
 - address underflow, overflow, oversize, misalignment, and invalid IDs;
 - exactly-once release after successful push, failed push, unlink, and teardown;
 - failed final RELEASE while the peer is otherwise quiet;
-- peer-generation change with all sink slots and source wrappers occupied;
+- stale DATA and RELEASE generations, including reuse of the same numeric ID;
+- endpoint deinitialization racing an admitted callback;
+- peer-generation change while sink slots or source wrappers remain occupied;
 - `DOWN` only after complete teardown and `FAULT` after any teardown failure.
 
 Target builds cover both `imx8mp_evk/mimx8ml8/m7` and
 `imx8mp_evk/mimx8ml8/adsp`, including a 64-buffer configuration. Hardware tests
-then run a deterministic synthetic stream before live audio, followed by
-pressure, each one-core failure, paired recovery, pause/resume, malformed input,
-and a soak whose final ownership counts balance.
+then exercise the live-audio pair under pressure and each one-core failure.
+Automated Linux paired-reset supervision and long soak coverage remain
+integration follow-ups rather than generic mpipe behavior.
 
 ## Delivery sequence
 
 1. Submit the static-vrings close-state regression and fix independently.
 2. Agree the asynchronous-source lifecycle on the active mpipe work.
-3. Add ordered restart-state snapshots and paired fault semantics.
+3. Add paired fault semantics without local rebuild.
 4. Replace the plugin ABI and globals with the validated per-instance design.
-5. Wire complete teardown into a generic synthetic sample.
-6. Reapply the i.MX8MP live-audio and inference integration as the final
-   consumer, with its Linux remoteproc prerequisites documented separately.
+5. Wire complete teardown into the i.MX8MP live-audio/inference consumer, with
+   its Linux remoteproc prerequisites documented separately.
 
 Each change remains buildable and testable at its own boundary. The existing
 uncommitted audio-pool sizing and XIAO board files are outside this design and

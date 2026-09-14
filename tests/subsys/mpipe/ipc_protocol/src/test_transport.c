@@ -500,6 +500,36 @@ ZTEST(mpipe_ipc_transport, test_a_clean_stand_down_publishes_no_error)
 	zassert_equal(shared_block.host.error, 0);
 }
 
+ZTEST(mpipe_ipc_transport, test_prior_teardown_error_closes_but_publishes_fault)
+{
+	struct mpipe_ipc_transport host;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(settle(&host, 4));
+
+	zassert_equal(mpipe_ipc_transport_quiesce_with_error(&host, -EIO), -EIO);
+	zassert_equal(host_closes, 1, "the physical instance still has to be released");
+	zassert_false(host.opened);
+	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_FAULT);
+	zassert_equal(shared_block.host.error, -EIO, "the first teardown error was lost");
+}
+
+ZTEST(mpipe_ipc_transport, test_prior_teardown_error_wins_over_close_error)
+{
+	struct mpipe_ipc_transport host;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(settle(&host, 4));
+	close_should_fail = 1;
+
+	zassert_equal(mpipe_ipc_transport_quiesce_with_error(&host, -EIO), -EIO);
+	zassert_true(host.opened);
+	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_FAULT);
+	zassert_equal(shared_block.host.error, -EIO);
+}
+
 /*
  * Recovering from a peer restart must not look like a restart of this core, or
  * the two take turns tearing each other down and the link never settles. This
