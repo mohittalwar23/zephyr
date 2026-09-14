@@ -6,6 +6,7 @@
 
 #define DT_DRV_COMPAT nordic_nrf_pdm
 
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/audio/dmic.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -585,8 +586,27 @@ static void init_clock_manager(const struct device *dev)
 #endif
 }
 
+static int dmic_nrfx_pdm_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	struct dmic_nrfx_pdm_drv_data *drv_data = dev->data;
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_16000;
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_16;
+	/* Queued blocks plus the three in use while the peripheral swaps buffers. */
+	caps->min_num_buffers = drv_data->rx_queue.max_msgs + 3U;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(dmic, dmic_ops) = {
 	.configure = dmic_nrfx_pdm_configure,
+	.get_caps = dmic_nrfx_pdm_get_caps,
 	.trigger = dmic_nrfx_pdm_trigger,
 	.read = dmic_nrfx_pdm_read,
 };
