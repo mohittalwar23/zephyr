@@ -89,10 +89,34 @@ int main(void)
 		goto err;
 	}
 
-	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM,
-					  MPIPE_CAPS_FRAME_INTERVAL, MPIPE_TYPE_UINT, 10000,
-					  MPIPE_CAPS_NUM_OF_CHANNEL, MPIPE_TYPE_UINT, 2,
-					  MPIPE_CAPS_END);
+	/*
+	 * Negotiation settles on the lowest rate and narrowest width the
+	 * devices agree on. Zero leaves each unconstrained; a board sets one
+	 * where that choice does not suit its hardware.
+	 */
+	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM, MPIPE_CAPS_FRAME_INTERVAL,
+					  MPIPE_TYPE_UINT, 10000, MPIPE_CAPS_NUM_OF_CHANNEL,
+					  MPIPE_TYPE_UINT, 2, MPIPE_CAPS_END);
+	if (ret < 0) {
+		goto err;
+	}
+#if CONFIG_SAMPLE_AUDIO_SAMPLE_RATE > 0
+	{
+		const struct mpipe_value rate = MPIPE_VALUE_UINT(CONFIG_SAMPLE_AUDIO_SAMPLE_RATE);
+
+		ret = mpipe_structure_append_value(&caps, MPIPE_CAPS_SAMPLE_RATE, &rate);
+		if (ret < 0) {
+			goto err;
+		}
+	}
+#endif
+#if CONFIG_SAMPLE_AUDIO_BIT_WIDTH > 0
+	{
+		const struct mpipe_value width = MPIPE_VALUE_UINT(CONFIG_SAMPLE_AUDIO_BIT_WIDTH);
+
+		ret = mpipe_structure_append_value(&caps, MPIPE_CAPS_BITWIDTH, &width);
+	}
+#endif
 	if (ret < 0) {
 		goto err;
 	}
