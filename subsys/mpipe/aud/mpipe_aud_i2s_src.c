@@ -211,6 +211,10 @@ static int mpipe_aud_i2s_src_set_caps(struct mpipe_src *src, const struct mpipe_
 		return ret;
 	}
 
+	/* Bringing a board up needs the format that negotiation actually chose. */
+	LOG_INF("I2S capture negotiated: %u Hz, %u-bit, %u channels, %u us, %u byte blocks",
+		sample_rate, bit_width, num_of_channel, frame_interval, config.block_size);
+
 	mpipe_pad_set_caps(&src->src_pad, caps);
 
 	return 0;
