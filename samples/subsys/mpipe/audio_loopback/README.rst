@@ -53,7 +53,12 @@ Requirements
 * Sufficient RAM for audio buffering
 * DMA support for audio operations
 
-This sample has been tested on mimxrt685_evk/mimxrt685s/cm33
+This sample has been tested on mimxrt685_evk/mimxrt685s/cm33 and
+xiao_ble/nrf52840/sense.
+
+On :zephyr:board:`xiao_ble` Sense the onboard PDM microphone is captured and
+played to an I2S amplifier with no control interface, such as a MAX98357A. Wire
+its BCLK to D8, LRCLK to D9 and DIN to D10. No codec node is needed.
 
 Building and Running
 ********************
