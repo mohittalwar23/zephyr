@@ -27,3 +27,22 @@ config USE_I2S_TARGET_CODEC_CONTROLLER
 	  (receive) the I2S BCK and WS signals and the codec will be configured
 	  to generate those. If not selected, the I2S peripheral will generate
 	  them and the codec will be expected to consume them.
+
+config SAMPLE_AUDIO_BIT_WIDTH
+	int "Sample bit width the pipeline is constrained to"
+	default 0
+	range 0 32
+	help
+	  Constrain format negotiation to this bit width. Zero leaves the width
+	  unconstrained, so negotiation picks the narrowest the devices agree
+	  on. Set it where a device needs a wider frame than that, such as an
+	  I2S microphone requiring 64 bit clocks per frame.
+
+config SAMPLE_AUDIO_SAMPLE_RATE
+	int "Sample rate the pipeline is constrained to, in Hz"
+	default 0
+	help
+	  Constrain format negotiation to this sample rate. Zero leaves the
+	  rate unconstrained, so negotiation picks the lowest the devices agree
+	  on. Set it where a board's audio clock can only be exact at certain
+	  rates, or where the lowest common rate is not the one wanted.

@@ -36,3 +36,19 @@ tests:
       type: one_line
       regex:
         - "Capture started"
+  sample.mpipe.audio_loopback.format:
+    tags:
+      - mpipe
+      - audio
+      - samples
+    platform_allow:
+      - native_sim/native/64
+    extra_configs:
+      - CONFIG_SAMPLE_AUDIO_SOURCE_I2S=y
+      - CONFIG_SAMPLE_AUDIO_SAMPLE_RATE=16000
+      - CONFIG_SAMPLE_AUDIO_BIT_WIDTH=32
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "I2S capture negotiated: 16000 Hz, 32-bit"
