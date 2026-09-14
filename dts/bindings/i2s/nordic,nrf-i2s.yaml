@@ -39,3 +39,13 @@ properties:
       - "PCLK32M"
       - "PCLK32M_HFXO"
       - "ACLK"
+
+  mck-frequency:
+    type: int
+    description: |
+      Frequency of the MCK clock in Hz. When set, MCK is fixed to the frequency
+      closest to this value and only the MCK/LRCK ratio is chosen from the
+      requested frame clock frequency. This lets devices clocked from the same
+      source, such as a PDM microphone, run at exactly the same sample rate.
+      When not set, MCK and the ratio are both chosen to get closest to the
+      requested frame clock frequency.
