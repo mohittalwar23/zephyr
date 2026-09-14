@@ -13,6 +13,7 @@ tests:
       - mimxrt595_evk/mimxrt595s/cm33
       - mcx_n5xx_evk/mcxn547/cpu0
       - native_sim/native/64
+      - xiao_ble/nrf52840/sense
     harness: console
     harness_config:
       type: one_line
