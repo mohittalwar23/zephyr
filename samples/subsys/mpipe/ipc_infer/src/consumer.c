@@ -7,7 +7,7 @@
 /*
  * The DSP half of the pipeline:
  *
- *   ipc_src -> infer_sink
+ *   ipc_src -> queue -> infer_sink
  *
  * The trunk of this pipeline is on the other core. What arrives here are the
  * same buffers the M7 captured, read in place out of shared memory rather than
@@ -18,6 +18,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <zephyr/mpipe/base/mpipe_queue.h>
 #include <zephyr/mpipe/ipc/mpipe_ipc_plugin.h>
 #include <zephyr/mpipe/mpipe_pipeline.h>
 #include <zephyr/mpipe/utils/mpipe_player.h>
@@ -30,6 +31,7 @@ LOG_MODULE_DECLARE(mpipe_ipc_infer, LOG_LEVEL_INF);
 enum {
 	PIPE_ID = 0,
 	IPC_SRC_ID,
+	QUEUE_ID,
 	INFER_SINK_ID,
 };
 
@@ -39,6 +41,7 @@ enum {
 
 static struct mpipe pipe;
 static struct mpipe_ipc_src source;
+static struct mpipe_queue inference_queue;
 static struct infer_sink infer;
 static struct mpipe_player player;
 static bool source_initialized;
@@ -67,6 +70,10 @@ int consumer_start(const struct device *ipc, struct mpipe_ipc_transport *transpo
 		goto err;
 	}
 	source_initialized = true;
+	ret = mpipe_queue_init(&inference_queue, QUEUE_ID);
+	if (ret < 0) {
+		goto err;
+	}
 	ret = infer_sink_init(&infer, INFER_SINK_ID, CONSUMER_CHANNELS, on_result);
 	if (ret < 0) {
 		goto err;
@@ -91,11 +98,13 @@ int consumer_start(const struct device *ipc, struct mpipe_ipc_transport *transpo
 	}
 
 	ret = mpipe_bin_add((struct mpipe_bin *)&pipe, (struct mpipe_element *)&source,
+			    (struct mpipe_element *)&inference_queue,
 			    (struct mpipe_element *)&infer, NULL);
 	if (ret < 0) {
 		goto err;
 	}
 	ret = mpipe_element_link((struct mpipe_element *)&source,
+				 (struct mpipe_element *)&inference_queue,
 				 (struct mpipe_element *)&infer, NULL);
 	if (ret < 0) {
 		goto err;
@@ -112,7 +121,8 @@ int consumer_start(const struct device *ipc, struct mpipe_ipc_transport *transpo
 	}
 	player_initialized = true;
 
-	LOG_INF("inference pipeline: ipc_src -> micro_speech at %u Hz", CONSUMER_RATE_HZ);
+	LOG_INF("inference pipeline: ipc_src -> queue -> micro_speech at %u Hz",
+		CONSUMER_RATE_HZ);
 	ret = mpipe_player_play(&player);
 	if (ret < 0) {
 		goto err;
