@@ -184,6 +184,12 @@ static void event_handler(const struct device *dev, const nrfx_pdm_evt_t *evt)
 
 		ret = k_mem_slab_alloc(drv_data->mem_slab, &mem_slab_buffer, K_NO_WAIT);
 		if (ret < 0) {
+			ret = k_msgq_get(&drv_data->rx_queue, &mem_slab_buffer, K_NO_WAIT);
+			if (ret == 0) {
+				LOG_WRN_RATELIMIT("No free buffer, dropping oldest block");
+			}
+		}
+		if (ret < 0) {
 			LOG_ERR("Failed to allocate buffer: %d", ret);
 			stop = true;
 		} else {
@@ -254,8 +260,7 @@ static void event_handler(const struct device *dev, const nrfx_pdm_evt_t *evt)
 				 &mem_slab_buffer,
 				 K_NO_WAIT);
 		if (ret < 0) {
-			LOG_ERR("No room in RX queue");
-			stop = true;
+			LOG_WRN_RATELIMIT("No room in RX queue, dropping block");
 			free_buffer(drv_data, mem_slab_buffer);
 		} else {
 			LOG_DBG("Queued buffer %p", evt->buffer_released);
