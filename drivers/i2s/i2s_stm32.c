@@ -615,8 +615,18 @@ static void dma_rx_callback(const struct device *dma_dev, void *arg,
 	ret = k_mem_slab_alloc(stream->cfg.mem_slab, &stream->mem_block,
 			       K_NO_WAIT);
 	if (ret < 0) {
-		stream->state = I2S_STATE_ERROR;
-		goto rx_disable;
+		size_t stale_size;
+
+		/*
+		 * Nothing free: recycle the oldest queued block rather than
+		 * stopping capture for good. Losing the oldest audio beats
+		 * losing all of it.
+		 */
+		if (queue_get(stream->msgq, &stream->mem_block, &stale_size, 0) < 0) {
+			stream->state = I2S_STATE_ERROR;
+			goto rx_disable;
+		}
+		LOG_WRN_RATELIMIT("No free RX block, dropped the oldest");
 	}
 
 	ret = reload_dma(stream->dev_dma, stream->dma_channel,
@@ -640,10 +650,9 @@ static void dma_rx_callback(const struct device *dma_dev, void *arg,
 	ret = queue_put(stream->msgq, mblk_tmp,
 			stream->cfg.block_size, 0);
 	if (ret < 0) {
-		LOG_ERR("queue_put() <FAILED>: ret=%d, used=%d/%d", ret,
-			k_msgq_num_used_get(stream->msgq), CONFIG_I2S_STM32_RX_BLOCK_COUNT);
-		stream->state = I2S_STATE_ERROR;
-		goto rx_disable;
+		/* The reader is behind: drop this block and keep capturing. */
+		LOG_WRN_RATELIMIT("RX queue full, dropped a block");
+		k_mem_slab_free(stream->cfg.mem_slab, mblk_tmp);
 	}
 
 	/* Stop reception if we were requested */
