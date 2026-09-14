@@ -110,6 +110,7 @@ struct dmic_nrfx_pdm_drv_data {
 	bool configured    : 1;
 	volatile bool active;
 	volatile bool stopping;
+	volatile bool draining;
 };
 
 struct dmic_nrfx_pdm_drv_cfg {
@@ -128,6 +129,15 @@ static void free_buffer(struct dmic_nrfx_pdm_drv_data *drv_data, void *buffer)
 {
 	k_mem_slab_free(drv_data->mem_slab, buffer);
 	LOG_DBG("Freed buffer %p", buffer);
+}
+
+static void drain_rx_queue(struct dmic_nrfx_pdm_drv_data *drv_data)
+{
+	void *buffer;
+
+	while (k_msgq_get(&drv_data->rx_queue, &buffer, K_NO_WAIT) == 0) {
+		free_buffer(drv_data, buffer);
+	}
 }
 
 static void stop_pdm(struct dmic_nrfx_pdm_drv_data *drv_data)
@@ -229,6 +239,9 @@ static void event_handler(const struct device *dev, const nrfx_pdm_evt_t *evt)
 
 		if (drv_data->active) {
 			drv_data->active = false;
+			if (drv_data->draining) {
+				drain_rx_queue(drv_data);
+			}
 			ret = release_clock(drv_data);
 			if (ret < 0) {
 				LOG_ERR("Failed to release clock: %d", ret);
@@ -483,9 +496,12 @@ static int dmic_nrfx_pdm_trigger(const struct device *dev,
 	switch (cmd) {
 	case DMIC_TRIGGER_PAUSE:
 	case DMIC_TRIGGER_STOP:
+		drv_data->draining = (cmd == DMIC_TRIGGER_STOP);
 		if (drv_data->active) {
 			drv_data->stopping = true;
 			nrfx_pdm_stop(&drv_data->pdm);
+		} else if (drv_data->draining) {
+			drain_rx_queue(drv_data);
 		}
 		break;
 
@@ -496,6 +512,7 @@ static int dmic_nrfx_pdm_trigger(const struct device *dev,
 			return -EIO;
 		} else if (!drv_data->active) {
 			drv_data->stopping = false;
+			drv_data->draining = false;
 			return trigger_start(dev);
 		}
 		break;
