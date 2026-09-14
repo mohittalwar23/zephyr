@@ -53,7 +53,19 @@ Requirements
 * Sufficient RAM for audio buffering
 * DMA support for audio operations
 
-This sample has been tested on mimxrt685_evk/mimxrt685s/cm33
+This sample has been tested on mimxrt685_evk/mimxrt685s/cm33 and
+nucleo_f401re.
+
+On :zephyr:board:`nucleo_f401re` an I2S microphone is captured on I2S2 and
+played to an I2S amplifier with no control interface, such as a MAX98357A, on
+I2S3. Wire the microphone's WS to PB12, SCK to PB13, SD to PB15 and L/R to
+ground, and the amplifier's LRC to PA4, BCLK to PC10 and DIN to PC12. No codec
+node is needed.
+
+The board runs at 16 kHz because its PLLI2S cannot produce the 48 kHz family
+exactly. Microphones of this kind need 64 bit clocks per frame but place their
+data at the top of the slot, so the I2S node asks for ``channel-length-32``
+rather than for wider samples.
 
 Building and Running
 ********************
