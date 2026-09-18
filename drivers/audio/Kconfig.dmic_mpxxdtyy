@@ -9,3 +9,17 @@ config AUDIO_DMIC_MPXXDTYY
 	select HAS_STLIB
 	help
 	  Enable MPXXDTYY microphone support on the selected board
+
+if AUDIO_DMIC_MPXXDTYY
+
+config DMIC_MPXXDTYY_PDM_BLOCK_SIZE
+	int "PDM block size in bytes"
+	default 512
+	help
+	  Size of one block in the internal slab the PDM bitstream is captured
+	  into, before it is decimated to PCM. The bitstream is larger than the
+	  PCM it produces by the oversampling factor divided by the sample
+	  width, so this bounds the PCM block a caller can ask for: at a
+	  decimation of 64 and 16-bit samples it is four times as large.
+
+endif # AUDIO_DMIC_MPXXDTYY

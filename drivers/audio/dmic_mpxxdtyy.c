@@ -6,6 +6,9 @@
 
 #define DT_DRV_COMPAT st_mpxxdtyy
 
+#include <string.h>
+
+#include <zephyr/audio/audio_caps.h>
 #include <zephyr/devicetree.h>
 
 #include "dmic_mpxxdtyy.h"
@@ -119,14 +122,16 @@ int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
 		}
 	}
 
-	for (j = 0; j < pcm_size / 2; j += pdm_filter[0].Fs / 1000) {
-		/*
-		 * The number of PDM bytes per PCM sample is the decimation factor
-		 * divided by the number of bits per byte (8). We need to skip a number of
-		 * PDM bytes equivalent to the number of PCM samples, times the number of
-		 * channels.
-		 */
-		pdm_offset = j * (pdm_filter[0].Decimation / 8) * pdm_filter[0].In_MicChannels;
+	/*
+	 * Each call produces Fs/1000 samples per channel, so the interleaved
+	 * output advances by that times the channel count. The PDM bytes
+	 * consumed to reach interleaved sample j are j times the decimation
+	 * factor over the bits in a byte; the channel count is already in j.
+	 */
+	const uint32_t step = (pdm_filter[0].Fs / 1000U) * pdm_filter[0].In_MicChannels;
+
+	for (j = 0; j < pcm_size / 2; j += step) {
+		pdm_offset = j * (pdm_filter[0].Decimation / 8);
 
 		for (i = 0; i < pdm_filter[0].In_MicChannels; i++) {
 			switch (pdm_filter[0].Decimation) {
@@ -153,12 +158,39 @@ int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
 	return 0;
 }
 
+static int mpxxdtyy_get_caps(const struct device *dev, struct audio_caps *caps)
+{
+	ARG_UNUSED(dev);
+
+	memset(caps, 0, sizeof(*caps));
+	caps->min_total_channels = 1U;
+	caps->max_total_channels = 2U;
+	/*
+	 * Which rates are reachable depends on the oversampling factor and the
+	 * channel count, which are not known until configure() picks them, so
+	 * it rejects what the microphone's PDM clock range cannot meet.
+	 */
+	caps->supported_sample_rates = AUDIO_SAMPLE_RATE_8000 | AUDIO_SAMPLE_RATE_16000 |
+				       AUDIO_SAMPLE_RATE_22050 | AUDIO_SAMPLE_RATE_32000 |
+				       AUDIO_SAMPLE_RATE_44100 | AUDIO_SAMPLE_RATE_48000;
+	/* The decimation filter writes 16-bit samples and nothing else. */
+	caps->supported_bit_widths = AUDIO_BIT_WIDTH_16;
+	/* One block is allocated per read and handed straight to the caller. */
+	caps->min_num_buffers = 1U;
+	caps->min_frame_interval = 1000U;
+	caps->max_frame_interval = 100000U;
+	caps->interleaved = true;
+
+	return 0;
+}
+
 static DEVICE_API(dmic, mpxxdtyy_driver_api) = {
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2s)
-	.configure		= mpxxdtyy_i2s_configure,
-	.trigger		= mpxxdtyy_i2s_trigger,
-	.read			= mpxxdtyy_i2s_read,
+	.configure = mpxxdtyy_i2s_configure,
+	.trigger = mpxxdtyy_i2s_trigger,
+	.read = mpxxdtyy_i2s_read,
 #endif /* DT_ANY_INST_ON_BUS_STATUS_OKAY(i2s) */
+	.get_caps = mpxxdtyy_get_caps,
 };
 
 static int mpxxdtyy_initialize(const struct device *dev)
