@@ -13,6 +13,8 @@ zephyr_sources(
   mpu_regions.c
 )
 
+zephyr_linker_sources(NOINIT nocache.ld)
+
 if(CONFIG_OPENAMP_RSC_TABLE)
   zephyr_linker_section(NAME .resource_table GROUP ROM_REGION NOINPUT)
   zephyr_linker_section_configure(SECTION .resource_table KEEP INPUT ".resource_table*")
