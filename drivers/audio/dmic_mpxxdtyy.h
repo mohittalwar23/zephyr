@@ -21,6 +21,8 @@ extern "C" {
 
 struct mpxxdtyy_config {
 	const struct device *comm_master;
+	/** Microphones sharing the data line. */
+	uint8_t mic_count;
 };
 
 struct mpxxdtyy_data {
@@ -28,12 +30,13 @@ struct mpxxdtyy_data {
 	TPDMFilter_InitStruct	pdm_filter[2];
 	size_t			pcm_mem_size;
 	struct k_mem_slab	*pcm_mem_slab;
+	/** Channels the caller asked for, which the decimated frames spread over. */
+	uint8_t out_chan;
 };
 
 uint16_t sw_filter_lib_init(const struct device *dev, struct dmic_cfg *cfg);
-int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
-		      void *pdm_block, void *pcm_block,
-		      size_t pdm_size, size_t pcm_size);
+int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter, void *pdm_block, void *pcm_block,
+		      size_t pdm_size, size_t pcm_size, uint8_t out_chan);
 
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2s)
 int mpxxdtyy_i2s_read(const struct device *dev, uint8_t stream, void **buffer,
