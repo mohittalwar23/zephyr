@@ -16,7 +16,7 @@ LOG_MODULE_DECLARE(mpxxdtyy);
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2s)
 
 #define NUM_RX_BLOCKS			4
-#define PDM_BLOCK_MAX_SIZE_BYTES	512
+#define PDM_BLOCK_MAX_SIZE_BYTES        CONFIG_DMIC_MPXXDTYY_PDM_BLOCK_SIZE
 
 K_MEM_SLAB_DEFINE(rx_pdm_i2s_mslab, PDM_BLOCK_MAX_SIZE_BYTES, NUM_RX_BLOCKS, 1);
 
@@ -104,15 +104,22 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	data->pcm_mem_slab = cfg->streams->mem_slab;
 	data->pcm_mem_size = cfg->streams->block_size;
 
-	/* check requested min pdm frequency */
-	if (cfg->io.min_pdm_clk_freq < MPXXDTYY_MIN_PDM_FREQ ||
-	    cfg->io.min_pdm_clk_freq > cfg->io.max_pdm_clk_freq) {
+	/*
+	 * The caller describes what its microphone accepts. Narrow that to what
+	 * this driver can produce rather than refusing it: a caller asking for
+	 * a wider range than the part supports is not an error, and rejecting
+	 * it turns away the values samples/drivers/audio/dmic passes.
+	 */
+	if (cfg->io.min_pdm_clk_freq > cfg->io.max_pdm_clk_freq) {
 		return -EINVAL;
 	}
 
-	/* check requested max pdm frequency */
-	if (cfg->io.max_pdm_clk_freq > MPXXDTYY_MAX_PDM_FREQ ||
-	    cfg->io.max_pdm_clk_freq < cfg->io.min_pdm_clk_freq) {
+	cfg->io.min_pdm_clk_freq = MAX(cfg->io.min_pdm_clk_freq, MPXXDTYY_MIN_PDM_FREQ);
+	cfg->io.max_pdm_clk_freq = MIN(cfg->io.max_pdm_clk_freq, MPXXDTYY_MAX_PDM_FREQ);
+
+	if (cfg->io.min_pdm_clk_freq > cfg->io.max_pdm_clk_freq) {
+		LOG_ERR("no PDM clock in %u..%u this part can produce", cfg->io.min_pdm_clk_freq,
+			cfg->io.max_pdm_clk_freq);
 		return -EINVAL;
 	}
 
@@ -131,6 +138,11 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
 	i2s_cfg.frame_clk_freq = audio_freq * factor / chan_size;
 	i2s_cfg.block_size = data->pcm_mem_size * (factor / chan_size);
+	if (i2s_cfg.block_size > PDM_BLOCK_MAX_SIZE_BYTES) {
+		LOG_ERR("PDM block of %u bytes exceeds the %u the slab holds", i2s_cfg.block_size,
+			PDM_BLOCK_MAX_SIZE_BYTES);
+		return -EINVAL;
+	}
 	i2s_cfg.mem_slab = &rx_pdm_i2s_mslab;
 	i2s_cfg.timeout = 2000;
 
