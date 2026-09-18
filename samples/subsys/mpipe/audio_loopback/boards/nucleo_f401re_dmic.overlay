@@ -1,0 +1,23 @@
+/*
+ * PDM microphone on the alternate I2S2 pins, so the I2S microphone and the
+ * amplifier stay wired. Only one source is built at a time.
+ */
+&i2s2 {
+	/delete-property/ channel-length-32;
+	pinctrl-0 = <&i2s2_ck_pb10 &i2s2_sd_pc3>;
+	pinctrl-names = "default";
+
+	dmic_dev: mp34dt01@0 {
+		compatible = "st,mpxxdtyy";
+		reg = <0>;
+	};
+};
+
+/*
+ * A single PDM microphone releases the data line for the half of each clock
+ * period that belongs to the other channel, so the line needs holding. The
+ * i.MX8MP EVK does the same with bias-pull-up on its PDM pins.
+ */
+&i2s2_sd_pc3 {
+	bias-pull-up;
+};
