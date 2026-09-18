@@ -35,74 +35,6 @@ static bool region_valid(const struct mpipe_ipc_region *region)
 	return base <= UINTPTR_MAX - region->size && (base & (region->align - 1U)) == 0U;
 }
 
-static bool caps_field_valid(uint8_t media_type, uint8_t field_id)
-{
-	if (field_id == MPIPE_CAPS_FRAME_INTERVAL) {
-		return media_type == MPIPE_MEDIA_AUDIO_PCM || media_type == MPIPE_MEDIA_VIDEO;
-	}
-	if (media_type == MPIPE_MEDIA_AUDIO_PCM) {
-		return IN_RANGE(field_id, MPIPE_CAPS_SAMPLE_RATE, MPIPE_CAPS_INTERLEAVED);
-	}
-	if (media_type == MPIPE_MEDIA_VIDEO) {
-		return IN_RANGE(field_id, MPIPE_CAPS_PIXEL_FORMAT, MPIPE_CAPS_IMAGE_HEIGHT);
-	}
-
-	return false;
-}
-
-static bool caps_value_valid(uint8_t field_id, const struct mpipe_value *value)
-{
-	if (field_id == MPIPE_CAPS_INTERLEAVED) {
-		uint8_t raw_boolean;
-
-		memcpy(&raw_boolean, &value->v_boolean, sizeof(raw_boolean));
-		return value->type == MPIPE_TYPE_BOOLEAN && raw_boolean <= 1U;
-	}
-	if (field_id == MPIPE_CAPS_PIXEL_FORMAT) {
-		return value->type == MPIPE_TYPE_UINT;
-	}
-	if (value->type == MPIPE_TYPE_UINT) {
-		return true;
-	}
-	if (value->type != MPIPE_TYPE_UINT_RANGE) {
-		return false;
-	}
-
-	return value->range.min.v_uint <= value->range.max.v_uint &&
-	       value->range.step.v_uint != 0U;
-}
-
-static bool caps_wire_valid(const struct mpipe_structure *caps)
-{
-	uint32_t fields_seen = 0U;
-
-	if (caps->media_type_id >= MPIPE_MEDIA_END ||
-	    (caps->flags & ~MPIPE_STRUCTURE_FLAG_ANY) != 0U ||
-	    caps->num_fields > CONFIG_MPIPE_STRUCTURE_MAX_FIELDS) {
-		return false;
-	}
-	if ((caps->flags & MPIPE_STRUCTURE_FLAG_ANY) != 0U) {
-		return caps->media_type_id == MPIPE_MEDIA_UNKNOWN && caps->num_fields == 0U;
-	}
-	if (caps->media_type_id == MPIPE_MEDIA_UNKNOWN) {
-		return caps->num_fields == 0U;
-	}
-
-	for (uint8_t i = 0; i < caps->num_fields; i++) {
-		uint8_t field_id = caps->ids[i];
-
-		if (field_id >= MPIPE_CAPS_END ||
-		    !caps_field_valid(caps->media_type_id, field_id) ||
-		    (fields_seen & BIT(field_id)) != 0U ||
-		    !caps_value_valid(field_id, &caps->values[i])) {
-			return false;
-		}
-		fields_seen |= BIT(field_id);
-	}
-
-	return true;
-}
-
 static bool src_buffer_valid(const struct mpipe_ipc_src *src, uint32_t offset, uint32_t size)
 {
 	return size != 0U && offset <= src->region.size && size <= src->region.size - offset &&
@@ -190,18 +122,26 @@ static int wrapper_pool_acquire(struct mpipe_buffer_pool *pool, struct net_buf *
 
 static int src_send(struct mpipe_ipc_src *src, const struct mpipe_ipc_msg *msg)
 {
+	uint8_t frame[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t written;
 	int ret;
 
 	if (atomic_get(&src->registered) == 0 || !session_current(src)) {
 		return -ENOTCONN;
 	}
 
-	ret = ipc_service_send(&src->ept, msg, sizeof(*msg));
+	ret = mpipe_ipc_msg_encode(frame, sizeof(frame), msg, &written);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* A backend that accepted only part of a message has not sent it. */
+	ret = ipc_service_send(&src->ept, frame, written);
 	if (ret < 0) {
 		return ret;
 	}
 
-	return ret == sizeof(*msg) ? 0 : -EMSGSIZE;
+	return (size_t)ret == written ? 0 : -EMSGSIZE;
 }
 
 static bool release_claim(struct mpipe_ipc_src *src, unsigned int id,
@@ -246,10 +186,9 @@ static int send_release(struct mpipe_ipc_src *src, uint32_t buffer_id,
 			uint16_t generation)
 {
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = {
-			.buffer_id = buffer_id,
+			.buffer_id = (uint16_t)buffer_id,
 			.generation = generation,
 		},
 	};
@@ -364,10 +303,12 @@ static void src_bound(void *priv)
 static void src_received(const void *data, size_t len, void *priv)
 {
 	struct mpipe_ipc_src *src = priv;
-	const struct mpipe_ipc_msg *msg = data;
 	struct mpipe_buffer_meta *meta;
+	struct mpipe_ipc_msg message;
+	const struct mpipe_ipc_msg *msg = &message;
 	struct net_buf *buf;
 	uint16_t generation;
+	int err;
 
 	if (!operation_enter(src)) {
 		return;
@@ -375,13 +316,10 @@ static void src_received(const void *data, size_t len, void *priv)
 	if (!session_current(src)) {
 		goto out;
 	}
-	if (len != sizeof(*msg)) {
-		LOG_ERR("message of %zu bytes, expected %zu", len, sizeof(*msg));
-		goto out;
-	}
-	if (msg->version != MPIPE_IPC_PLUGIN_VERSION) {
-		LOG_ERR("message version %u, expected %u", msg->version,
-			MPIPE_IPC_PLUGIN_VERSION);
+
+	err = mpipe_ipc_msg_decode(&message, data, len);
+	if (err != 0) {
+		LOG_ERR("dropped a malformed message of %zu bytes: %d", len, err);
 		goto out;
 	}
 
@@ -393,10 +331,6 @@ static void src_received(const void *data, size_t len, void *priv)
 			.caps = &src->caps,
 		};
 
-		if (!caps_wire_valid(&msg->caps)) {
-			LOG_ERR("malformed CAPS message");
-			goto out;
-		}
 		src->caps = msg->caps;
 		atomic_set(&src->have_caps, 1);
 		(void)mpipe_pad_set_caps(&src->base.src_pad, &src->caps);
@@ -407,8 +341,7 @@ static void src_received(const void *data, size_t len, void *priv)
 	}
 
 	if (msg->type == MPIPE_IPC_MSG_EVENT) {
-		if (msg->event.event_type == MPIPE_DISPATCH_EOS &&
-		    src->base.src_pad.peer != NULL) {
+		if (src->base.src_pad.peer != NULL) {
 			struct mpipe_dispatch event = { .type = MPIPE_DISPATCH_EOS };
 
 			(void)mpipe_pad_send_event(src->base.src_pad.peer, &event);
@@ -426,7 +359,7 @@ static void src_received(const void *data, size_t len, void *priv)
 			src->transport->session.remote_sid);
 		goto out;
 	}
-	generation = (uint16_t)msg->data.generation;
+	generation = msg->data.generation;
 
 	if (msg->data.buffer_id >= CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS) {
 		LOG_ERR("buffer id %u is out of range", msg->data.buffer_id);

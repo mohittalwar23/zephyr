@@ -96,27 +96,36 @@ static int sink_buffer_offset(const struct mpipe_ipc_sink *sink, const struct ne
 
 static int sink_send(struct mpipe_ipc_sink *sink, const struct mpipe_ipc_msg *msg)
 {
+	uint8_t frame[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t written;
 	int ret;
 
 	if (atomic_get(&sink->registered) == 0 || !session_current(sink)) {
 		return -ENOTCONN;
 	}
 
-	ret = ipc_service_send(&sink->ept, msg, sizeof(*msg));
+	ret = mpipe_ipc_msg_encode(frame, sizeof(frame), msg, &written);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* A backend that accepted only part of a message has not sent it. */
+	ret = ipc_service_send(&sink->ept, frame, written);
 	if (ret < 0) {
 		return ret;
 	}
 
-	return ret == sizeof(*msg) ? 0 : -EMSGSIZE;
+	return (size_t)ret == written ? 0 : -EMSGSIZE;
 }
 
 static void sink_received(const void *data, size_t len, void *priv)
 {
 	struct mpipe_ipc_sink *sink = priv;
-	const struct mpipe_ipc_msg *msg = data;
+	struct mpipe_ipc_msg msg;
 	struct net_buf *buf = NULL;
 	k_spinlock_key_t key;
 	uint32_t id;
+	int err;
 
 	if (!operation_enter(sink)) {
 		return;
@@ -124,21 +133,18 @@ static void sink_received(const void *data, size_t len, void *priv)
 	if (!session_current(sink)) {
 		goto out;
 	}
-	if (len != sizeof(*msg)) {
-		LOG_ERR("message of %zu bytes, expected %zu", len, sizeof(*msg));
+
+	err = mpipe_ipc_msg_decode(&msg, data, len);
+	if (err != 0) {
+		LOG_ERR("dropped a malformed message of %zu bytes: %d", len, err);
 		goto out;
 	}
-	if (msg->version != MPIPE_IPC_PLUGIN_VERSION) {
-		LOG_ERR("message version %u, expected %u", msg->version,
-			MPIPE_IPC_PLUGIN_VERSION);
-		goto out;
-	}
-	if (msg->type != MPIPE_IPC_MSG_DATA_RELEASE) {
-		LOG_DBG("ignoring message type %u", msg->type);
+	if (msg.type != MPIPE_IPC_MSG_DATA_RELEASE) {
+		LOG_DBG("ignoring message type %u", msg.type);
 		goto out;
 	}
 
-	id = msg->release.buffer_id;
+	id = msg.release.buffer_id;
 	if (id >= CONFIG_MPIPE_IPC_PLUGIN_MAX_BUFFERS) {
 		LOG_ERR("release buffer id %u is out of range", id);
 		goto out;
@@ -146,7 +152,7 @@ static void sink_received(const void *data, size_t len, void *priv)
 
 	key = k_spin_lock(&sink->pending_lock);
 	if (sink->pending[id] != NULL &&
-	    msg->release.generation == sink->pending_generation[id]) {
+	    msg.release.generation == sink->pending_generation[id]) {
 		buf = sink->pending[id];
 		sink->pending[id] = NULL;
 		sink->pending_generation[id] = MPIPE_IPC_SID_NONE;
@@ -155,7 +161,7 @@ static void sink_received(const void *data, size_t len, void *priv)
 
 	if (buf == NULL) {
 		LOG_ERR("release for buffer %u generation %u is not outstanding", id,
-			msg->release.generation);
+			msg.release.generation);
 		goto out;
 	}
 
@@ -185,7 +191,6 @@ static void sink_bound(void *priv)
 	key = k_spin_lock(&sink->caps_lock);
 	if (atomic_get(&sink->have_caps) != 0) {
 		msg = (struct mpipe_ipc_msg){
-			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_CAPS,
 			.caps = sink->caps,
 		};
@@ -265,13 +270,12 @@ static int sink_chain_fn(struct mpipe_pad *pad, struct net_buf *in_buf,
 	}
 
 	msg = (struct mpipe_ipc_msg){
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = offset,
 			.size = meta->bytes_used,
 			.timestamp = meta->timestamp,
-			.buffer_id = (uint32_t)id,
+			.buffer_id = (uint16_t)id,
 			.generation = generation,
 		},
 	};
@@ -309,7 +313,6 @@ static int sink_set_caps(struct mpipe_sink *base, const struct mpipe_structure *
 {
 	struct mpipe_ipc_sink *sink = (struct mpipe_ipc_sink *)base;
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_CAPS,
 	};
 	k_spinlock_key_t key;
@@ -355,7 +358,6 @@ static int sink_event_fn(struct mpipe_pad *pad, struct mpipe_dispatch *event)
 	if (event->type == MPIPE_DISPATCH_EOS && atomic_get(&sink->bound) != 0 &&
 	    operation_enter(sink)) {
 		struct mpipe_ipc_msg msg = {
-			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_EVENT,
 			.event = { .event_type = MPIPE_DISPATCH_EOS },
 		};
