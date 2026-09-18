@@ -32,7 +32,8 @@ int mpxxdtyy_i2s_read(const struct device *dev, uint8_t stream, void **buffer,
 
 	ret = i2s_read(config->comm_master, &pdm_block, &pdm_size);
 	if (ret != 0) {
-		LOG_ERR("read failed (%d)", ret);
+		/* A reader that bounds its wait so it can be joined reaches this. */
+		LOG_DBG("no PDM block within the timeout: %d", ret);
 		return ret;
 	}
 
@@ -42,8 +43,8 @@ int mpxxdtyy_i2s_read(const struct device *dev, uint8_t stream, void **buffer,
 		return ret;
 	}
 
-	sw_filter_lib_run(pdm_filter, pdm_block, pcm_block, pdm_size,
-			  data->pcm_mem_size);
+	sw_filter_lib_run(pdm_filter, pdm_block, pcm_block, pdm_size, data->pcm_mem_size,
+			  data->out_chan);
 	k_mem_slab_free(&rx_pdm_i2s_mslab, pdm_block);
 
 	*buffer = pcm_block;
@@ -69,10 +70,30 @@ int mpxxdtyy_i2s_trigger(const struct device *dev, enum dmic_trigger cmd)
 			return 0;
 		}
 		break;
-	case DMIC_TRIGGER_STOP:
+	case DMIC_TRIGGER_RELEASE:
+		/* Resume a paused stream; the configuration is still good. */
+		if (data->state == DMIC_STATE_PAUSED) {
+			tmp_state = DMIC_STATE_ACTIVE;
+			i2s_cmd = I2S_TRIGGER_START;
+		} else {
+			return 0;
+		}
+		break;
+	case DMIC_TRIGGER_PAUSE:
+		/* Stop capturing but stay configured, so RELEASE can resume. */
 		if (data->state == DMIC_STATE_ACTIVE) {
-			tmp_state = DMIC_STATE_CONFIGURED;
+			tmp_state = DMIC_STATE_PAUSED;
 			i2s_cmd = I2S_TRIGGER_STOP;
+		} else {
+			return 0;
+		}
+		break;
+	case DMIC_TRIGGER_STOP:
+	case DMIC_TRIGGER_RESET:
+		if (data->state == DMIC_STATE_ACTIVE || data->state == DMIC_STATE_PAUSED) {
+			tmp_state = DMIC_STATE_CONFIGURED;
+			i2s_cmd = (data->state == DMIC_STATE_ACTIVE) ? I2S_TRIGGER_STOP
+								     : I2S_TRIGGER_DROP;
 		} else {
 			return 0;
 		}
@@ -103,6 +124,7 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	/* PCM buffer size */
 	data->pcm_mem_slab = cfg->streams->mem_slab;
 	data->pcm_mem_size = cfg->streams->block_size;
+	data->out_chan = cfg->channel.req_num_chan;
 
 	/*
 	 * The caller describes what its microphone accepts. Narrow that to what
@@ -132,12 +154,18 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	struct i2s_config i2s_cfg;
 
 	i2s_cfg.word_size = chan_size;
-	i2s_cfg.channels = cfg->channel.req_num_chan;
+	/* The link carries one bitstream per microphone, whatever the caller asked for. */
+	i2s_cfg.channels = config->mic_count;
 	i2s_cfg.format = I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED |
 			 I2S_FMT_BIT_CLK_INV;
 	i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
 	i2s_cfg.frame_clk_freq = audio_freq * factor / chan_size;
-	i2s_cfg.block_size = data->pcm_mem_size * (factor / chan_size);
+	/*
+	 * One PDM bit per microphone per oversampled tick, so the bitstream is
+	 * sized from the frames the PCM block holds rather than its samples.
+	 */
+	i2s_cfg.block_size = (data->pcm_mem_size / 2U / cfg->channel.req_num_chan) *
+			     config->mic_count * (factor / 8U);
 	if (i2s_cfg.block_size > PDM_BLOCK_MAX_SIZE_BYTES) {
 		LOG_ERR("PDM block of %u bytes exceeds the %u the slab holds", i2s_cfg.block_size,
 			PDM_BLOCK_MAX_SIZE_BYTES);
