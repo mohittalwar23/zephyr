@@ -15,16 +15,24 @@
  * this one carries a running pipeline across it.
  *
  * Audio does not travel in these messages. A buffer is handed over by
- * reference -- region offset, size and an identifier -- and the consumer reads the
- * samples in place out of shared memory, then returns the identifier so the
+ * reference -- region offset, size and an identifier -- and the consumer reads
+ * the samples in place out of shared memory, then returns the identifier so the
  * producer can free the buffer. The identifier, rather than the address, is
  * what comes back: it is what makes a release cheap to validate.
+ *
+ * @ref mpipe_ipc_msg is the decoded form, used by the code on either side. It
+ * is never sent as itself. What travels is the byte layout that
+ * mpipe_ipc_msg_encode() writes: fixed-width, little-endian, with a version and
+ * no padding a compiler chose. Two cores agreeing on a C struct would mean
+ * agreeing on their compilers' ABIs and on CONFIG_MPIPE_STRUCTURE_MAX_FIELDS,
+ * none of which either side can check -- and the padding inside such a struct
+ * would put whatever the stack last held on the wire.
  */
 
 #ifndef ZEPHYR_INCLUDE_MPIPE_IPC_MPIPE_IPC_MSG_H_
 #define ZEPHYR_INCLUDE_MPIPE_IPC_MPIPE_IPC_MSG_H_
 
-#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <zephyr/mpipe/mpipe_structure.h>
@@ -34,8 +42,13 @@
 extern "C" {
 #endif
 
-/** @brief Largest serialized payload carried inside a message. */
-#define MPIPE_IPC_MAX_SERIALIZED_PAYLOAD 64
+/**
+ * @brief Protocol version carried by every plugin message.
+ *
+ * A peer built against a different version is rejected message by message
+ * rather than misread: the layouts below are only meaningful together with it.
+ */
+#define MPIPE_IPC_PLUGIN_VERSION 3U
 
 /**
  * @brief Largest buffer identifier the protocol can carry.
@@ -46,87 +59,121 @@ extern "C" {
  */
 #define MPIPE_IPC_MAX_BUFFERS 64
 
-/** Protocol version carried by every plugin message. */
-#define MPIPE_IPC_PLUGIN_VERSION 2U
+/**
+ * @brief Most capability fields one CAPS message can carry.
+ *
+ * A structure holds at most one value per field identifier, so there is nothing
+ * to carry beyond the number of identifiers that exist.
+ */
+#define MPIPE_IPC_WIRE_MAX_CAPS_FIELDS MPIPE_CAPS_END
+
+/** @brief Bytes every message begins with: version, type, and padding. */
+#define MPIPE_IPC_WIRE_HEADER_LEN 4U
+
+/** @brief Bytes one capability field occupies inside a CAPS message. */
+#define MPIPE_IPC_WIRE_FIELD_LEN 16U
+
+/** @brief Longest message the protocol can produce, which is a full CAPS. */
+#define MPIPE_IPC_WIRE_MAX_LEN                                                                 \
+	(MPIPE_IPC_WIRE_HEADER_LEN + 4U +                                                      \
+	 (MPIPE_IPC_WIRE_MAX_CAPS_FIELDS * MPIPE_IPC_WIRE_FIELD_LEN))
 
 /** @brief Message types exchanged between an IPC sink and source. */
 enum mpipe_ipc_msg_type {
-	MPIPE_IPC_MSG_STATE_CHANGE = 0,
-	MPIPE_IPC_MSG_PROPERTY_SET,
-	MPIPE_IPC_MSG_DATA_BUFFER,
+	/** A buffer in the shared region is handed to the peer. */
+	MPIPE_IPC_MSG_DATA_BUFFER = 0,
+	/** The peer is done with a buffer it was handed. */
 	MPIPE_IPC_MSG_DATA_RELEASE,
+	/** A pipeline event, forwarded across the link. */
 	MPIPE_IPC_MSG_EVENT,
+	/** The format the sending half settled on. */
 	MPIPE_IPC_MSG_CAPS,
-	MPIPE_IPC_MSG_QUERY_REQ,
-	MPIPE_IPC_MSG_QUERY_RESP,
-	MPIPE_IPC_MSG_BUS,
+	/** One past the last type. */
+	MPIPE_IPC_MSG_END,
 };
 
-BUILD_ASSERT(sizeof(struct mpipe_structure) <= 128,
-	     "a caps structure must stay small enough to carry in one message");
-
-/** @brief One message. Fixed size, so a short read is a protocol error. */
+/** @brief One message, decoded. Never sent as itself; see the file comment. */
 struct mpipe_ipc_msg {
-	uint32_t version;
-	uint32_t type;
+	/** One of @ref mpipe_ipc_msg_type. */
+	uint8_t type;
 	union {
-		struct {
-			uint32_t state;
-		} state_cmd;
-
-		struct {
-			uint32_t element_id;
-			uint32_t prop_id;
-			uint32_t prop_val;
-		} prop_cmd;
-
 		/** A buffer handed over by reference. */
 		struct {
+			/** Byte offset within the negotiated shared region. */
 			uint32_t offset;
+			/** Bytes of payload at @ref offset. */
 			uint32_t size;
+			/** Capture timestamp, in the pipeline's own units. */
 			uint32_t timestamp;
-			uint32_t buffer_id;
+			/** Which of the sender's slots this buffer occupies. */
+			uint16_t buffer_id;
 			/** Session of the core that owns the referenced storage. */
-			uint32_t generation;
+			uint16_t generation;
 		} data;
 
 		/** The consumer is done with a buffer. */
 		struct {
-			uint32_t buffer_id;
+			/** The slot being returned. */
+			uint16_t buffer_id;
 			/** Ownership generation copied from the matching DATA. */
-			uint32_t generation;
+			uint16_t generation;
 		} release;
 
+		/** A pipeline event. */
 		struct {
+			/** One of @ref mpipe_dispatch_type. */
 			uint8_t event_type;
-			uint8_t payload[MPIPE_IPC_MAX_SERIALIZED_PAYLOAD];
 		} event;
 
 		/**
-		 * The format the sink's half of the pipeline settled on.
+		 * The format the sender's half of the pipeline settled on.
 		 *
 		 * Sent rather than configured separately on both cores. A
 		 * format the two halves are each told is a format they can
 		 * silently disagree about: every element accepts, and the audio
 		 * is simply wrong.
-		 *
-		 * A structure is flat and holds no pointers, so it travels as
-		 * itself.
 		 */
 		struct mpipe_structure caps;
-
-		struct {
-			uint8_t query_type;
-			bool success;
-			uint8_t payload[MPIPE_IPC_MAX_SERIALIZED_PAYLOAD];
-		} query;
-
-		struct {
-			uint32_t msg_type;
-			uint8_t payload[MPIPE_IPC_MAX_SERIALIZED_PAYLOAD];
-		} bus_msg;
 	};
 };
+
+/**
+ * @brief Serialize a message into its wire form.
+ *
+ * @param dst      Where to write; at least @ref MPIPE_IPC_WIRE_MAX_LEN bytes is
+ *                 always enough.
+ * @param capacity Bytes available at @p dst.
+ * @param msg      Message to encode.
+ * @param written  Set to the number of bytes written on success.
+ *
+ * @retval 0 on success.
+ * @retval -EINVAL on a NULL argument, an unknown type, or a value the wire
+ *         format cannot represent.
+ * @retval -ENOSPC if @p capacity is too small for this message.
+ */
+int mpipe_ipc_msg_encode(void *dst, size_t capacity, const struct mpipe_ipc_msg *msg,
+			 size_t *written);
+
+/**
+ * @brief Parse a received message, rejecting anything malformed.
+ *
+ * Nothing is written to @p msg unless the whole message passes: the version,
+ * the exact length for the type, the reserved bytes, and for CAPS every
+ * identifier, type and range in the structure. A caller therefore never has to
+ * re-check what it decoded, only what depends on its own state -- whether a
+ * buffer identifier is one it handed out, whether an offset lies in its region.
+ *
+ * @param msg    Filled in on success.
+ * @param src    Received bytes.
+ * @param length Number of bytes received.
+ *
+ * @retval 0 on success.
+ * @retval -EINVAL on a NULL argument.
+ * @retval -EMSGSIZE if @p length does not match the message's type.
+ * @retval -ENOTSUP if the version or the type is not one this build speaks.
+ * @retval -EPROTO if a field is out of range or a reserved byte is nonzero.
+ */
+int mpipe_ipc_msg_decode(struct mpipe_ipc_msg *msg, const void *src, size_t length);
 
 #ifdef __cplusplus
 }

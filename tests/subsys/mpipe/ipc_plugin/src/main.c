@@ -14,6 +14,7 @@
 #include <zephyr/mpipe/ipc/mpipe_ipc_transport.h>
 #include <zephyr/mpipe/mpipe_buffer.h>
 #include <zephyr/mpipe/mpipe_pipeline.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/ztest.h>
 
 #define DT_DRV_COMPAT zephyr_mpipe_ipc_test
@@ -22,7 +23,9 @@
 
 struct fake_ipc_context {
 	const struct ipc_ept_cfg *cfg[8];
+	/* What was transmitted, decoded back: the wire is what is asserted on. */
 	struct mpipe_ipc_msg sent[8];
+	int sent_decoded[8];
 	size_t sent_len[8];
 	unsigned int sent_endpoint[8];
 	unsigned int register_count;
@@ -107,7 +110,7 @@ static int fake_send(const struct device *instance, void *token, const void *dat
 	ARG_UNUSED(token);
 
 	if (slot < ARRAY_SIZE(fake.sent)) {
-		memcpy(&fake.sent[slot], data, MIN(len, sizeof(fake.sent[slot])));
+		fake.sent_decoded[slot] = mpipe_ipc_msg_decode(&fake.sent[slot], data, len);
 		fake.sent_len[slot] = len;
 		fake.sent_endpoint[slot] = (unsigned int)(uintptr_t)token - 1U;
 	}
@@ -157,11 +160,22 @@ static void fake_bound(unsigned int endpoint)
 	fake.cfg[endpoint]->cb.bound(fake.cfg[endpoint]->priv);
 }
 
-static void fake_receive(unsigned int endpoint, const struct mpipe_ipc_msg *msg)
+/* Deliver arbitrary bytes, which is the only thing a malformed peer can do. */
+static void fake_receive_raw(unsigned int endpoint, const void *frame, size_t len)
 {
 	zassert_not_null(fake.cfg[endpoint]);
 	zassert_not_null(fake.cfg[endpoint]->cb.received);
-	fake.cfg[endpoint]->cb.received(msg, sizeof(*msg), fake.cfg[endpoint]->priv);
+	fake.cfg[endpoint]->cb.received(frame, len, fake.cfg[endpoint]->priv);
+}
+
+/* Deliver a message the way a well-behaved peer would send it. */
+static void fake_receive(unsigned int endpoint, const struct mpipe_ipc_msg *msg)
+{
+	uint8_t frame[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t written;
+
+	zassert_ok(mpipe_ipc_msg_encode(frame, sizeof(frame), msg, &written));
+	fake_receive_raw(endpoint, frame, written);
 }
 
 static int consume_chain(struct mpipe_pad *pad, struct net_buf *in_buf,
@@ -182,10 +196,12 @@ static int consume_chain(struct mpipe_pad *pad, struct net_buf *in_buf,
 static void receive_entry(void *cfg_arg, void *msg_arg, void *unused)
 {
 	const struct ipc_ept_cfg *cfg = cfg_arg;
-	const struct mpipe_ipc_msg *msg = msg_arg;
+	uint8_t frame[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t written;
 
 	ARG_UNUSED(unused);
-	cfg->cb.received(msg, sizeof(*msg), cfg->priv);
+	zassert_ok(mpipe_ipc_msg_encode(frame, sizeof(frame), msg_arg, &written));
+	cfg->cb.received(frame, written, cfg->priv);
 }
 
 static void deinit_entry(void *src_arg, void *unused1, void *unused2)
@@ -278,7 +294,6 @@ ZTEST(mpipe_ipc_plugin, test_data_follows_push_source_lifecycle)
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = 0U,
@@ -311,7 +326,6 @@ ZTEST(mpipe_ipc_plugin, test_failed_push_releases_wrapper_once)
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = 0U,
@@ -348,8 +362,7 @@ ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
 		{ .offset = 12U, .size = 8U },
 		{ .offset = UINT32_MAX - 1U, .size = 8U },
 	};
-	struct mpipe_ipc_msg wrong_version = {
-		.version = MPIPE_IPC_PLUGIN_VERSION + 1U,
+	struct mpipe_ipc_msg valid = {
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = 0U,
@@ -358,13 +371,14 @@ ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
 			.generation = 22U,
 		},
 	};
+	uint8_t wrong_version[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t wrong_version_len;
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
 		      MPIPE_STATE_CHANGE_SUCCESS);
 	for (unsigned int i = 0; i < ARRAY_SIZE(invalid); i++) {
 		struct mpipe_ipc_msg msg = {
-			.version = MPIPE_IPC_PLUGIN_VERSION,
 			.type = MPIPE_IPC_MSG_DATA_BUFFER,
 			.data = {
 				.offset = invalid[i].offset,
@@ -376,7 +390,15 @@ ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
 
 		fake_receive(0U, &msg);
 	}
-	fake_receive(0U, &wrong_version);
+	/*
+	 * Otherwise well-formed, but from a peer speaking a different version.
+	 * Its slot is deliberately not returned: nothing in a message this core
+	 * cannot parse says which slot, or whose, it would be returning.
+	 */
+	zassert_ok(mpipe_ipc_msg_encode(wrong_version, sizeof(wrong_version), &valid,
+					&wrong_version_len));
+	wrong_version[0] = MPIPE_IPC_PLUGIN_VERSION + 1U;
+	fake_receive_raw(0U, wrong_version, wrong_version_len);
 
 	zassert_equal(chain_received, 0U, "out-of-range peer address reached downstream");
 	zassert_equal(fake.send_count, ARRAY_SIZE(invalid),
@@ -394,7 +416,6 @@ ZTEST(mpipe_ipc_plugin, test_short_release_for_id_63_is_retried)
 	const struct device *ipc = DEVICE_DT_GET(FAKE_IPC_NODE);
 	struct mpipe_ipc_src source;
 	struct mpipe_ipc_msg data = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .buffer_id = 63U, .generation = 22U },
 	};
@@ -404,7 +425,8 @@ ZTEST(mpipe_ipc_plugin, test_short_release_for_id_63_is_retried)
 				 &test_transport);
 	zassert_ok(ret);
 	fake_bound(0U);
-	fake.send_result = sizeof(struct mpipe_ipc_msg) - 1;
+	/* One byte short of any message: accepted by the backend, not sent. */
+	fake.send_result = 1;
 	fake_receive(0U, &data);
 	zassert_equal(atomic_get(&source.deferred), 1U, "short release was accepted");
 
@@ -427,7 +449,6 @@ ZTEST(mpipe_ipc_plugin, test_short_data_send_is_an_error)
 	struct net_buf *out_buf;
 	struct mpipe_ipc_region region;
 	struct mpipe_ipc_msg release = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U, .generation = 11U },
 	};
@@ -447,7 +468,8 @@ ZTEST(mpipe_ipc_plugin, test_short_data_send_is_an_error)
 	fake_bound(0U);
 	meta = mpipe_buffer_get_meta(buf);
 	meta->bytes_used = 1U;
-	fake.send_result = sizeof(struct mpipe_ipc_msg) - 1;
+	/* One byte short of any message: accepted by the backend, not sent. */
+	fake.send_result = 1;
 
 	ret = sink.base.sink_pad.chain_fn(&sink.base.sink_pad, buf, &out_buf);
 	if (sink.pending[0] != NULL) {
@@ -464,7 +486,6 @@ ZTEST(mpipe_ipc_plugin, test_stale_session_data_is_rejected_before_delivery)
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = 0U,
@@ -495,7 +516,6 @@ ZTEST(mpipe_ipc_plugin, test_stale_data_generation_is_rejected)
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg msg = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = {
 			.offset = 0U,
@@ -524,12 +544,10 @@ ZTEST(mpipe_ipc_plugin, test_release_generation_must_match_outstanding_owner)
 	struct net_buf *out_buf;
 	struct mpipe_ipc_region region;
 	struct mpipe_ipc_msg stale = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U, .generation = 10U },
 	};
 	struct mpipe_ipc_msg current = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U, .generation = 11U },
 	};
@@ -561,12 +579,10 @@ ZTEST(mpipe_ipc_plugin, test_two_sources_return_to_their_own_endpoint)
 	struct mpipe_ipc_src first_src, second_src;
 	struct mpipe_sink first_sink, second_sink;
 	struct mpipe_ipc_msg first = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .offset = 0U, .size = 4U, .buffer_id = 1U, .generation = 22U },
 	};
 	struct mpipe_ipc_msg second = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .offset = 4U, .size = 4U, .buffer_id = 2U, .generation = 22U },
 	};
@@ -631,7 +647,6 @@ ZTEST(mpipe_ipc_plugin, test_deinit_deregisters_and_closes_callback_admission)
 	const struct ipc_ept_cfg *old_cfg;
 	struct mpipe_ipc_src source;
 	struct mpipe_ipc_msg data = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .offset = 0U, .size = 4U, .buffer_id = 1U, .generation = 22U },
 	};
@@ -655,7 +670,6 @@ ZTEST(mpipe_ipc_plugin, test_deinit_waits_for_admitted_callback)
 	struct mpipe_ipc_src source;
 	struct mpipe_sink sink;
 	struct mpipe_ipc_msg data = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .offset = 0U, .size = 4U, .buffer_id = 1U, .generation = 22U },
 	};
@@ -691,12 +705,10 @@ ZTEST(mpipe_ipc_plugin, test_release_retry_record_is_claimed_by_one_sender)
 	const struct device *ipc = DEVICE_DT_GET(FAKE_IPC_NODE);
 	struct mpipe_ipc_src source;
 	struct mpipe_ipc_msg invalid_data = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_BUFFER,
 		.data = { .offset = 0U, .size = 0U, .buffer_id = 9U, .generation = 22U },
 	};
 	struct mpipe_ipc_msg caps = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_CAPS,
 		.caps = { .media_type_id = MPIPE_MEDIA_AUDIO_PCM },
 	};
@@ -729,7 +741,6 @@ ZTEST(mpipe_ipc_plugin, test_sink_deinit_waits_for_admitted_release_callback)
 	struct net_buf *out_buf;
 	struct mpipe_ipc_region region;
 	struct mpipe_ipc_msg release = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U, .generation = 11U },
 	};
@@ -775,7 +786,6 @@ ZTEST(mpipe_ipc_plugin, test_stale_transport_release_is_rejected)
 	struct net_buf *out_buf;
 	struct mpipe_ipc_region region;
 	struct mpipe_ipc_msg release = {
-		.version = MPIPE_IPC_PLUGIN_VERSION,
 		.type = MPIPE_IPC_MSG_DATA_RELEASE,
 		.release = { .buffer_id = 0U, .generation = 11U },
 	};
@@ -820,83 +830,73 @@ ZTEST(mpipe_ipc_plugin, test_deregister_failure_can_be_retried)
 	zassert_equal(fake.deregister_count, 2U);
 }
 
-ZTEST(mpipe_ipc_plugin, test_malformed_caps_are_rejected)
+/*
+ * The encoder cannot produce a malformed CAPS, so this builds the frame by
+ * hand -- which is the only way a peer can send one, and the reason the
+ * decoder rather than the sender is what the source relies on. Every rejection
+ * rule is covered against the codec directly in the ipc_protocol suite; what is
+ * checked here is that a rejected message never becomes this element's format.
+ */
+static size_t build_caps_frame(uint8_t *frame, uint8_t media_type, uint8_t flags,
+			       uint8_t num_fields, const uint8_t *ids,
+			       const uint32_t *scalars)
 {
+	memset(frame, 0, MPIPE_IPC_WIRE_MAX_LEN);
+	frame[0] = MPIPE_IPC_PLUGIN_VERSION;
+	frame[1] = MPIPE_IPC_MSG_CAPS;
+	frame[4] = media_type;
+	frame[5] = flags;
+	frame[6] = num_fields;
+
+	for (uint8_t i = 0; i < num_fields; i++) {
+		uint8_t *field = &frame[8U + ((size_t)i * MPIPE_IPC_WIRE_FIELD_LEN)];
+
+		field[0] = ids[i];
+		field[1] = MPIPE_TYPE_UINT;
+		sys_put_le32(scalars[i], &field[4]);
+	}
+
+	return 8U + ((size_t)num_fields * MPIPE_IPC_WIRE_FIELD_LEN);
+}
+
+ZTEST(mpipe_ipc_plugin, test_malformed_caps_never_become_the_format)
+{
+	static const uint8_t twice[] = { MPIPE_CAPS_SAMPLE_RATE, MPIPE_CAPS_SAMPLE_RATE };
+	static const uint8_t video_field[] = { MPIPE_CAPS_IMAGE_WIDTH };
+	static const uint32_t rates[] = { 16000U, 16000U };
+	static const uint32_t width[] = { 320U };
 	struct mpipe_ipc_src source;
-	struct mpipe_ipc_msg messages[] = {
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.num_fields = CONFIG_MPIPE_STRUCTURE_MAX_FIELDS + 1U,
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_END,
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.num_fields = 1U,
-				.ids = { MPIPE_CAPS_SAMPLE_RATE },
-				.values = { { .type = MPIPE_TYPE_COUNT } },
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.num_fields = 2U,
-				.ids = { MPIPE_CAPS_SAMPLE_RATE, MPIPE_CAPS_SAMPLE_RATE },
-				.values = { MPIPE_VALUE_UINT(16000), MPIPE_VALUE_UINT(16000) },
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.num_fields = 1U,
-				.ids = { MPIPE_CAPS_SAMPLE_RATE },
-				.values = { MPIPE_VALUE_UINT_RANGE(48000, 16000, 0) },
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.num_fields = 1U,
-				.ids = { MPIPE_CAPS_IMAGE_WIDTH },
-				.values = { MPIPE_VALUE_UINT(320) },
-			},
-		},
-		{
-			.version = MPIPE_IPC_PLUGIN_VERSION,
-			.type = MPIPE_IPC_MSG_CAPS,
-			.caps = {
-				.media_type_id = MPIPE_MEDIA_AUDIO_PCM,
-				.flags = BIT(7),
-			},
-		},
-	};
+	uint8_t frame[MPIPE_IPC_WIRE_MAX_LEN];
+	size_t len;
 
 	zassert_ok(mpipe_ipc_src_init(&source, next_element_id++,
 				      DEVICE_DT_GET(FAKE_IPC_NODE), "audio", &test_region,
 				      &test_transport));
-	for (unsigned int i = 0; i < ARRAY_SIZE(messages); i++) {
-		fake_receive(0U, &messages[i]);
-		zassert_equal(atomic_get(&source.have_caps), 0,
-			      "malformed CAPS %u was accepted", i);
-	}
+
+	/* One field, twice: a structure that does not name a single format. */
+	len = build_caps_frame(frame, MPIPE_MEDIA_AUDIO_PCM, 0U, 2U, twice, rates);
+	fake_receive_raw(0U, frame, len);
+	zassert_equal(atomic_get(&source.have_caps), 0, "a duplicated field was accepted");
+
+	/* A field belonging to another medium entirely. */
+	len = build_caps_frame(frame, MPIPE_MEDIA_AUDIO_PCM, 0U, 1U, video_field, width);
+	fake_receive_raw(0U, frame, len);
+	zassert_equal(atomic_get(&source.have_caps), 0, "a video field was accepted as audio");
+
+	/* A media type this build does not have. */
+	len = build_caps_frame(frame, MPIPE_MEDIA_END, 0U, 0U, NULL, NULL);
+	fake_receive_raw(0U, frame, len);
+	zassert_equal(atomic_get(&source.have_caps), 0, "an unknown media type was accepted");
+
+	/* Truncated: the frame claims a field it does not carry. */
+	len = build_caps_frame(frame, MPIPE_MEDIA_AUDIO_PCM, 0U, 1U, twice, rates);
+	fake_receive_raw(0U, frame, len - 1U);
+	zassert_equal(atomic_get(&source.have_caps), 0, "a truncated CAPS was accepted");
+
+	/* And the well-formed one it was built from still is. */
+	fake_receive_raw(0U, frame, len);
+	zassert_equal(atomic_get(&source.have_caps), 1, "a valid CAPS was rejected");
+
 	zassert_ok(mpipe_ipc_src_deinit(&source));
 }
 
