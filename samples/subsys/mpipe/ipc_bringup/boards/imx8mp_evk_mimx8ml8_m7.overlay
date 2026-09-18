@@ -15,7 +15,11 @@
 	 *
 	 *   0xa0000000   4 KiB   bring-up control block
 	 *   0xa0010000  64 KiB   IPC Service shared memory (control messages)
-	 *   0xa0020000 128 KiB   audio buffer pool, readable by both cores
+	 *
+	 * The rest of the window is the audio buffer pool, which this sample has
+	 * no audio to put in; it is declared by the sample that does. A region
+	 * declared here would cost an MPU entry to describe memory nothing
+	 * touches, and the M7 has eight.
 	 *
 	 * The control block sits outside the region IPC Service owns. The
 	 * static-vrings host clears its whole vdev status area on open, which
@@ -32,13 +36,6 @@
 		compatible = "zephyr,memory-region", "mmio-sram";
 		reg = <0xa0010000 DT_SIZE_K(64)>;
 		zephyr,memory-region = "MPIPE_IPC_SHM";
-		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
-	};
-
-	mpipe_shared_pool: memory@a0020000 {
-		compatible = "zephyr,memory-region", "mmio-sram";
-		reg = <0xa0020000 DT_SIZE_K(128)>;
-		zephyr,memory-region = "MPIPE_SHARED_POOL";
 		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
 	};
 

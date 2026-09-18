@@ -95,9 +95,6 @@ static uint16_t expected_reply_id;
 static atomic_t round_trips;
 static atomic_t echoes;
 static atomic_t drops;
-/* What the remote last reported about the audio it received. */
-static atomic_t peer_consumed;
-static atomic_t peer_bad;
 
 static int send_command(uint16_t type, uint16_t id)
 {
@@ -127,43 +124,6 @@ static int send_command(uint16_t type, uint16_t id)
 	}
 
 	return 0;
-}
-
-/*
- * The consumer reports what it saw over the control path, which is what the
- * control path is for. It is also the only way its verdict can be seen at all:
- * both cores share one UART, so the remote has no console.
- */
-#define STATUS_PAYLOAD_BYTES 8U
-#define STATUS_OFF_CONSUMED  0U
-#define STATUS_OFF_BAD       4U
-
-static int send_status(uint32_t consumed, uint32_t bad)
-{
-	uint8_t frame[MPIPE_IPC_HEADER_LENGTH + STATUS_PAYLOAD_BYTES];
-	uint8_t payload[STATUS_PAYLOAD_BYTES];
-	struct mpipe_ipc_message message = {
-		.header = { .cmd = MPIPE_IPC_CMD(MPIPE_IPC_TYPE_STATUS, 0U) },
-		.payload = payload,
-		.payload_length = sizeof(payload),
-	};
-	size_t written;
-	int err;
-
-	sys_put_le32(consumed, &payload[STATUS_OFF_CONSUMED]);
-	sys_put_le32(bad, &payload[STATUS_OFF_BAD]);
-
-	err = mpipe_ipc_encode(frame, sizeof(frame), &message, &written);
-	if (err != 0) {
-		return err;
-	}
-
-	err = ipc_service_send(&endpoint, frame, written);
-	if (err < 0) {
-		return err;
-	}
-
-	return ((size_t)err == written) ? 0 : -EIO;
 }
 
 static void on_bound(void *priv)
@@ -218,21 +178,6 @@ static void on_received(const void *data, size_t length, void *priv)
 			atomic_inc(&round_trips);
 			k_sem_give(&reply_arrived);
 		}
-		break;
-
-	case MPIPE_IPC_TYPE_STATUS:
-		if (message.payload_length < STATUS_PAYLOAD_BYTES) {
-			atomic_inc(&drops);
-			LOG_WRN("a STATUS too short to hold a report: %zu bytes",
-				message.payload_length);
-			break;
-		}
-		atomic_set(&peer_consumed,
-			   (atomic_val_t)sys_get_le32(
-				   &message.payload[STATUS_OFF_CONSUMED]));
-		atomic_set(&peer_bad,
-			   (atomic_val_t)sys_get_le32(
-				   &message.payload[STATUS_OFF_BAD]));
 		break;
 
 	default:

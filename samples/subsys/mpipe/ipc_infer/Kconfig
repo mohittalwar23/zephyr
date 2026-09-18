@@ -3,18 +3,6 @@
 
 source "Kconfig.zephyr"
 
-choice SAMPLE_IPC_INFER_SOURCE
-	prompt "Where the live audio comes from"
-	default SAMPLE_IPC_INFER_SOURCE_I2S
-
-config SAMPLE_IPC_INFER_SOURCE_I2S
-	bool "I2S receiver"
-
-config SAMPLE_IPC_INFER_SOURCE_DMIC
-	bool "Digital microphone"
-
-endchoice
-
 config SAMPLE_IPC_INFER_RATE
 	int "Capture sample rate (Hz)"
 	default 16000
