@@ -121,6 +121,12 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	uint32_t audio_freq = cfg->streams->pcm_rate;
 	uint16_t factor;
 
+	if ((cfg->channel.req_num_chan == 0U) || (cfg->channel.req_num_chan < config->mic_count)) {
+		LOG_ERR("%u channels cannot carry %u microphones", cfg->channel.req_num_chan,
+			config->mic_count);
+		return -EINVAL;
+	}
+
 	/* PCM buffer size */
 	data->pcm_mem_slab = cfg->streams->mem_slab;
 	data->pcm_mem_size = cfg->streams->block_size;

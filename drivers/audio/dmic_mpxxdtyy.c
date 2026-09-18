@@ -53,15 +53,18 @@ static uint8_t right_channel(uint8_t a, uint8_t b)
 uint16_t sw_filter_lib_init(const struct device *dev, struct dmic_cfg *cfg)
 {
 	struct mpxxdtyy_data *const data = dev->data;
+	const struct mpxxdtyy_config *const config = dev->config;
 	TPDMFilter_InitStruct *pdm_filter = &data->pdm_filter[0];
 	uint16_t factor;
 	uint32_t audio_freq = cfg->streams->pcm_rate;
 	int i;
 
-	/* calculate oversampling factor based on pdm clock */
+	/*
+	 * The line carries one bitstream per microphone, so the clock follows
+	 * how many are wired, not how many channels the caller wants.
+	 */
 	for (factor = 64U; factor <= 128U; factor += 64U) {
-		uint32_t pdm_bit_clk = (audio_freq * factor *
-				     cfg->channel.req_num_chan);
+		uint32_t pdm_bit_clk = audio_freq * factor * config->mic_count;
 
 		if (pdm_bit_clk >= cfg->io.min_pdm_clk_freq &&
 		    pdm_bit_clk <= cfg->io.max_pdm_clk_freq) {
@@ -73,13 +76,13 @@ uint16_t sw_filter_lib_init(const struct device *dev, struct dmic_cfg *cfg)
 		return 0;
 	}
 
-	for (i = 0; i < cfg->channel.req_num_chan; i++) {
+	for (i = 0; i < config->mic_count; i++) {
 		/* init the filter lib */
 		pdm_filter[i].LP_HZ = audio_freq / 2U;
 		pdm_filter[i].HP_HZ = 10;
 		pdm_filter[i].Fs = audio_freq;
-		pdm_filter[i].Out_MicChannels = cfg->channel.req_num_chan;
-		pdm_filter[i].In_MicChannels = cfg->channel.req_num_chan;
+		pdm_filter[i].Out_MicChannels = config->mic_count;
+		pdm_filter[i].In_MicChannels = config->mic_count;
 		pdm_filter[i].Decimation = factor;
 		pdm_filter[i].MaxVolume = 64;
 
@@ -89,17 +92,30 @@ uint16_t sw_filter_lib_init(const struct device *dev, struct dmic_cfg *cfg)
 	return factor;
 }
 
-int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
-		      void *pdm_block, void *pcm_block,
-		      size_t pdm_size, size_t pcm_size)
+int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter, void *pdm_block, void *pcm_block,
+		      size_t pdm_size, size_t pcm_size, uint8_t out_chan)
 {
 	int i, j;
 	int pdm_offset;
 	uint8_t a, b;
+	uint8_t mics;
+	size_t frames;
 
 	if (pdm_block == NULL || pcm_block == NULL || pdm_filter == NULL) {
 		return -EINVAL;
 	}
+
+	mics = pdm_filter[0].In_MicChannels;
+	/*
+	 * Fewer channels than microphones would mix them together, which this
+	 * does not do, and the decimation would write past a block sized for
+	 * the smaller count.
+	 */
+	if ((out_chan == 0U) || (mics == 0U) || (out_chan < mics)) {
+		return -EINVAL;
+	}
+
+	frames = (pcm_size / 2U) / out_chan;
 
 	for (i = 0; i < pdm_size/2; i++) {
 		switch (pdm_filter[0].In_MicChannels) {
@@ -128,12 +144,12 @@ int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
 	 * consumed to reach interleaved sample j are j times the decimation
 	 * factor over the bits in a byte; the channel count is already in j.
 	 */
-	const uint32_t step = (pdm_filter[0].Fs / 1000U) * pdm_filter[0].In_MicChannels;
+	const uint32_t step = (pdm_filter[0].Fs / 1000U) * mics;
 
-	for (j = 0; j < pcm_size / 2; j += step) {
+	for (j = 0; j < (int)(frames * mics); j += step) {
 		pdm_offset = j * (pdm_filter[0].Decimation / 8);
 
-		for (i = 0; i < pdm_filter[0].In_MicChannels; i++) {
+		for (i = 0; i < mics; i++) {
 			switch (pdm_filter[0].Decimation) {
 			case 64:
 				Open_PDM_Filter_64(&((uint8_t *) pdm_block)[pdm_offset + i],
@@ -151,6 +167,23 @@ int sw_filter_lib_run(TPDMFilter_InitStruct *pdm_filter,
 
 			default:
 				return -EINVAL;
+			}
+		}
+	}
+
+	/*
+	 * The filter wrote one sample per microphone per frame at the front of
+	 * the block. Spread those over the channels the caller asked for,
+	 * walking backwards so the expansion does not overwrite samples it has
+	 * still to read. A single microphone is heard on every channel, which
+	 * is what a controller with one bitstream per channel gives for free.
+	 */
+	if (out_chan > mics) {
+		int16_t *pcm = pcm_block;
+
+		for (j = (int)frames - 1; j >= 0; j--) {
+			for (i = out_chan - 1; i >= 0; i--) {
+				pcm[j * out_chan + i] = pcm[j * mics + (i % mics)];
 			}
 		}
 	}
@@ -208,6 +241,7 @@ static int mpxxdtyy_initialize(const struct device *dev)
 
 static const struct mpxxdtyy_config mpxxdtyy_config = {
 	.comm_dev = DEVICE_DT_GET(DT_INST_BUS(0)),
+	.mic_count = DT_INST_PROP(0, mic_count),
 };
 
 static struct mpxxdtyy_data mpxxdtyy_data;
