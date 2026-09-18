@@ -63,6 +63,14 @@
 extern "C" {
 #endif
 
+/**
+ * @defgroup mpipe_ipc_protocol Control protocol
+ * @ingroup mpipe_ipc
+ * @brief Framing for the control messages that bring a link up.
+ * @{
+ */
+
+
 /** @brief Protocol version. Only the major version must match a peer. */
 #define MPIPE_IPC_VERSION_MAJOR 1U
 #define MPIPE_IPC_VERSION_MINOR 0U
@@ -246,6 +254,8 @@ int mpipe_ipc_validate_audio(const struct mpipe_ipc_message *message,
  */
 int mpipe_ipc_audio_format_encode(uint8_t *buf, size_t buf_len,
 				  const struct mpipe_ipc_audio_format *format);
+
+/** @} */
 
 #ifdef __cplusplus
 }

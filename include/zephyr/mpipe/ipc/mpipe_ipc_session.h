@@ -64,6 +64,14 @@
 extern "C" {
 #endif
 
+/**
+ * @defgroup mpipe_ipc_session Session
+ * @ingroup mpipe_ipc
+ * @brief Detecting that a peer restarted, and refusing its previous life.
+ * @{
+ */
+
+
 /** @brief Reserved session value meaning "no session established". */
 #define MPIPE_IPC_SID_NONE 0U
 
@@ -319,6 +327,8 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 						     bool is_host, bool require_peer,
 						     uint32_t peer_session_word,
 						     uint32_t peer_state_word);
+
+/** @} */
 
 #ifdef __cplusplus
 }

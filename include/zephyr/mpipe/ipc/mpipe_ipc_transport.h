@@ -49,6 +49,27 @@ extern "C" {
 #endif
 
 /**
+ * @defgroup mpipe_ipc Inter-core links
+ * @ingroup mpipe_plugins
+ * @brief Carrying one pipeline across two cores.
+ *
+ * A pipeline that spans two cores needs three things the single-core framework
+ * does not: agreement that both cores are running the same session, a safe
+ * moment to open the shared rings, and a format for what crosses them. Those
+ * are the transport, the session handshake and the codecs below; the elements
+ * that use them are in @ref mpipe_ipc_plugin.
+ * @{
+ */
+
+/**
+ * @defgroup mpipe_ipc_transport Transport
+ * @ingroup mpipe_ipc
+ * @brief Bring-up barrier and shared control block.
+ * @{
+ */
+
+
+/**
  * @brief Bytes reserved for one core's published state.
  *
  * The window is uncached on both cores — by MPU attribute on the M7 and by the
@@ -311,6 +332,9 @@ extern const struct mpipe_ipc_ops mpipe_ipc_zephyr_ops;
 
 /** @brief This core's published word, for diagnostics. */
 uint32_t mpipe_ipc_transport_local_word(const struct mpipe_ipc_transport *transport);
+
+/** @} */
+/** @} */
 
 #ifdef __cplusplus
 }

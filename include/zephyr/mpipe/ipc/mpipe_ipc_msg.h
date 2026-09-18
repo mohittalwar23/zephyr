@@ -43,6 +43,14 @@ extern "C" {
 #endif
 
 /**
+ * @defgroup mpipe_ipc_msg Plugin protocol
+ * @ingroup mpipe_ipc
+ * @brief The wire format buffers and formats cross a link in.
+ * @{
+ */
+
+
+/**
  * @brief Protocol version carried by every plugin message.
  *
  * A peer built against a different version is rejected message by message
@@ -174,6 +182,8 @@ int mpipe_ipc_msg_encode(void *dst, size_t capacity, const struct mpipe_ipc_msg 
  * @retval -EPROTO if a field is out of range or a reserved byte is nonzero.
  */
 int mpipe_ipc_msg_decode(struct mpipe_ipc_msg *msg, const void *src, size_t length);
+
+/** @} */
 
 #ifdef __cplusplus
 }

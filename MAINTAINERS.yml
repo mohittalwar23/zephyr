@@ -4177,6 +4177,7 @@ Multimedia Pipeline:
   files:
     - doc/services/mpipe/
     - include/zephyr/mpipe/
+    - samples/subsys/mpipe/
     - subsys/mpipe/
     - tests/subsys/mpipe/
   labels:
