@@ -760,9 +760,14 @@ static void dma_tx_callback(const struct device *dma_dev, void *arg,
 		if (stream->state == I2S_STATE_STOPPING) {
 			stream->state = I2S_STATE_READY;
 		} else {
+			/*
+			 * The writer did not keep up. The API asks the
+			 * application to recover with DROP, so this is an
+			 * expected transition rather than a driver failure,
+			 * and it is reported from the DMA callback.
+			 */
 			stream->state = I2S_STATE_ERROR;
-			LOG_ERR("queue_get() <FAILED>: ret=%d, used=%d/%d", ret,
-				k_msgq_num_used_get(stream->msgq), CONFIG_I2S_STM32_TX_BLOCK_COUNT);
+			LOG_WRN_RATELIMIT("TX underrun, no block queued");
 		}
 		goto tx_disable;
 	}
@@ -932,8 +937,8 @@ static int tx_stream_start(struct stream *stream, const struct device *dev)
 	ret = queue_get(stream->msgq, &stream->mem_block,
 			&mem_block_size, 0);
 	if (ret < 0) {
-		LOG_ERR("queue_get() <FAILED>: ret=%d, used=%d/%d", ret,
-			k_msgq_num_used_get(stream->msgq), CONFIG_I2S_STM32_TX_BLOCK_COUNT);
+		/* Nothing to send yet. The caller decides whether that matters. */
+		LOG_DBG("no TX block queued at start: %d", ret);
 		return ret;
 	}
 
