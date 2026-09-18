@@ -122,12 +122,12 @@ bool mpipe_ipc_session_observe(struct mpipe_ipc_session *session, uint32_t peer_
 
 /* Count consecutive polls in which the peer published nothing new. */
 static void track_stall(struct mpipe_ipc_session *session, uint32_t peer_word,
-			uint32_t peer_state)
+			uint32_t peer_state_word)
 {
 	if (peer_word != session->peer_last_word ||
-	    peer_state != session->peer_last_state) {
+	    peer_state_word != session->peer_last_state) {
 		session->peer_last_word = peer_word;
-		session->peer_last_state = peer_state;
+		session->peer_last_state = peer_state_word;
 		session->peer_stall = 0U;
 	} else if (session->peer_stall < UINT16_MAX) {
 		session->peer_stall++;
@@ -137,8 +137,10 @@ static void track_stall(struct mpipe_ipc_session *session, uint32_t peer_word,
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
 						     bool is_host, bool require_peer,
 						     uint32_t peer_session_word,
-						     uint32_t peer_state)
+						     uint32_t peer_state_word)
 {
+	uint32_t peer_state = MPIPE_IPC_STATE_OF(peer_state_word);
+	bool state_is_current;
 	uint16_t peer_req;
 	bool acked;
 
@@ -152,13 +154,28 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 
 	peer_req = MPIPE_IPC_HANDSHAKE_REQ(peer_session_word);
 
+	/*
+	 * The two words are read separately, so a peer caught partway through
+	 * republishing yields a pair that does not agree on who published it.
+	 * The session word is the newer of the two -- publish() writes it first
+	 * -- which leaves a state belonging to the incarnation before it. Such a
+	 * state is not evidence either way: it cannot invite this core in, and
+	 * it equally cannot be dismissed as "not READY", because the peer it
+	 * came from may be the live one and the session word the torn half.
+	 * Everything below therefore waits on it, and only the residue timeout
+	 * resolves a pair that never agrees because the peer died between its
+	 * two stores.
+	 */
+	state_is_current = MPIPE_IPC_STATE_SID(peer_state_word) == peer_req;
+
 	/* A peer claiming READY without a session is impossible; do not trust it. */
-	if (peer_req == MPIPE_IPC_SID_NONE && peer_state == MPIPE_IPC_BRINGUP_READY) {
+	if (state_is_current && peer_req == MPIPE_IPC_SID_NONE &&
+	    peer_state == MPIPE_IPC_BRINGUP_READY) {
 		return MPIPE_IPC_ACTION_FAULT;
 	}
 
 	acked = mpipe_ipc_session_observe(session, peer_session_word);
-	track_stall(session, peer_session_word, peer_state);
+	track_stall(session, peer_session_word, peer_state_word);
 
 	if (session->connected) {
 		if (!acked || peer_req != session->remote_sid) {
@@ -187,7 +204,7 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 		 * require an acknowledgement, because a remote that is live but
 		 * has not yet noticed this boot still holds those rings.
 		 */
-		if (peer_state != MPIPE_IPC_BRINGUP_READY) {
+		if (state_is_current && peer_state != MPIPE_IPC_BRINGUP_READY) {
 			return MPIPE_IPC_ACTION_OPEN;
 		}
 		if (!acked && session->peer_stall >= MPIPE_IPC_RESIDUE_POLLS) {
@@ -200,8 +217,10 @@ enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *s
 	/*
 	 * The remote attaches to rings the host built, so it needs proof the
 	 * host is alive and finished -- a READY it has not been acknowledged by
-	 * may be the leftover word of a host that is gone.
+	 * may be the leftover word of a host that is gone, and a READY the host
+	 * no longer stands behind is the same thing one restart later.
 	 */
-	return (acked && peer_state == MPIPE_IPC_BRINGUP_READY) ? MPIPE_IPC_ACTION_OPEN
-							       : MPIPE_IPC_ACTION_WAIT;
+	return (acked && state_is_current && peer_state == MPIPE_IPC_BRINGUP_READY)
+		       ? MPIPE_IPC_ACTION_OPEN
+		       : MPIPE_IPC_ACTION_WAIT;
 }

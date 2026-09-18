@@ -26,13 +26,17 @@ static void publish(struct mpipe_ipc_transport *transport, uint32_t state)
 	volatile struct mpipe_ipc_core_block *mine = local_block(transport);
 
 	/*
-	 * Session first, then state. A peer that samples between the two sees
-	 * a new session still marked not-ready, which is a safe intermediate;
-	 * the reverse order would briefly advertise readiness against a stale
-	 * session.
+	 * Session first, then state. A peer that samples between the two sees a
+	 * new session still marked not-ready, which is a safe intermediate; the
+	 * reverse order would briefly advertise readiness against a stale
+	 * session. The order is what a reader outside this code sees; what makes
+	 * the pair safe for the bring-up sequence itself is the stamp, which
+	 * says which session the state belongs to instead of leaving a reader to
+	 * assume the two words came from the same one.
 	 */
 	transport->ops->store(&mine->session, mpipe_ipc_session_word(&transport->session));
-	transport->ops->store(&mine->state, state);
+	transport->ops->store(&mine->state,
+			      MPIPE_IPC_STATE_WORD(transport->session.local_sid, state));
 }
 
 static void fault(struct mpipe_ipc_transport *transport, int reason)

@@ -127,7 +127,7 @@ ZTEST(mpipe_ipc_transport, test_init_claims_a_nonzero_session_and_publishes_it)
 	zassert_not_equal(host.session.local_sid, MPIPE_IPC_SID_NONE);
 	zassert_equal(MPIPE_IPC_HANDSHAKE_REQ(shared_block.host.session),
 		      host.session.local_sid);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_CLAIMED,
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_CLAIMED,
 		      "claimed, not ready: nothing has touched a ring yet");
 	zassert_equal(host_opens, 0, "init must never open the instance");
 }
@@ -169,11 +169,11 @@ ZTEST(mpipe_ipc_transport, test_cold_boot_both_cores_converge)
 
 	zassert_ok(settle(&host, 4));
 	zassert_equal(host_opens, 1);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_READY);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_READY);
 
 	zassert_ok(settle(&remote, 4));
 	zassert_equal(remote_opens, 1);
-	zassert_equal(shared_block.remote.state, MPIPE_IPC_BRINGUP_READY);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.remote.state), MPIPE_IPC_BRINGUP_READY);
 }
 
 /*
@@ -199,7 +199,7 @@ ZTEST(mpipe_ipc_transport, test_restarted_host_waits_for_a_live_remote)
 	/* The remote notices the new host session and stands down. */
 	zassert_equal(mpipe_ipc_transport_poll(&remote), -ECONNRESET);
 	zassert_ok(mpipe_ipc_transport_quiesce(&remote));
-	zassert_equal(shared_block.remote.state, MPIPE_IPC_BRINGUP_DOWN);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.remote.state), MPIPE_IPC_BRINGUP_DOWN);
 
 	/* Only now may the host rebuild. */
 	zassert_ok(settle(&host, 4));
@@ -229,8 +229,8 @@ ZTEST(mpipe_ipc_transport, test_restarted_remote_converges)
 	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
 	zassert_ok(settle(&host, 4));
 	zassert_ok(settle(&remote, 4));
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_READY);
-	zassert_equal(shared_block.remote.state, MPIPE_IPC_BRINGUP_READY);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_READY);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.remote.state), MPIPE_IPC_BRINGUP_READY);
 }
 
 /* A peer that restarts mid-stream must be caught before its data is used. */
@@ -272,7 +272,7 @@ ZTEST(mpipe_ipc_transport, test_open_failure_faults_and_does_not_publish_ready)
 	zassert_equal(mpipe_ipc_transport_poll(&host), -EIO);
 	zassert_equal(host_opens, 0);
 	zassert_equal(host.state, MPIPE_IPC_TRANSPORT_FAULTED);
-	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE,
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), EXPECTED_FAULT_STATE,
 		      "a failed open must block the peer from using the rings");
 }
 
@@ -321,7 +321,7 @@ ZTEST(mpipe_ipc_transport, test_residue_from_a_dead_peer_is_not_a_live_peer)
 
 	/* A previous remote lived and died, leaving its word behind. */
 	shared_block.remote.session = MPIPE_IPC_HANDSHAKE(3U, 0U);
-	shared_block.remote.state = MPIPE_IPC_BRINGUP_DOWN;
+	shared_block.remote.state = MPIPE_IPC_STATE_WORD(3U, MPIPE_IPC_BRINGUP_DOWN);
 
 	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
 	zassert_ok(settle(&host, 4), "residue must not stop the host opening");
@@ -355,7 +355,7 @@ ZTEST(mpipe_ipc_transport, test_a_ready_word_nobody_answers_for_times_out)
 
 	reset_world();
 	shared_block.remote.session = MPIPE_IPC_HANDSHAKE(3U, 0U);
-	shared_block.remote.state = MPIPE_IPC_BRINGUP_READY;
+	shared_block.remote.state = MPIPE_IPC_STATE_WORD(3U, MPIPE_IPC_BRINGUP_READY);
 
 	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
 
@@ -418,12 +418,12 @@ ZTEST(mpipe_ipc_transport, test_peer_restart_publishes_fault_until_quiesced)
 	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
 					    false));
 	zassert_equal(mpipe_ipc_transport_poll(&host), -ECONNRESET);
-	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE,
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), EXPECTED_FAULT_STATE,
 		      "fault detection is not a completed teardown");
 	zassert_true(host.opened);
 
 	zassert_ok(mpipe_ipc_transport_quiesce(&host));
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_DOWN);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_DOWN);
 	zassert_false(host.opened);
 }
 
@@ -437,7 +437,7 @@ ZTEST(mpipe_ipc_transport, test_failed_close_does_not_publish_down)
 	close_should_fail = 1;
 
 	zassert_equal(mpipe_ipc_transport_quiesce(&host), -EBUSY);
-	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), EXPECTED_FAULT_STATE);
 	zassert_equal(shared_block.host.error, -EBUSY);
 	zassert_true(host.opened, "a failed close leaves the instance open");
 }
@@ -453,7 +453,7 @@ ZTEST(mpipe_ipc_transport, test_missing_close_does_not_publish_down)
 	zassert_ok(settle(&host, 4));
 
 	zassert_equal(mpipe_ipc_transport_quiesce(&host), -ENOTSUP);
-	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), EXPECTED_FAULT_STATE);
 	zassert_equal(shared_block.host.error, -ENOTSUP);
 	zassert_true(host.opened, "an unclosable instance remains open");
 }
@@ -473,7 +473,7 @@ ZTEST(mpipe_ipc_transport, test_a_failure_reason_is_published_for_the_peer)
 	zassert_equal(shared_block.host.error, 0, "claiming a session clears the reason");
 
 	zassert_equal(mpipe_ipc_transport_poll(&host), -EIO);
-	zassert_equal(shared_block.host.state, EXPECTED_FAULT_STATE);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), EXPECTED_FAULT_STATE);
 	zassert_equal(shared_block.host.error, -EIO, "the peer can see the cause");
 
 	/* A fresh session must not inherit the previous life's reason. */
@@ -496,7 +496,7 @@ ZTEST(mpipe_ipc_transport, test_a_clean_stand_down_publishes_no_error)
 	converge(&host, &remote);
 
 	zassert_ok(mpipe_ipc_transport_quiesce(&host));
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_DOWN);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_DOWN);
 	zassert_equal(shared_block.host.error, 0);
 }
 
@@ -511,7 +511,7 @@ ZTEST(mpipe_ipc_transport, test_prior_teardown_error_closes_but_publishes_fault)
 	zassert_equal(mpipe_ipc_transport_quiesce_with_error(&host, -EIO), -EIO);
 	zassert_equal(host_closes, 1, "the physical instance still has to be released");
 	zassert_false(host.opened);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_FAULT);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_FAULT);
 	zassert_equal(shared_block.host.error, -EIO, "the first teardown error was lost");
 }
 
@@ -526,7 +526,7 @@ ZTEST(mpipe_ipc_transport, test_prior_teardown_error_wins_over_close_error)
 
 	zassert_equal(mpipe_ipc_transport_quiesce_with_error(&host, -EIO), -EIO);
 	zassert_true(host.opened);
-	zassert_equal(shared_block.host.state, MPIPE_IPC_BRINGUP_FAULT);
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_FAULT);
 	zassert_equal(shared_block.host.error, -EIO);
 }
 
@@ -615,4 +615,68 @@ ZTEST(mpipe_ipc_transport, test_require_peer_survives_a_rebuild)
 	zassert_ok(mpipe_ipc_transport_quiesce(&host));
 	zassert_ok(mpipe_ipc_transport_rebuild(&host));
 	zassert_true(host.require_peer, "a rebuild must not forget the board");
+}
+
+/*
+ * What the reader above depends on: a state is never published bare. Both
+ * halves of the block name the session behind them, so a word read out of
+ * retained memory says which incarnation meant it -- including to a reader
+ * outside this code, which is how Linux tells a live state from a dead one.
+ */
+ZTEST(mpipe_ipc_transport, test_every_published_state_names_its_session)
+{
+	struct mpipe_ipc_transport host, remote;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_equal(MPIPE_IPC_STATE_SID(shared_block.host.state), host.session.local_sid);
+
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	converge(&host, &remote);
+	zassert_equal(MPIPE_IPC_STATE_SID(shared_block.host.state), host.session.local_sid);
+	zassert_equal(MPIPE_IPC_STATE_SID(shared_block.remote.state),
+		      remote.session.local_sid);
+
+	zassert_ok(mpipe_ipc_transport_quiesce(&host));
+	zassert_equal(MPIPE_IPC_STATE_OF(shared_block.host.state), MPIPE_IPC_BRINGUP_DOWN);
+	zassert_equal(MPIPE_IPC_STATE_SID(shared_block.host.state), host.session.local_sid,
+		      "even standing down names who stood down");
+}
+
+/*
+ * The hazard end to end. A restarted host has published its new session word
+ * and not yet its new state, so the block holds the previous life's READY. The
+ * remote must not open against it.
+ */
+ZTEST(mpipe_ipc_transport, test_remote_waits_out_a_hosts_half_published_restart)
+{
+	struct mpipe_ipc_transport host, remote;
+	uint16_t stale_sid;
+
+	reset_world();
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	converge(&host, &remote);
+	stale_sid = host.session.local_sid;
+
+	/*
+	 * The host restarts. Its init publishes a session, and the READY from
+	 * the life before it is what a remote polling right then would pair
+	 * with that session -- so freeze the block in exactly that state.
+	 */
+	zassert_ok(mpipe_ipc_transport_init(&host, &shared_block, &host_ops, NULL, true));
+	shared_block.host.state = MPIPE_IPC_STATE_WORD(stale_sid, MPIPE_IPC_BRINGUP_READY);
+
+	zassert_ok(mpipe_ipc_transport_init(&remote, &shared_block, &remote_ops, NULL,
+					    false));
+	zassert_equal(settle(&remote, 4), -EAGAIN,
+		      "a leftover READY must not admit the remote");
+	zassert_equal(remote_opens, 1, "no second open: the remote never attached");
+
+	/* The host finishes publishing, and the remote proceeds. */
+	zassert_ok(settle(&host, 4));
+	zassert_ok(settle(&remote, 4));
+	zassert_equal(remote_opens, 2);
 }
