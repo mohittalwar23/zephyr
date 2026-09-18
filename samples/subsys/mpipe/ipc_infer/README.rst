@@ -1,29 +1,36 @@
 .. zephyr:code-sample:: mpipe-ipc-infer
    :name: mpipe keyword spotting across a direct M7 to HiFi4 link
 
-   Stream audio from the Cortex-M7 to the HiFi4 over a shared ring and run
-   micro_speech keyword spotting on it, with no relay through Linux.
+   Run one mpipe pipeline across two cores: capture on the Cortex-M7, hand the
+   buffers to the HiFi4 through shared memory, and spot keywords there with
+   micro_speech -- with no relay through Linux.
 
 Overview
 ********
 
-This is the end-to-end path the direct link exists for, with the microphone
-still stubbed:
+This is the end-to-end path the direct link exists for. One mpipe pipeline
+spans both cores:
 
 .. code-block:: none
 
-   clip -> M7 -> shared DDR ring -> HiFi4 -> micro_speech -> result -> M7
+   i2s_src -> caps_filter -> tee -+-> gain -> i2s_codec_sink      (M7, audible)
+                                  |
+                                  +-> ipc_sink ==== shared DDR ====\
+                                                                    |
+                                              ipc_src -> queue -> infer_sink
+                                                        (HiFi4, micro_speech)
 
-Both images are built from the same source; only the board overlay differs, and
-only the DSP builds inference. The M7 sends one second of 16 kHz mono audio per
-window, alternating "yes" and "no". The HiFi4 rebuilds each window from the ring,
-runs micro_speech over it, and reports the category back over the control
-endpoint. The M7 knows which word it sent, so a wrong answer is counted rather
-than merely logged.
+Both images are built from the same source; only the board files differ, and
+only the DSP builds inference. The M7 captures 16 kHz audio from the codec,
+hands each buffer to the HiFi4 **by reference** -- the samples stay in shared
+memory and are never copied -- and the HiFi4 gathers them into one-second
+windows, runs micro_speech, and reports the category back over the control
+endpoint.
 
-Sending a single word on repeat would prove only that the remote keeps
-answering. Alternating two spoken words means a classifier that has stopped
-listening cannot score by accident.
+The audible branch is not decoration. Keyword spotting tells you only whether
+the model agreed with you; hearing the same audio tells you whether the
+microphone, the clocks and the gain are doing anything at all, which is a
+different question and the one that fails first.
 
 The split is the same one the bring-up sample establishes: control messages go
 through IPC Service over MU3, and audio never touches that path.
@@ -48,8 +55,10 @@ belong upstream:
 * Its CMakeLists found the TFLM signal sources through a path relative to
   ``ZEPHYR_BASE``, which is wrong in a git worktree.
 
-The audio clips in ``src/test_clips.c`` are generated from tflite-micro's own
-``micro_speech`` test data by ``scripts/make_test_clips.py``.
+Because the audio is live, what this sample demonstrates is the path, not the
+model's accuracy: say "yes" or "no" into the microphone and watch the category
+come back across the link. A deterministic, machine-checkable stream through the
+same plugin would be a better regression test, and is not here yet.
 
 Requirements
 ************
@@ -80,24 +89,26 @@ boundary.
 Memory
 ******
 
-Same 256 KiB reservation at ``0xa0000000`` as the bring-up sample, with the ring
-carrying mono rather than stereo periods:
+Same 256 KiB reservation at ``0xa0000000`` as the bring-up sample:
 
 =============  ========  =====================================================
 Address        Size      Contents
 =============  ========  =====================================================
 ``0xa0000000``    4 KiB  Bring-up control block
 ``0xa0010000``   64 KiB  IPC Service shared memory
-``0xa0020000``  128 KiB  PCM ring: 64 periods of 320 bytes
+``0xa0020000``  128 KiB  Audio buffer pool, readable by both cores
 =============  ========  =====================================================
 
-A period is 160 samples, 10 ms at 16 kHz mono, so one inference window is
-exactly 100 periods. micro_speech wants mono, which is why this sample's ring
-geometry differs from the bring-up sample's stereo one -- and why the consumer
-checks the producer's published geometry before attaching.
+The third region is what makes the handover zero-copy, and it is why the M7's
+pool is placed by devicetree rather than linked wherever it lands: a buffer
+handed over by reference has to live where the peer can read it. The M7 points
+``zephyr,mpipe-aud-pool`` at that region, and both halves are told its bounds at
+init, so an offset that falls outside it is rejected rather than followed.
 
-Only two clips are carried, not three: the M7's read-only data lives in ITCM,
-which cannot hold a third second of 16-bit PCM.
+Every region is a power-of-two size at a naturally aligned base. That is not
+tidiness: the M7's ARMv7-M MPU rounds a region size up to the next power of two
+and masks the base to match, so an odd region silently covers something other
+than what was asked for.
 
 Sample output
 *************
@@ -108,9 +119,10 @@ On the M7::
    <inf> mpipe_ipc_infer: mpipe IPC inference: role=host
    <inf> mpipe_ipc_infer: link up, session 2 <-> 1
    <inf> mpipe_ipc_infer: control endpoint bound
-   <inf> mpipe_ipc_infer: ring up, 64 x 320 bytes
-   <inf> mpipe_ipc_infer: 30 windows correct, 0 wrong
-   <inf> mpipe_ipc_infer: 195 windows correct, 0 wrong
+   <inf> mpipe_ipc_plugin_sink: peer source bound
+   <inf> mpipe_ipc_infer: capture pipeline: i2s -> tee -> [speaker, HiFi4] at 16000 Hz
+   <inf> mpipe_ipc_infer: [1] heard "yes"   (0 buffers dropped)
+   <inf> mpipe_ipc_infer: [2] heard "no"   (0 buffers dropped)
 
 The HiFi4 has no console on this board -- both cores' consoles are on ``uart4``
 and the DSP overlay gives it up -- so its side is visible through the counters

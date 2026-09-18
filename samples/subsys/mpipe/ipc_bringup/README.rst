@@ -11,27 +11,30 @@ Both cores run the same source; only the board overlay differs. The sample
 establishes a session, opens an IPC Service instance over MU3, binds an
 endpoint, and then runs both halves of the split this design is built around:
 
-* **Control** messages -- heartbeats and status reports -- travel over MU3
-  through IPC Service.
-* **Audio** travels through a shared-DDR ring and never touches the message
-  path, following the same split the NXP SDK, NXP's Linux side and SOF all use.
+* **Control** messages -- here, heartbeats and their acknowledgements -- travel
+  over MU3 through IPC Service.
+* **Audio** never touches that path. It moves through shared DDR, following the
+  same split the NXP SDK, NXP's Linux side and SOF all use.
 
-The M7 produces periods stamped with their own sequence number; the HiFi4
-verifies every byte and reports what it saw back over the control path. Either
-core can be restarted underneath the other and both the link and the stream
-rebuild themselves.
+This sample is the control half alone, which is what makes it useful to bring up
+first: it is the smallest thing that can tell you whether the two cores can see
+each other at all. Either core can be restarted underneath the other, and the
+survivor notices and stands down rather than acting on its peer's previous life.
+For the audio half -- one pipeline spanning both cores -- see
+:zephyr:code-sample:`mpipe-ipc-infer`.
 
 Memory
 ******
 
-The reserved window is 256 KiB at ``0xa0000000``:
+Linux reserves 256 KiB at ``0xa0000000`` for both of these samples. This one
+uses the first two regions; the audio pool in the rest of the window belongs to
+:zephyr:code-sample:`mpipe-ipc-infer`:
 
 =============  ========  =====================================================
 Address        Size      Contents
 =============  ========  =====================================================
 ``0xa0000000``    4 KiB  Bring-up control block: session, state, last error
 ``0xa0010000``   64 KiB  IPC Service shared memory (vrings and buffers)
-``0xa0020000``  128 KiB  PCM ring: 32 periods of 640 bytes
 =============  ========  =====================================================
 
 Every region is a power-of-two size at a naturally aligned base. The M7's
@@ -93,11 +96,8 @@ Sample output
    <inf> mpipe_ipc_bringup: gen 0: session 4 (peer word 0x00030002)
    <inf> mpipe_ipc_bringup: gen 0: LINK UP after 128 polls: session 4 <-> 3
    <inf> mpipe_ipc_bringup: gen 0: endpoint 'mpipe.ctrl' bound
-   <inf> mpipe_ipc_bringup: gen 0: FIRST ROUND TRIP: heartbeat 0 acknowledged in 4 us
-   <wrn> mpipe_ipc_bringup: gen 0: peer restarted; standing down so it can rebuild
-   <inf> mpipe_ipc_bringup: gen 0: ring up: 32 periods of 640 bytes
-   <inf> mpipe_ipc_bringup: gen 0: produced 208 periods, fill 16; remote verified 0, 0 corrupt
-   <inf> mpipe_ipc_bringup: gen 0: produced 400 periods, fill 16; remote verified 208, 0 corrupt
+   <inf> mpipe_ipc_bringup: gen 0: FIRST ROUND TRIP: heartbeat 0 acknowledged in 23 us
+   <inf> mpipe_ipc_bringup: gen 0: 20 round trips, last 23 us, 0 dropped
    <wrn> mpipe_ipc_bringup: gen 0: peer restarted; standing down so it can rebuild
    <inf> mpipe_ipc_bringup: gen 1: LINK UP after 1 polls: session 10 <-> 14
-   <inf> mpipe_ipc_bringup: gen 1: ring up: 32 periods of 640 bytes
+   <inf> mpipe_ipc_bringup: gen 1: endpoint 'mpipe.ctrl' bound
