@@ -96,7 +96,8 @@ int main(void)
 	 */
 	ret = mpipe_structure_init_fields(&caps, MPIPE_MEDIA_AUDIO_PCM, MPIPE_CAPS_FRAME_INTERVAL,
 					  MPIPE_TYPE_UINT, 10000, MPIPE_CAPS_NUM_OF_CHANNEL,
-					  MPIPE_TYPE_UINT, 2, MPIPE_CAPS_END);
+					  MPIPE_TYPE_UINT, CONFIG_SAMPLE_AUDIO_CHANNELS,
+					  MPIPE_CAPS_END);
 	if (ret < 0) {
 		goto err;
 	}

@@ -46,3 +46,12 @@ config SAMPLE_AUDIO_SAMPLE_RATE
 	  rate unconstrained, so negotiation picks the lowest the devices agree
 	  on. Set it where a board's audio clock can only be exact at certain
 	  rates, or where the lowest common rate is not the one wanted.
+
+config SAMPLE_AUDIO_CHANNELS
+	int "Channels the pipeline captures and plays"
+	default 2
+	range 1 2
+	help
+	  Set this to 1 for a single microphone. A PDM microphone breakout
+	  carries one, and asking a decimation filter for a stereo stream it
+	  cannot supply wastes half the bandwidth.
