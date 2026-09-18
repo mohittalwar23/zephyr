@@ -85,6 +85,34 @@ extern "C" {
 
 BUILD_ASSERT(MPIPE_IPC_SID_NONE == 0U, "zero is reserved for no session");
 
+/** @brief Mask of a bring-up state inside a published state word. */
+#define MPIPE_IPC_STATE_MASK 0xffffU
+
+/**
+ * @brief Pack a bring-up state together with the session that published it.
+ *
+ * A core publishes two words and a reader cannot sample both at once, so a
+ * state read on its own says nothing about which incarnation meant it. The
+ * mixture that matters is a leftover READY paired with a restarted peer's new
+ * session word: taken together they read as an invitation into rings the new
+ * incarnation has not built yet. Stamping the state with its own session makes
+ * the word self-describing, so the pair is checked rather than assumed -- and
+ * costs nothing at runtime, unlike a separate sequence counter, which would add
+ * a word to the block and two stores to every publication to say the same
+ * thing. It also means a diagnostic reader outside this code -- Linux, a
+ * debugger -- can tell a live state from a dead one without decoding the
+ * handshake.
+ */
+#define MPIPE_IPC_STATE_WORD(sid, state)                                               \
+	(((uint32_t)(state) & MPIPE_IPC_STATE_MASK) |                                  \
+	 (((uint32_t)(sid) & MPIPE_IPC_SID_MASK) << MPIPE_IPC_SID_BITS))
+
+/** @brief The bring-up state held in a published state word. */
+#define MPIPE_IPC_STATE_OF(word) ((uint32_t)((word) & MPIPE_IPC_STATE_MASK))
+/** @brief The session that published a state word. */
+#define MPIPE_IPC_STATE_SID(word)                                                      \
+	((uint16_t)(((word) >> MPIPE_IPC_SID_BITS) & MPIPE_IPC_SID_MASK))
+
 /**
  * @brief Polls a host waits on an unmoving READY peer before calling it residue.
  *
@@ -278,13 +306,19 @@ enum mpipe_ipc_bringup_action {
  * @param is_host           True on the static-vrings host.
  * @param require_peer      Host must not open until the peer acknowledges it.
  * @param peer_session_word The peer's published handshake word.
- * @param peer_state        The peer's published bring-up state. FAULT and
- *                          unknown values produce @ref MPIPE_IPC_ACTION_FAULT.
+ * @param peer_state_word   The peer's published state word, as written by
+ *                          @ref MPIPE_IPC_STATE_WORD. FAULT and unknown states
+ *                          produce @ref MPIPE_IPC_ACTION_FAULT. A state stamped
+ *                          with a session other than the one @p
+ *                          peer_session_word requests is not this incarnation's
+ *                          and is never acted on: the two words were sampled
+ *                          across a peer restart, so the caller waits and reads
+ *                          again.
  */
 enum mpipe_ipc_bringup_action mpipe_ipc_bringup_step(struct mpipe_ipc_session *session,
 						     bool is_host, bool require_peer,
 						     uint32_t peer_session_word,
-						     uint32_t peer_state);
+						     uint32_t peer_state_word);
 
 #ifdef __cplusplus
 }

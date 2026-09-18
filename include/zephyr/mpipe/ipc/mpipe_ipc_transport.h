@@ -62,7 +62,10 @@ extern "C" {
 struct mpipe_ipc_core_block {
 	/** Session handshake word: request low, acknowledgement high. */
 	uint32_t session;
-	/** One of @ref mpipe_ipc_bringup_state. */
+	/**
+	 * One of @ref mpipe_ipc_bringup_state, stamped with the session that
+	 * published it; see @ref MPIPE_IPC_STATE_WORD.
+	 */
 	uint32_t state;
 	/**
 	 * Why this core last reached FAULT, as a negative errno, or 0 after a
@@ -83,7 +86,10 @@ struct mpipe_ipc_core_block {
  *
  * Each core writes only its own half and reads only the peer's, so no lock is
  * needed: every field is a single naturally aligned 32-bit word with exactly
- * one writer.
+ * one writer. A reader still cannot sample two of them at once, so the words
+ * are written in the order a half-seen pair stays safe in -- session before the
+ * state that qualifies it -- and read in the opposite order, against the
+ * ordering @ref mpipe_ipc_ops::load and @ref mpipe_ipc_ops::store provide.
  */
 struct mpipe_ipc_shared {
 	struct mpipe_ipc_core_block host;
@@ -108,9 +114,21 @@ struct mpipe_ipc_ops {
 	int (*open_instance)(void *context);
 	/** Close the physical instance, if the backend supports it. */
 	int (*close_instance)(void *context);
-	/** Read one 32-bit word of the shared control block. */
+	/**
+	 * Read one 32-bit word of the shared control block, with acquire
+	 * ordering: accesses issued after this one must not be observed to
+	 * happen before it. A peer's published state is only worth acting on if
+	 * what it vouches for is already visible.
+	 */
 	uint32_t (*load)(const volatile uint32_t *address);
-	/** Write one 32-bit word of the shared control block. */
+	/**
+	 * Write one 32-bit word of the shared control block, with release
+	 * ordering: accesses issued before this one must already be visible to
+	 * the peer when it observes this word. The sequence depends on it --
+	 * the session word is published before the state that qualifies it, the
+	 * failure reason before the FAULT that refers to it, and on the host the
+	 * rings are built before the READY that invites the peer into them.
+	 */
 	void (*store)(volatile uint32_t *address, uint32_t value);
 };
 
