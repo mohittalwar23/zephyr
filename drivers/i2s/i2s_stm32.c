@@ -410,13 +410,23 @@ do_trigger_stop:
 		break;
 
 	case I2S_TRIGGER_DROP:
+		key = irq_lock();
 		if (stream->state == I2S_STATE_NOT_READY) {
+			irq_unlock(key);
 			LOG_ERR("DROP trigger: invalid state");
 			return -EIO;
 		}
+		/*
+		 * STOP and DRAIN tear a stream down with interrupts locked.
+		 * DROP did not, so a DMA completion could land mid-teardown,
+		 * find the queue already emptied and the state not yet READY,
+		 * and move a stream that was being dropped into the error
+		 * state. Pausing a pipeline reaches this every time.
+		 */
 		stream->stream_disable(stream, dev);
 		stream_queue_drop(stream);
 		stream->state = I2S_STATE_READY;
+		irq_unlock(key);
 		break;
 
 	case I2S_TRIGGER_PREPARE:
