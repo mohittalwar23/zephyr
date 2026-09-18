@@ -19,7 +19,12 @@
 	};
 
 	soc {
-		dmic_dev: micfil@30ca0000 {
+		/*
+		 * Keep the micfil label: the SoC gates its PDM root clock setup on
+		 * DT_NODELABEL(micfil) being okay, so a node that only answers to
+		 * dmic_dev leaves the root at 24 MHz instead of 196.608 MHz.
+		 */
+		micfil: dmic_dev: micfil@30ca0000 {
 			compatible = "nxp,micfil";
 			reg = <0x30ca0000 DT_SIZE_K(64)>;
 			#address-cells = <1>;
