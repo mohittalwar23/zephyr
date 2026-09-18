@@ -449,8 +449,12 @@ static int i2s_stm32_read(const struct device *dev, void **mem_block, size_t *si
 	/* Get data from the beginning of RX queue */
 	ret = queue_get(dev_data->rx.msgq, mem_block, size, dev_data->rx.cfg.timeout);
 	if (ret < 0) {
-		LOG_ERR("queue_get() <FAILED>: ret=%d, used=%d/%d", ret,
-			k_msgq_num_used_get(dev_data->rx.msgq), CONFIG_I2S_STM32_RX_BLOCK_COUNT);
+		/*
+		 * The caller chose this timeout, and the API returns -EAGAIN
+		 * when it expires. A reader that bounds its wait so it can be
+		 * joined at teardown reaches this on every pause.
+		 */
+		LOG_DBG("no RX block within the configured timeout: %d", ret);
 	}
 
 	return ret;
