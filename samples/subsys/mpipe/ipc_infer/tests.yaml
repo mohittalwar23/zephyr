@@ -1,0 +1,25 @@
+sample:
+  name: mpipe keyword spotting across an inter-core link
+
+tests:
+  # No harness, for the reason the bring-up sample's tests.yaml gives: one
+  # pipeline spanning two cores has no single-image output to wait for.
+  sample.mpipe.ipc_infer.producer:
+    tags:
+      - mpipe
+      - ipc
+      - samples
+    platform_allow:
+      - imx8mp_evk/mimx8ml8/m7
+  sample.mpipe.ipc_infer.consumer:
+    tags:
+      - mpipe
+      - ipc
+      - samples
+      - tflite
+    platform_allow:
+      - imx8mp_evk/mimx8ml8/adsp
+    # Inference is built only on the DSP, from the micro_speech sample's model
+    # and runner. Without the module there is nothing to build it from.
+    modules:
+      - tflite-micro

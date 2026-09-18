@@ -1,0 +1,25 @@
+sample:
+  name: mpipe inter-core bring-up
+
+tests:
+  # Both halves of the link are one image built for two different cores, and
+  # neither half reaches its first message alone: the barrier this sample
+  # exists to demonstrate only resolves once the other core is running too.
+  # No harness is declared for that reason -- there is no single-image output
+  # to wait for -- so these scenarios cover the build, which is worth covering:
+  # the two images have different SoC support, different linkage and different
+  # overlays, and nothing else in the tree builds the DSP one.
+  sample.mpipe.ipc_bringup.host:
+    tags:
+      - mpipe
+      - ipc
+      - samples
+    platform_allow:
+      - imx8mp_evk/mimx8ml8/m7
+  sample.mpipe.ipc_bringup.remote:
+    tags:
+      - mpipe
+      - ipc
+      - samples
+    platform_allow:
+      - imx8mp_evk/mimx8ml8/adsp
