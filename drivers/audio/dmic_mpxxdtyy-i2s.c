@@ -119,6 +119,7 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 	struct mpxxdtyy_data *const data = dev->data;
 	uint8_t chan_size = cfg->streams->pcm_width;
 	uint32_t audio_freq = cfg->streams->pcm_rate;
+	uint32_t block_ms;
 	uint16_t factor;
 
 	if ((cfg->channel.req_num_chan == 0U) || (cfg->channel.req_num_chan < config->mic_count)) {
@@ -178,7 +179,14 @@ int mpxxdtyy_i2s_configure(const struct device *dev, struct dmic_cfg *cfg)
 		return -EINVAL;
 	}
 	i2s_cfg.mem_slab = &rx_pdm_i2s_mslab;
-	i2s_cfg.timeout = 2000;
+	/*
+	 * Wait a few block periods, not a flat two seconds. The link is the
+	 * only thing a read blocks on, so this bounds how long a stop waits for
+	 * one already in flight.
+	 */
+	block_ms = (data->pcm_mem_size * 1000U) /
+		   (audio_freq * cfg->channel.req_num_chan * (chan_size / 8U));
+	i2s_cfg.timeout = (int32_t)MAX(100U, block_ms * 10U);
 
 	ret = i2s_configure(config->comm_dev, I2S_DIR_RX, &i2s_cfg);
 	if (ret != 0) {
