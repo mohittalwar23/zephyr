@@ -305,18 +305,18 @@ ZTEST(mpipe_ipc_plugin, test_data_follows_push_source_lifecycle)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 
 	fake_receive(0U, &msg);
 	zassert_equal(chain_received, 1U, "PLAYING source rejected callback-delivered data");
 
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PAUSED),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	fake_receive(0U, &msg);
 	zassert_equal(chain_received, 1U, "PAUSED source delivered callback data");
 
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_ok(mpipe_ipc_src_deinit(&source));
 }
 
@@ -337,7 +337,7 @@ ZTEST(mpipe_ipc_plugin, test_failed_push_releases_wrapper_once)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	source.base.src_pad.peer = NULL;
 	fake_receive(0U, &msg);
 
@@ -376,7 +376,7 @@ ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	for (unsigned int i = 0; i < ARRAY_SIZE(invalid); i++) {
 		struct mpipe_ipc_msg msg = {
 			.type = MPIPE_IPC_MSG_DATA_BUFFER,
@@ -407,7 +407,7 @@ ZTEST(mpipe_ipc_plugin, test_out_of_range_data_is_rejected_before_push)
 		zassert_equal(fake.sent[i].release.buffer_id, 5U + i);
 	}
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_ok(mpipe_ipc_src_deinit(&source));
 }
 
@@ -497,7 +497,7 @@ ZTEST(mpipe_ipc_plugin, test_stale_session_data_is_rejected_before_delivery)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	session_shared.remote.session = MPIPE_IPC_HANDSHAKE(23U, 0U);
 
 	fake_receive(0U, &msg);
@@ -506,7 +506,7 @@ ZTEST(mpipe_ipc_plugin, test_stale_session_data_is_rejected_before_delivery)
 	zassert_equal(fake.send_count, 0U, "stale DATA must not produce a RELEASE");
 	zassert_equal(test_transport.state, MPIPE_IPC_TRANSPORT_FAULTED);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_ok(mpipe_ipc_src_deinit(&source));
 }
 
@@ -527,12 +527,12 @@ ZTEST(mpipe_ipc_plugin, test_stale_data_generation_is_rejected)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	fake_receive(0U, &msg);
 	zassert_equal(chain_received, 0U);
 	zassert_equal(fake.send_count, 0U, "stale DATA must not produce a RELEASE");
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_ok(mpipe_ipc_src_deinit(&source));
 }
 
@@ -590,9 +590,9 @@ ZTEST(mpipe_ipc_plugin, test_two_sources_return_to_their_own_endpoint)
 	configure_source_pipeline(&first_pipe, &first_src, &first_sink);
 	configure_source_pipeline(&second_pipe, &second_src, &second_sink);
 	zassert_equal(mpipe_element_set_state(&first_pipe.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(mpipe_element_set_state(&second_pipe.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 
 	fake_receive(0U, &first);
 	fake_receive(1U, &second);
@@ -601,9 +601,9 @@ ZTEST(mpipe_ipc_plugin, test_two_sources_return_to_their_own_endpoint)
 	zassert_equal(fake.sent_endpoint[0], 0U);
 	zassert_equal(fake.sent_endpoint[1], 1U);
 	zassert_equal(mpipe_element_set_state(&first_pipe.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(mpipe_element_set_state(&second_pipe.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_ok(mpipe_ipc_src_deinit(&first_src));
 	zassert_ok(mpipe_ipc_src_deinit(&second_src));
 }
@@ -676,7 +676,7 @@ ZTEST(mpipe_ipc_plugin, test_deinit_waits_for_admitted_callback)
 
 	configure_source_pipeline(&pipeline, &source, &sink);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	block_consume = true;
 	(void)k_thread_create(&receive_thread, receive_stack,
 			      K_THREAD_STACK_SIZEOF(receive_stack), receive_entry,
@@ -697,7 +697,7 @@ ZTEST(mpipe_ipc_plugin, test_deinit_waits_for_admitted_callback)
 	zassert_ok(async_deinit_result);
 	zassert_equal(fake.deregister_count, 1U);
 	zassert_equal(mpipe_element_set_state(&pipeline.bin.element, MPIPE_STATE_READY),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 }
 
 ZTEST(mpipe_ipc_plugin, test_release_retry_record_is_claimed_by_one_sender)

@@ -98,7 +98,7 @@ static int wrapper_pool_noop(struct mpipe_buffer_pool *pool)
 }
 
 static int wrapper_pool_configure(struct mpipe_buffer_pool *pool,
-				  struct mpipe_structure *config)
+				  const struct mpipe_structure *config)
 {
 	ARG_UNUSED(pool);
 	ARG_UNUSED(config);

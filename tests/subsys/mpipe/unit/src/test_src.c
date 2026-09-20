@@ -77,7 +77,7 @@ ZTEST(mpipe_src_api, test_push_source_is_active_only_while_playing)
 
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(activate_calls, 1);
 	zassert_true(activate_saw_open_gate, "activate ran before admission opened");
 	zassert_true(mpipe_src_delivery_enter(&src), "PLAYING refused a delivery");
@@ -85,7 +85,7 @@ ZTEST(mpipe_src_api, test_push_source_is_active_only_while_playing)
 
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(deactivate_calls, 1);
 	zassert_true(deactivate_saw_closed_gate, "deactivate ran while admission was open");
 	zassert_false(mpipe_src_delivery_enter(&src), "PAUSED admitted a delivery");
@@ -100,7 +100,7 @@ ZTEST(mpipe_src_api, test_activation_failure_recloses_admission)
 
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING),
-		      MPIPE_STATE_CHANGE_FAILURE);
+		      -EIO);
 	zassert_equal(activate_calls, 1);
 	zassert_false(mpipe_src_delivery_enter(&src),
 		      "failed activation left admission open");
@@ -113,12 +113,12 @@ ZTEST(mpipe_src_api, test_deactivation_failure_keeps_admission_closed)
 	init_push_source(&src);
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	deactivate_result = -EIO;
 
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED),
-		      MPIPE_STATE_CHANGE_FAILURE);
+		      -EIO);
 	zassert_equal(deactivate_calls, 1);
 	zassert_true(deactivate_saw_closed_gate);
 	zassert_false(mpipe_src_delivery_enter(&src),
@@ -134,10 +134,10 @@ ZTEST(mpipe_src_api, test_pull_source_does_not_run_push_lifecycle_hooks)
 
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(mpipe_src_change_state(&src.element,
 				     MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 	zassert_equal(activate_calls, 0);
 	zassert_equal(deactivate_calls, 0);
 	zassert_false(mpipe_src_delivery_enter(&src));
@@ -155,7 +155,7 @@ static struct k_sem delivery_entered;
 static struct k_sem release_delivery;
 static struct k_sem deactivate_started;
 static struct k_sem deactivate_done;
-static enum mpipe_state_change_return race_deactivate_result;
+static int race_deactivate_result;
 
 static void delivery_worker(void *p1, void *p2, void *p3)
 {
@@ -195,7 +195,7 @@ ZTEST(mpipe_src_api, test_deactivation_rejects_new_delivery_and_drains_accepted_
 	k_sem_init(&deactivate_done, 0, 1);
 	zassert_equal(mpipe_src_change_state(&race_src.element,
 				     MPIPE_STATE_CHANGE_PAUSED_TO_PLAYING),
-		      MPIPE_STATE_CHANGE_SUCCESS);
+		      0);
 
 	k_thread_create(&delivery_thread, delivery_stack,
 			K_THREAD_STACK_SIZEOF(delivery_stack), delivery_worker,
@@ -222,7 +222,7 @@ ZTEST(mpipe_src_api, test_deactivation_rejects_new_delivery_and_drains_accepted_
 
 	k_sem_give(&release_delivery);
 	zassert_ok(k_sem_take(&deactivate_done, K_SECONDS(1)));
-	zassert_equal(race_deactivate_result, MPIPE_STATE_CHANGE_SUCCESS);
+	zassert_equal(race_deactivate_result, 0);
 	zassert_true(deactivate_saw_closed_gate);
 	zassert_ok(k_thread_join(&delivery_thread, K_SECONDS(1)));
 	zassert_ok(k_thread_join(&deactivate_thread, K_SECONDS(1)));

@@ -154,8 +154,8 @@ ZTEST_F(test_mock_pipeline, test_pipeline_fake_src_transform_sink)
 /* Push sources bring their own callback context and consume no pipeline stack. */
 ZTEST(test_mock_pipeline, test_two_push_pipelines_need_no_pipeline_threads)
 {
-	enum mpipe_state_change_return ret_a;
-	enum mpipe_state_change_return ret_b;
+	int ret_a;
+	int ret_b;
 
 	push_pipeline_init(&push_a, 10U);
 	push_pipeline_init(&push_b, 20U);
@@ -166,18 +166,18 @@ ZTEST(test_mock_pipeline, test_two_push_pipelines_need_no_pipeline_threads)
 					MPIPE_STATE_PLAYING);
 
 	/* Release any thread the unfixed implementation managed to allocate. */
-	if (ret_a == MPIPE_STATE_CHANGE_SUCCESS) {
+	if (ret_a == 0) {
 		zassert_equal(mpipe_element_set_state(&push_a.pipeline.bin.element,
 						      MPIPE_STATE_READY),
-			      MPIPE_STATE_CHANGE_SUCCESS);
+			      0);
 	}
-	if (ret_b == MPIPE_STATE_CHANGE_SUCCESS) {
+	if (ret_b == 0) {
 		zassert_equal(mpipe_element_set_state(&push_b.pipeline.bin.element,
 						      MPIPE_STATE_READY),
-			      MPIPE_STATE_CHANGE_SUCCESS);
+			      0);
 	}
 
-	zassert_equal(ret_a, MPIPE_STATE_CHANGE_SUCCESS);
-	zassert_equal(ret_b, MPIPE_STATE_CHANGE_SUCCESS,
+	zassert_equal(ret_a, 0);
+	zassert_equal(ret_b, 0,
 		      "a push pipeline consumed the only pull-thread stack");
 }

@@ -317,7 +317,7 @@ int mpipe_src_change_state(struct mpipe_element *self, enum mpipe_state_change t
 		if (src->activate != NULL && src->activate(src) != 0) {
 			mpipe_src_delivery_close(src);
 			LOG_ERR("Failed to activate push source");
-			return MPIPE_STATE_CHANGE_FAILURE;
+			return -EIO;
 		}
 		break;
 	case MPIPE_STATE_CHANGE_PLAYING_TO_PAUSED:
@@ -329,7 +329,7 @@ int mpipe_src_change_state(struct mpipe_element *self, enum mpipe_state_change t
 		mpipe_src_delivery_close(src);
 		if (src->deactivate != NULL && src->deactivate(src) != 0) {
 			LOG_ERR("Failed to deactivate push source");
-			return MPIPE_STATE_CHANGE_FAILURE;
+			return -EIO;
 		}
 		break;
 	case MPIPE_STATE_CHANGE_PAUSED_TO_READY:
