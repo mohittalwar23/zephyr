@@ -408,7 +408,7 @@ static int mpipe_aud_i2s_codec_sink_prime_silence(struct mpipe_aud_i2s_codec_sin
 }
 #endif
 
-static enum mpipe_state_change_return
+static int
 mpipe_aud_i2s_codec_sink_change_state(struct mpipe_element *self,
 				      enum mpipe_state_change transition)
 {
@@ -420,7 +420,7 @@ mpipe_aud_i2s_codec_sink_change_state(struct mpipe_element *self,
 	    !aud_i2s_codec_sink->started &&
 	    mpipe_aud_i2s_codec_sink_prime_silence(aud_i2s_codec_sink) != 0) {
 		LOG_ERR("Unable to prime synchronized I2S capture clocks");
-		return MPIPE_STATE_CHANGE_FAILURE;
+		return -EIO;
 	}
 #endif
 
