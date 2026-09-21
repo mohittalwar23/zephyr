@@ -26,9 +26,14 @@
 #include <zephyr/audio/dmic.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2s.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(dmic_esp32, CONFIG_AUDIO_DMIC_LOG_LEVEL);
+
+/* Several block times, with a floor, before a silent microphone is an error. */
+#define DMIC_ESP32_TIMEOUT_BLOCKS 4U
+#define DMIC_ESP32_MIN_TIMEOUT_MS 100U
 
 struct dmic_esp32_config {
 	const struct device *i2s_dev;
@@ -44,6 +49,8 @@ static int dmic_esp32_configure(const struct device *dev, struct dmic_cfg *confi
 	struct dmic_esp32_data *data = dev->data;
 	struct pcm_stream_cfg *stream;
 	struct i2s_config i2s_cfg = {0};
+	uint32_t frame_bytes;
+	uint32_t block_ms = 0U;
 	int ret;
 
 	if ((config == NULL) || (config->streams == NULL)) {
@@ -68,7 +75,24 @@ static int dmic_esp32_configure(const struct device *dev, struct dmic_cfg *confi
 	i2s_cfg.frame_clk_freq = stream->pcm_rate;
 	i2s_cfg.mem_slab = stream->mem_slab;
 	i2s_cfg.block_size = stream->block_size;
-	i2s_cfg.timeout = SYS_FOREVER_MS;
+
+	/*
+	 * The backing device takes its read timeout from this configuration
+	 * rather than from each call, so it has to be a real duration. Waiting
+	 * forever is wrong here even though the API permits it: a DMIC client
+	 * that cannot be unblocked cannot be torn down, and a microphone that
+	 * stops clocking would wedge the reader rather than report an error.
+	 *
+	 * Derive it from how long one block takes to fill, and allow several
+	 * block times before calling it a failure.
+	 */
+	frame_bytes = (stream->pcm_width / 8U) * config->channel.req_num_chan;
+	if ((frame_bytes != 0U) && (stream->pcm_rate != 0U)) {
+		block_ms = (uint32_t)((stream->block_size * MSEC_PER_SEC) /
+				      (frame_bytes * stream->pcm_rate));
+	}
+	i2s_cfg.timeout = (int32_t)MAX(DMIC_ESP32_MIN_TIMEOUT_MS,
+				       block_ms * DMIC_ESP32_TIMEOUT_BLOCKS);
 
 	ret = i2s_configure(cfg->i2s_dev, I2S_DIR_RX, &i2s_cfg);
 	if (ret < 0) {
@@ -126,7 +150,11 @@ static int dmic_esp32_read(const struct device *dev, uint8_t stream, void **buff
 	const struct dmic_esp32_config *cfg = dev->config;
 
 	ARG_UNUSED(stream);
-	/* The read timeout is taken from the I2S configuration, not per call. */
+	/*
+	 * The backing device applies the timeout from its configuration, which
+	 * dmic_esp32_configure() sized from the block duration. It cannot be
+	 * varied per call, so this argument is accepted and not forwarded.
+	 */
 	ARG_UNUSED(timeout);
 
 	return i2s_read(cfg->i2s_dev, buffer, size);
