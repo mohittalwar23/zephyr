@@ -1649,6 +1649,19 @@ static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2
 	return 0;
 }
 
+static inline k_timeout_t i2s_esp32_queue_timeout(int32_t timeout_ms)
+{
+	if (timeout_ms == SYS_FOREVER_MS) {
+		return K_FOREVER;
+	}
+
+	if (timeout_ms == 0) {
+		return K_NO_WAIT;
+	}
+
+	return K_MSEC(timeout_ms);
+}
+
 static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *size)
 {
 #if I2S_ESP32_IS_DIR_EN(rx)
@@ -1675,8 +1688,9 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 	}
 
 	err = k_msgq_get(&stream->data->queue, &item,
-			 (state == I2S_STATE_ERROR) ? K_NO_WAIT
-						    : K_MSEC(stream->data->i2s_cfg.timeout));
+			 (state == I2S_STATE_ERROR)
+				 ? K_NO_WAIT
+				 : i2s_esp32_queue_timeout(stream->data->i2s_cfg.timeout));
 	if (err == 0) {
 		*mem_block = item.buffer;
 		*size = item.size;
@@ -1727,7 +1741,7 @@ static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t siz
 	struct queue_item item = {.buffer = mem_block, .size = size};
 
 	err = k_msgq_put(&stream->data->queue, &item,
-			 K_MSEC(stream->data->i2s_cfg.timeout));
+			 i2s_esp32_queue_timeout(stream->data->i2s_cfg.timeout));
 	if (err < 0) {
 		LOG_DBG("TX queue full");
 	}
