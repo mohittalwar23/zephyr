@@ -6,6 +6,16 @@
 
 #define DT_DRV_COMPAT espressif_esp32_i2s
 
+#ifdef CONFIG_I2S_ESP32_PDM_RX
+/*
+ * PDM downsample ratio, and the master clock multiple used to derive it. Both
+ * are fixed for this bring-up: the ESP32 supports 8x and 16x, and 8x is what a
+ * 16 kHz microphone needs at the bit clock the peripheral can reach.
+ */
+#define I2S_ESP32_PDM_RX_DSR       I2S_PDM_DSR_8S
+#define I2S_ESP32_PDM_RX_MCLK_MULT 256U
+#endif /* CONFIG_I2S_ESP32_PDM_RX */
+
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/dma/dma_esp32.h>
@@ -1364,9 +1374,48 @@ static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
 			rx_is_target = true;
 		}
 
+#ifdef CONFIG_I2S_ESP32_PDM_RX
+		/*
+		 * PDM RX mode. The classic ESP32 converts PDM to PCM in hardware,
+		 * so i2s_read() still returns PCM and no software decimation is
+		 * needed. A single microphone with its SEL pin tied to ground
+		 * presents on the left slot.
+		 *
+		 * The PDM interface clock is not an ordinary I2S bit clock: it is
+		 * the frame clock multiplied by the PDM bit-clock factor, which
+		 * doubles at the 16x downsample ratio.
+		 */
+		const i2s_pdm_dsr_t pdm_dsr = I2S_ESP32_PDM_RX_DSR;
+		const uint32_t pdm_bck_factor = (I2S_ESP32_PDM_RX_DSR == I2S_PDM_DSR_16S)
+							? (2 * I2S_LL_PDM_BCK_FACTOR)
+							: I2S_LL_PDM_BCK_FACTOR;
+
+		i2s_hal_clock_info.bclk = i2s_cfg->frame_clk_freq * pdm_bck_factor;
+		i2s_hal_clock_info.mclk = i2s_cfg->frame_clk_freq * I2S_ESP32_PDM_RX_MCLK_MULT;
+		if (i2s_hal_clock_info.mclk < i2s_hal_clock_info.bclk) {
+			i2s_hal_clock_info.mclk = i2s_hal_clock_info.bclk;
+		}
+		i2s_hal_clock_info.bclk_div = i2s_hal_clock_info.mclk / i2s_hal_clock_info.bclk;
+		i2s_hal_clock_info.sclk = i2s_esp32_get_source_clk_freq(I2S_ESP32_CLK_SRC);
+		i2s_hal_clock_info.mclk_div = i2s_hal_clock_info.sclk / i2s_hal_clock_info.mclk;
+
+		/*
+		 * Present the single mono microphone as stereo frames so that the
+		 * downstream sample rate accounting, and a stereo I2S sink, stay
+		 * consistent.
+		 */
+		slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+		slot_cfg.pdm_rx.slot_mask = I2S_PDM_SLOT_BOTH;
+		slot_cfg.pdm_rx.data_fmt = I2S_PDM_DATA_FMT_PCM;
+		i2s_hal_pdm_set_rx_slot(hal, rx_is_target, &slot_cfg);
+		i2s_hal_set_rx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC, NULL);
+		i2s_ll_rx_set_pdm_dsr(hal->dev, pdm_dsr);
+		i2s_hal_pdm_enable_rx_channel(hal, true);
+#else
 		i2s_hal_std_set_rx_slot(hal, rx_is_target, &slot_cfg);
 		i2s_hal_set_rx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC, NULL);
 		i2s_ll_rx_enable_std(hal->dev);
+#endif /* CONFIG_I2S_ESP32_PDM_RX */
 
 		stream = &dev_cfg->rx;
 		memcpy(&stream->data->i2s_cfg, i2s_cfg, sizeof(struct i2s_config));
