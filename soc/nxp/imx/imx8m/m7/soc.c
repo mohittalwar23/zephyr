@@ -27,6 +27,21 @@ static void SOC_RdcInit(void)
 	if ((0x1U & RDC_GetPeriphAccessPolicy(RDC, kRDC_Periph_RDC, domainId)) != 0U) {
 		assignment.domainId = M7_DOMAIN_ID;
 		RDC_SetMasterDomainAssignment(RDC, kRDC_Master_M7, &assignment);
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(enet)) &&                                                 \
+	DT_NODE_HAS_PROP(DT_NODELABEL(enet), rdc)
+		/*
+		 * Peripherals the M7 drives itself need their own RDC entry:
+		 * the domain assignment above only says which domain this core
+		 * runs in. Boot firmware may have left ENET1 to the A core.
+		 */
+		rdc_periph_access_config_t periphConfig;
+
+		RDC_GetDefaultPeriphAccessConfig(&periphConfig);
+		periphConfig.periph = kRDC_Periph_ENET1;
+		periphConfig.policy = RDC_DT_VAL(enet);
+		RDC_SetPeriphAccessConfig(RDC, &periphConfig);
+#endif
 	}
 
 	/*
