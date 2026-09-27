@@ -34,6 +34,21 @@ endif # CAN && GPIO_PCA_SERIES
 
 endif # BOARD_IMX8MP_EVK_MIMX8ML8_A53 || BOARD_IMX8MP_EVK_MIMX8ML8_A53_SMP
 
+if BOARD_IMX8MP_EVK_MIMX8ML8_M7 || BOARD_IMX8MP_EVK_MIMX8ML8_M7_DDR
+
+configdefault ETH_DRIVER
+	default y
+
+# The M7 has 128 KB of TCM against the A core's DDR, so the networking stacks
+# are sized for this core rather than reusing the A core's numbers above.
+configdefault NET_TX_STACK_SIZE
+	default 2048
+
+configdefault NET_RX_STACK_SIZE
+	default 2048
+
+endif # BOARD_IMX8MP_EVK_MIMX8ML8_M7 || BOARD_IMX8MP_EVK_MIMX8ML8_M7_DDR
+
 configdefault MAIN_STACK_SIZE
 	default 3072 if BOARD_IMX8MP_EVK_MIMX8ML8_ADSP
 

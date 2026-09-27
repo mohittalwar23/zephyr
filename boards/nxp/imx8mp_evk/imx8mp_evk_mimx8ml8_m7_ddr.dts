@@ -37,3 +37,34 @@
 &mailbox0 {
 	status = "okay";
 };
+
+/*
+ * ENET1 (FEC) is wired to the RGMII PHY through the SAI1 pads. Its pads are
+ * also the ones gpio4 muxes, so do not enable gpio4 together with ENET here.
+ * The Cortex-A core must leave the controller alone: disable the matching
+ * node in the Linux device tree before booting this image.
+ */
+&enet {
+	status = "okay";
+	pinctrl-0 = <&pinmux_enet>;
+	pinctrl-names = "default";
+};
+
+&enet_mac {
+	phy-handle = <&phy>;
+	zephyr,random-mac-address;
+	phy-connection-type = "rgmii";
+	status = "okay";
+};
+
+&enet_mdio {
+	pinctrl-0 = <&pinmux_mdio>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	phy: phy@1 {
+		compatible = "realtek,rtl8211f";
+		reg = <1>;
+		status = "okay";
+	};
+};
